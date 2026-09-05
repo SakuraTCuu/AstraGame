@@ -32,18 +32,26 @@ The current first-map supplement fills 648 missing tiles from the verified resou
 
 The reference adapter includes 59 fog gates and 31 portals, source item costs, level/rank/defeat/quest/NPC conditions, and incense gathering probabilities. Fog rectangles are converted from the editor's 120-unit grid into convex world polygons. The overview supports panning, zooming, destination selection and repaired-portal travel. Opening it pauses the standalone simulation; this behavior still needs reference comparison.
 
-Exploration saves are isolated by configuration and, in Zhushen, by role. They preserve balances, flags, opened gates, explored cells, party positions/HP, the random state, permanent clears and respawn timers. Explicit restart clears this exploration save. In-progress enemy HP and cast/cooldown state are not yet resumed.
+Exploration saves are isolated by configuration and, in Zhushen, by role. They preserve balances, flags, opened gates, explored cells, party positions/HP/energy, the random state, permanent clears and respawn timers. Explicit restart clears this exploration save. Active buffs, in-progress enemy HP and cast/cooldown state are not yet resumed.
 
-The standalone comparison preset starts at level 1 with 20 incense, its home portal repaired and fog containing the spawn open. It does not reconstruct the user's live account. Hero/quest progression, full skill formulas, complete enemy art, foreground occlusion and exact overview styling remain incomplete.
+The standalone comparison preset starts at world level 1 with 20 incense, its home portal repaired and fog containing the spawn open. The four heroes use level-10 attributes from the source tables. This is not the user's live account.
+
+The skill adapter compiles source coefficients, pre/post timing, target counts, projectiles, public cooldown groups, energy costs, HP/time gates and supported buffs. The core resolves multi-hit timelines, homing projectiles, healing, forced critical hits, attack-speed modifiers, charges and jumps. Boss HP phases come from their skill conditions; timed enrage is a separate status.
+
+The renderer uses the scene's 549 foreground polygons and region light switches. It copies the visible ground into a render texture and composites only foreground pixels over actors. Directional regions use a smaller ambient light plus the flashlight cone.
+
+Still incomplete: defense/critical calibration, specialized enemy actions and conditions, multiple-warning layouts, damage-limit rules, sword-fan timing, full skill effects, hero/quest progression, complete enemy art and exact overview styling. `audit.json` lists every unresolved skill action instead of claiming complete adaptation.
 
 `node tools/reference-smoke.mjs` validates local assets, movement, a naturally reached battle, atlas animation frames, bounded visible tiles, and three restarts at desktop and mobile sizes. The ordinary `npm run smoke:web -- http://127.0.0.1:4174` continues to validate the independent deterministic combat fixture.
 
 ## Validation On 2026-09-05
 
-- 61 deterministic tests passed, including polygon gates, save validation, coalesced writes, portal travel and respawn persistence.
+- 70 deterministic tests passed, including skill-frame parsing, multi-hit cancellation, multi-target homing heals, energy/public cooldown gates, buff expiry and jump dodging.
 - Creator 2.4.15 Web Mobile build succeeded.
 - Reference browser smoke opened the overview, selected a gate, navigated to it and clicked its unlock command. The balance changed from 20 to 15. Reload restored the same balance, position and 109 explored cells. Repaired-portal travel changed position without spending more incense. Combat, atlas animation, desktop/mobile views and three restarts passed without console errors or failed requests.
 - Desktop 1280 x 800 and mobile 390 x 844 captures were inspected. Detailed map coverage is recorded in `audit.json` as required and missing tile paths.
-- Three post-combat restarts retained five world-layer children and four character views. The damage-label pool remained bounded.
+- Foreground render-texture checks found 3153 covered samples in the starting view. A renderer-only flashlight probe measured alpha 0 ahead versus 64 behind, independently of gameplay progression.
+- Three post-combat restarts retained eight world-layer children and four character views. The damage-label pool remained bounded.
 - The independent fixture still completed its full navigation, unlock and Boss sequence in about 183 seconds of simulated time.
-- The Zhushen package contains 84 owned files. Current host type checking reports zero module errors and 17 other host diagnostics. A runtime test inside the host remains outstanding; no reference assets or converted source tables are exported.
+- The source Boss run reached both paid gates and defeated the first Boss in about 89.55 simulated seconds, with three survivors, without teleporting or changing combat stats. It observed normal attacks, charge, jump, phase 2 and death. Run it with `node --no-warnings --loader ./tests/ts-loader.mjs tools/reference-boss-smoke.mjs` after staging.
+- The Zhushen package contains 90 owned files. Current host type checking reports zero module errors and 17 other host diagnostics. A runtime test inside the host remains outstanding; no reference assets or converted source tables are exported.

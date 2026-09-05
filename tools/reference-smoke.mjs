@@ -83,6 +83,14 @@ try {
   });
   assert.ok(initial.tiles > 0, "No detailed map textures rendered");
   assert.deepEqual(initial.failures, []);
+  const foreground = await evaluate(() => {
+    const renderer = window.__referenceBoot.renderer.referenceArt.foreground;
+    const pixels = renderer.maskTexture.readPixels();
+    let covered = 0;
+    for (let index = 0; index < pixels.length; index += 16) if (pixels[index] > 20) covered++;
+    return { polygons: renderer.visiblePolygons, coveredSamples: covered, totalSamples: pixels.length / 16 };
+  });
+  assert.ok(foreground.polygons > 0 && foreground.coveredSamples > 100 && foreground.coveredSamples < foreground.totalSamples);
   await clickDesign(254, 443);
   const overview = await evaluate(() => ({ open: window.__referenceBoot.renderer.overview.isOpen, state: window.__referenceBoot.session.runState,
     scale: window.__referenceBoot.renderer.overview.scale }));
@@ -225,6 +233,37 @@ try {
   });
   await delay(100);
   await capture("battle");
+  const lightProbe = await evaluate(() => {
+    const boot = window.__referenceBoot;
+    const original = boot.session.getSnapshot();
+    const snapshot = JSON.parse(JSON.stringify(original));
+    const leader = snapshot.actors.find((actor) => actor.id === snapshot.leaderId);
+    const dx = 19000 - leader.x, dy = 11000 - leader.y;
+    snapshot.actors = snapshot.actors.filter((actor) => snapshot.partyIds.includes(actor.id));
+    snapshot.actors.forEach((actor) => { actor.x += dx; actor.y += dy; actor.targetId = undefined; });
+    Object.assign(snapshot.flashlight, { x: 19000, y: 11000, directionX: 1, directionY: 0 });
+    snapshot.fog.states.fill("explored");
+    snapshot.casts = []; snapshot.projectiles = []; snapshot.events = [];
+    boot.renderer.centerOnLeader(snapshot);
+    boot.renderer.update(snapshot, 0.1);
+    window.__lightProbeSnapshot = snapshot;
+    const foreground = boot.renderer.referenceArt.foreground;
+    const target = foreground.camera.targetTexture;
+    const texture = new cc.RenderTexture(); texture.initWithSize(720, 1280);
+    foreground.camera.targetTexture = texture;
+    foreground.camera.render(boot.renderer.softFog.node);
+    const pixels = texture.readPixels();
+    const center = boot.renderer.project(snapshot.flashlight);
+    const alpha = (offset) => pixels[(Math.round(center.y + 640) * 720 + Math.round(center.x + 360 + offset * 0.82)) * 4 + 3];
+    const result = { ahead: alpha(300), behind: alpha(-300) };
+    foreground.camera.targetTexture = target; texture.destroy();
+    return result;
+  });
+  assert.ok(lightProbe.ahead + 20 < lightProbe.behind, `Flashlight cone is not visible: ${JSON.stringify(lightProbe)}`);
+  await delay(300);
+  await evaluate(() => window.__referenceBoot.renderer.update(window.__lightProbeSnapshot, 0.1));
+  await capture("directional-light");
+  await evaluate(() => { const boot = window.__referenceBoot; const snapshot = boot.session.getSnapshot(); boot.renderer.centerOnLeader(snapshot); boot.renderer.update(snapshot, 0.1); });
   assert.ok(battleArt.actors > 4 && battleArt.atlasFrames.every(Boolean));
   assert.ok(battleArt.tiles > 0 && battleArt.tiles <= 16);
   assert.ok(battleArt.atlasAnimationLengths.some((length) => length > 1), "Enemy atlas animations contain only a fallback frame");
@@ -248,10 +287,10 @@ try {
     resetCounts.push(await evaluate(() => ({ root: window.__referenceBoot.node.childrenCount,
       world: window.__referenceBoot.renderer.worldRoot.childrenCount, actors: window.__referenceBoot.session.world.players.filter(actor => window.__referenceBoot.renderer.referenceArt.views.has(actor.id)).length })));
   }
-  assert.ok(resetCounts.every((count) => count.root === resetCounts[0].root && count.world === 5 && count.actors === 4), JSON.stringify(resetCounts));
+  assert.ok(resetCounts.every((count) => count.root === resetCounts[0].root && count.world === 8 && count.actors === 4), JSON.stringify(resetCounts));
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
-  const report = { initial, overview, purchased, restored, travel, movement, battle, battleArt, resetCounts, viewports, errors, failures };
+  const report = { initial, foreground, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

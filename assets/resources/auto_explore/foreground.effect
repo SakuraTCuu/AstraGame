@@ -1,0 +1,45 @@
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: vs
+      frag: fs
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      properties:
+        texture: { value: white }
+        maskTexture: { value: black }
+}%
+
+CCProgram vs %{
+  precision highp float;
+  #include <cc-global>
+  #include <cc-local>
+  in vec3 a_position;
+  in vec2 a_uv0;
+  out vec2 v_uv;
+  void main () {
+    vec4 position = vec4(a_position, 1.0);
+    #if CC_USE_MODEL
+      position = cc_matWorld * position;
+    #endif
+    gl_Position = cc_matViewProj * position;
+    v_uv = a_uv0;
+  }
+}%
+
+CCProgram fs %{
+  precision highp float;
+  uniform sampler2D texture;
+  uniform sampler2D maskTexture;
+  in vec2 v_uv;
+  void main () {
+    vec4 color = texture(texture, v_uv);
+    color.a *= texture(maskTexture, v_uv).r;
+    gl_FragColor = color;
+  }
+}%

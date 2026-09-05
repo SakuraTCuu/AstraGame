@@ -2,6 +2,7 @@ import { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
 import { ReferenceArtLayer } from "./ReferenceArtLayer";
 import { FogRenderer } from "./FogRenderer";
 import { WorldOverview } from "./WorldOverview";
+import { pointInPolygon } from "../core/world/WorldGeometry";
 
 interface WorldPoint {
     x: number;
@@ -208,7 +209,10 @@ export class DemoRenderer {
         }
         this.updateFloatTexts(deltaSeconds);
         if (this.referenceArt) this.referenceArt.update(snapshot, this.camera, deltaSeconds);
-        if (this.softFog) this.softFogReady = this.softFog.update(snapshot, this.camera, this.worldScale, this.depthScale, this.config.fog.revealRadius, deltaSeconds);
+        const nightRegions = this.config.presentation?.reference?.nightRegions;
+        const directional = !nightRegions || Boolean(leader && nightRegions.some((polygon) => pointInPolygon(leader, polygon)));
+        const ambient = directional ? this.config.flashlight?.ambientRadius || 150 : this.config.fog.revealRadius;
+        if (this.softFog) this.softFogReady = this.softFog.update(snapshot, this.camera, this.worldScale, this.depthScale, ambient, deltaSeconds, directional);
         this.drawWorld(snapshot);
         this.drawOverlay(snapshot);
         this.updateActorLabels(snapshot);

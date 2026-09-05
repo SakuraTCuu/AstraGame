@@ -59,6 +59,7 @@ CCProgram fs %{
     float direction = dot(offset / max(distanceToLight, 0.01), normalize(beam.xy));
     float cone = smoothstep(beam.w, min(0.999, beam.w + 0.1), direction);
     cone *= 1.0 - smoothstep(beam.z * 0.45, beam.z, distanceToLight);
+    cone *= light.w;
     float visibility = max(radial, cone);
     float alpha = mix(mix(0.96, 0.5, explored), 0.02, visibility);
     alpha = max(alpha, smoothstep(0.02, 0.5, locked));

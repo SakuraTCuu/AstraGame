@@ -2,6 +2,7 @@ import { Actor } from "../actor/Actor";
 import type { ActorOptions, ActorStats, Faction } from "../actor/Actor";
 import type { BossPhase } from "../ai/BossAI";
 import type { CastSnapshot, CombatEvent, ProjectileSnapshot, SkillArea, SkillDefinition } from "../combat/Combat";
+import type { StatModifiers } from "../combat/SkillEffects";
 import { FogGrid } from "../fog/FogGrid";
 import type { FogCellState } from "../fog/FogGrid";
 import { Vector2 } from "../math/Vector2";
@@ -30,10 +31,18 @@ export interface DemoActorConfig {
   readonly tags?: readonly string[];
   readonly skillIds?: readonly string[];
   readonly phaseThresholds?: readonly number[];
+  readonly phaseNames?: readonly string[];
   readonly leashRange?: number;
   readonly collisionRadius?: number;
   readonly summonerId?: string;
   readonly healthBars?: number;
+  readonly modifiers?: StatModifiers;
+  readonly maxEnergy?: number;
+  readonly energy?: number;
+  readonly energyPerSecond?: number;
+  readonly energyOnSkill?: number;
+  readonly energyOnDamage?: number;
+  readonly criticalMultiplier?: number;
   readonly defeatFlag?: string;
   readonly defeatRewards?: readonly { readonly resource: string; readonly amount: number; readonly chance?: number }[];
 }
@@ -95,7 +104,7 @@ export interface ExplorationSave {
   readonly configVersion: number;
   readonly map: MapProgress;
   readonly exploredCells: readonly number[];
-  readonly party: readonly { readonly id: string; readonly x: number; readonly y: number; readonly hp: number }[];
+  readonly party: readonly { readonly id: string; readonly x: number; readonly y: number; readonly hp: number; readonly energy?: number }[];
   readonly elapsedSeconds: number;
   readonly randomState: number;
   readonly clearedSpawns: readonly string[];
@@ -113,7 +122,7 @@ export interface DemoSkillConfig {
   readonly target: string;
 }
 
-export interface DemoSkillDefinitionConfig {
+export interface DemoSkillDefinitionConfig extends Partial<Omit<SkillDefinition, "type" | "power" | "target">> {
   readonly id: string;
   readonly type: string;
   readonly coefficient: number;
@@ -148,6 +157,9 @@ export interface ActorSnapshot {
   readonly healthBars: number;
   readonly state: string;
   readonly targetId?: string;
+  readonly energy?: number;
+  readonly maxEnergy?: number;
+  readonly statuses?: readonly { readonly id: string; readonly remaining: number }[];
 }
 
 export interface DemoSnapshot {
@@ -343,7 +355,7 @@ export class DemoSession {
   saveExploration(): ExplorationSave {
     return { schema: 1, configId: this.config.meta?.id ?? "default", configVersion: this.config.meta?.schemaVersion ?? 1,
       map: this.map.saveProgress(), exploredCells: this.fog.exploredIndices(),
-      party: this.world.players.map((actor) => ({ id: actor.id, x: actor.position.x, y: actor.position.y, hp: actor.health })),
+      party: this.world.players.map((actor) => ({ id: actor.id, x: actor.position.x, y: actor.position.y, hp: actor.health, energy: actor.energy })),
       elapsedSeconds: this.world.elapsedSeconds, randomState: this.world.random.snapshot(), clearedSpawns: this.spawns.clearedPermanentIds(), respawns: this.spawns.respawnProgress() };
   }
 
@@ -356,6 +368,7 @@ export class DemoSession {
       const actor = this.world.players.find((actor) => actor.id === entry.id);
       if (!actor || ![entry.x, entry.y, entry.hp].every(Number.isFinite) || entry.hp < 0 || entry.hp > actor.stats.maxHealth ||
           entry.x < 0 || entry.y < 0 || entry.x >= this.config.world.width || entry.y >= this.config.world.height) throw new Error("Invalid saved party member");
+      if (entry.energy !== undefined && (!Number.isFinite(entry.energy) || entry.energy < 0 || entry.energy > (actor.stats.maxEnergy ?? 0))) throw new Error("Invalid saved energy");
     }
     this.map.validateProgress(save.map);
     this.fog.validateProgress(save.exploredCells);
@@ -369,6 +382,7 @@ export class DemoSession {
       const actor = this.world.players.find((actor) => actor.id === entry.id)!;
       actor.position = this.world.options.navigation.nearestWalkable(entry) ?? actor.position;
       actor.health = entry.hp;
+      actor.energy = entry.energy ?? 0;
       if (!actor.alive) actor.setState("dead");
     }
     this.world.random.restore(save.randomState);
@@ -441,7 +455,7 @@ export class DemoSession {
       const leader = this.world.leader;
       if (leader?.alive && this.moveIntent.lengthSquared() > 0) {
         leader.position = this.world.options.navigation.moveWithCollision(leader.position,
-          this.moveIntent.scale(leader.stats.moveSpeed * this.fixedStep));
+          this.moveIntent.scale(leader.movementSpeed * this.fixedStep));
       } else if (leader?.alive && this.navigationMode === "resume_wait") {
         this.resumeRemaining = Math.max(0, this.resumeRemaining - this.fixedStep);
         if (this.resumeRemaining <= 1e-9) {
@@ -510,6 +524,9 @@ export class DemoSession {
       healthBars: entry.healthBars,
       state: entry.fsm.state,
       targetId: entry.targetId,
+      energy: entry.energy,
+      maxEnergy: entry.stats.maxEnergy ?? 0,
+      statuses: entry.statusSnapshots(),
     }));
     const leader = this.world.leader;
     const bossPhases: Record<string, BossPhase> = {};
@@ -558,6 +575,12 @@ export class DemoSession {
       aggroRange: config.aggroRange,
       leashRange: config.leashRange,
       collisionRadius: config.collisionRadius,
+      modifiers: config.modifiers,
+      maxEnergy: config.maxEnergy,
+      energyPerSecond: config.energyPerSecond,
+      energyOnSkill: config.energyOnSkill,
+      energyOnDamage: config.energyOnDamage,
+      criticalMultiplier: config.criticalMultiplier,
     };
     const options: ActorOptions = {
       id: config.id,
@@ -571,6 +594,7 @@ export class DemoSession {
       kind: config.kind,
       name: config.name,
       healthBars: config.healthBars,
+      initialEnergy: config.energy,
     };
     return new Actor(options);
   }
@@ -586,7 +610,7 @@ export class DemoSession {
   }
 
   private normalizeDefinition(config: DemoSkillDefinitionConfig): SkillDefinition {
-    const types = ["damage", "heal", "telegraph_damage", "shield", "summon"];
+    const types = ["damage", "heal", "telegraph_damage", "shield", "summon", "buff"];
     if (!types.includes(config.type)) throw new Error(`Unknown skill type ${config.type}`);
     const targets = ["enemy", "ally", "self", "nearest_enemy", "nearest_hero", "nearest_ally", "lowest_hp_enemy", "lowest_hp_ally", "enemy_cluster", "hero_cluster", "ally_cluster"];
     if (!targets.includes(config.target)) throw new Error(`Unknown skill target ${config.target}`);
@@ -605,7 +629,20 @@ export class DemoSession {
     if (config.area && (!Number.isFinite(config.area.radius) || config.area.radius <= 0 || !["circle", "cone", "line"].includes(config.area.shape))) throw new Error(`Invalid skill area ${config.id}`);
     if (config.area?.shape === "line" && !(config.area.width > 0)) throw new Error(`Line skill ${config.id} requires width`);
     if (config.area?.shape === "cone" && !(config.area.angleDegrees > 0 && config.area.angleDegrees <= 360)) throw new Error(`Cone skill ${config.id} requires angleDegrees`);
+    for (const value of [config.castDuration, config.publicCooldown, config.energyCost]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new Error(`Invalid cast value for ${config.id}`);
+    if (config.targetCount !== undefined && (!Number.isInteger(config.targetCount) || config.targetCount < 1)) throw new Error(`Invalid primary target count for ${config.id}`);
+    let previous = -1;
+    for (const action of config.actions ?? []) {
+      if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
+      if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
+      previous = action.at;
+      for (const status of [...(action.randomStatuses ?? []), ...(action.status ? [action.status] : [])]) {
+        if (!status.id || !Number.isFinite(status.duration) || status.duration <= 0 || Object.values(status.modifiers ?? {}).some((value) => !Number.isFinite(value))) throw new Error(`Invalid status for ${config.id}`);
+      }
+    }
+    if (config.motion && (!(config.motion.duration > 0) || !["charge", "jump"].includes(config.motion.kind))) throw new Error(`Invalid skill motion for ${config.id}`);
     return {
+      ...config,
       id: config.id,
       range: config.range,
       cooldown: config.cooldown,

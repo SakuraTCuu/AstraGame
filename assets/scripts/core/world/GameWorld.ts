@@ -28,7 +28,7 @@ export interface WorldOptions {
 
 export class GameWorld {
   readonly random: SeededRandom;
-  readonly combat = new CombatSystem();
+  readonly combat: CombatSystem;
   readonly players: Actor[];
   readonly enemies: Actor[];
   readonly alliedSummons: Actor[] = [];
@@ -50,6 +50,7 @@ export class GameWorld {
   constructor(options: WorldOptions) {
     this.options = options;
     this.random = new SeededRandom(options.seed);
+    this.combat = new CombatSystem(() => this.random.next());
     this.players = [...options.players];
     this.enemies = [...options.enemies].sort((a, b) => a.id.localeCompare(b.id));
     this.formation = new SquadFormation(this.players, options.formationOffsets);
@@ -58,11 +59,11 @@ export class GameWorld {
     for (const enemy of this.enemies) this.registerEnemyAI(enemy);
   }
 
-  addEnemy(enemy: Actor, phaseThresholds?: readonly number[]): void {
+  addEnemy(enemy: Actor, phaseThresholds?: readonly number[], phaseNames?: readonly string[]): void {
     if (this.enemies.some((candidate) => candidate.id === enemy.id)) throw new Error(`Duplicate enemy id: ${enemy.id}`);
     this.enemies.push(enemy);
     this.enemies.sort((a, b) => a.id.localeCompare(b.id));
-    this.registerEnemyAI(enemy, phaseThresholds);
+    this.registerEnemyAI(enemy, phaseThresholds, phaseNames);
   }
 
   removeEnemy(id: string): void {
@@ -108,7 +109,10 @@ export class GameWorld {
   update(deltaSeconds: number): void {
     if (deltaSeconds <= 0) return;
     this.elapsedSeconds += deltaSeconds;
-    this.combat.update(deltaSeconds, this.allActors);
+    this.combat.update(deltaSeconds, this.allActors, (actor, destination, kind) => {
+      actor.position = kind === "jump" ? Vector2.from(destination) :
+        this.options.navigation.moveWithCollision(actor.position, Vector2.from(destination).subtract(actor.position));
+    });
     const leader = this.leader;
     if (leader?.id !== this.previousLeaderId) {
       this.path.clear();
@@ -116,7 +120,7 @@ export class GameWorld {
     }
     if (leader?.alive) {
       const previous = leader.position;
-      if (!this.autoTravelPaused) leader.position = this.path.update(leader.position, leader.stats.moveSpeed, deltaSeconds);
+      if (!this.autoTravelPaused) leader.position = this.path.update(leader.position, leader.movementSpeed, deltaSeconds);
       const movement = leader.position.subtract(previous);
       if (movement.lengthSquared() > 0) this.facing = movement.normalized();
       this.options.fog.reveal(leader.position, this.revealRadius);
@@ -163,13 +167,13 @@ export class GameWorld {
       route = { goal, position: actor.position, revision: navigation.revision, path };
       this.actorPaths.set(actor.id, route);
     }
-    actor.position = route.path.update(actor.position, actor.stats.moveSpeed, deltaSeconds);
+    actor.position = route.path.update(actor.position, actor.movementSpeed, deltaSeconds);
     route.position = actor.position;
   };
 
-  private registerEnemyAI(enemy: Actor, phaseThresholds?: readonly number[]): void {
+  private registerEnemyAI(enemy: Actor, phaseThresholds?: readonly number[], phaseNames?: readonly string[]): void {
     const skills = this.skillsFor(enemy, this.options.enemySkill);
-    if (enemy.tags.has("boss")) this.bosses.set(enemy.id, new BossAI(skills, phaseThresholds));
+    if (enemy.tags.has("boss")) this.bosses.set(enemy.id, new BossAI(skills, phaseThresholds, phaseNames));
     else this.enemyAIs.set(enemy.id, new EnemyAI(skills));
   }
 

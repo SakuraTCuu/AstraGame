@@ -158,6 +158,6 @@ export class SpawnDirector {
     if (!position) throw new Error(`No walkable ground for ${id}`);
     const actor = this.create({ ...template, id, x: position.x, y: position.y });
     if (actor.faction === "player") this.world.alliedSummons.push(actor);
-    else this.world.addEnemy(actor, template.phaseThresholds);
+    else this.world.addEnemy(actor, template.phaseThresholds, template.phaseNames);
   }
 }

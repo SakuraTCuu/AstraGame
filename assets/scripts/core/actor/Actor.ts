@@ -1,6 +1,7 @@
 import { StateMachine } from "../fsm/StateMachine";
 import { Vector2 } from "../math/Vector2";
 import type { Vec2Like } from "../math/Vector2";
+import type { DamageType, StatModifiers, StatusDefinition } from "../combat/SkillEffects";
 
 export type Faction = "player" | "enemy";
 export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "returning" | "dead";
@@ -28,6 +29,12 @@ export interface ActorStats {
   readonly aggroRange: number;
   readonly leashRange?: number;
   readonly collisionRadius?: number;
+  readonly modifiers?: StatModifiers;
+  readonly maxEnergy?: number;
+  readonly energyPerSecond?: number;
+  readonly energyOnSkill?: number;
+  readonly energyOnDamage?: number;
+  readonly criticalMultiplier?: number;
 }
 
 export interface ActorOptions {
@@ -42,6 +49,7 @@ export interface ActorOptions {
   readonly kind?: string;
   readonly name?: string;
   readonly healthBars?: number;
+  readonly initialEnergy?: number;
 }
 
 export class Actor {
@@ -57,8 +65,10 @@ export class Actor {
   readonly displayName: string;
   readonly healthBars: number;
   private readonly shields: ShieldLayer[] = [];
+  private readonly statuses: Array<{ definition: StatusDefinition; remaining: number }> = [];
   position: Vector2;
   health: number;
+  energy: number;
   targetId?: string;
 
   constructor(options: ActorOptions) {
@@ -75,6 +85,7 @@ export class Actor {
     this.tags = new Set(options.tags ?? []);
     this.skillIds = [...(options.skillIds ?? [])];
     this.health = Math.max(0, Math.min(options.stats.maxHealth, options.initialHealth ?? options.stats.maxHealth));
+    this.energy = Math.max(0, Math.min(options.stats.maxEnergy ?? 0, options.initialEnergy ?? 0));
     this.fsm = new StateMachine<ActorState, Actor>(this.health > 0 ? "idle" : "dead");
     for (const from of Object.keys(TRANSITIONS) as ActorState[]) {
       for (const to of TRANSITIONS[from]) this.fsm.allow(from, to, (actor) => to === "dead" ? !actor.alive : actor.alive);
@@ -86,10 +97,23 @@ export class Actor {
   }
 
   get shield(): number { return this.shields.reduce((sum, layer) => sum + layer.amount, 0); }
+  get attackPower(): number { return Math.max(0, this.stats.attack * (1 + this.modifier("attackRate"))); }
+  get movementSpeed(): number { return Math.max(0, this.stats.moveSpeed + this.modifier("movementBonus")); }
+  modifier(key: keyof StatModifiers): number { return (this.stats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0), 0); }
+  hasStatus(state: string): boolean { return this.statuses.some((entry) => entry.definition.state === state || entry.definition.id === state); }
+  statusSnapshots(): Array<{ id: string; remaining: number }> { return this.statuses.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining })); }
+  addStatus(definition: StatusDefinition): void {
+    if (!this.alive || definition.duration <= 0) return;
+    const existing = this.statuses.findIndex((entry) => (entry.definition.group ?? entry.definition.id) === (definition.group ?? definition.id));
+    if (existing >= 0) this.statuses.splice(existing, 1);
+    this.statuses.push({ definition, remaining: definition.duration });
+  }
+  gainEnergy(amount: number): void { if (this.alive) this.energy = Math.max(0, Math.min(this.stats.maxEnergy ?? 0, this.energy + amount)); }
 
   setState(state: ActorState): void {
     if (this.fsm.state === state) return;
     if (!this.fsm.transition(state, this)) throw new Error(`Invalid actor transition ${this.id}: ${this.fsm.state} -> ${state}`);
+    if (state === "returning") for (let index = this.statuses.length - 1; index >= 0; index--) if (this.statuses[index].definition.clearOnReturn) this.statuses.splice(index, 1);
   }
 
   addShield(key: string, amount: number, duration: number): number {
@@ -102,6 +126,11 @@ export class Actor {
   }
 
   updateEffects(deltaSeconds: number): void {
+    this.gainEnergy((this.stats.energyPerSecond ?? 0) * deltaSeconds);
+    for (let index = this.statuses.length - 1; index >= 0; index--) {
+      this.statuses[index].remaining -= deltaSeconds;
+      if (this.statuses[index].remaining <= 1e-9) this.statuses.splice(index, 1);
+    }
     for (let index = this.shields.length - 1; index >= 0; index -= 1) {
       this.shields[index].remaining -= deltaSeconds;
       if (this.shields[index].remaining <= 1e-9 || this.shields[index].amount <= 0) this.shields.splice(index, 1);
@@ -110,12 +139,15 @@ export class Actor {
 
   moveTowards(target: Vec2Like, deltaSeconds: number): void {
     if (!this.alive) return;
-    this.position = this.position.moveTowards(target, this.stats.moveSpeed * deltaSeconds);
+    this.position = this.position.moveTowards(target, this.movementSpeed * deltaSeconds);
   }
 
-  receiveDamage(rawDamage: number): number {
+  receiveDamage(rawDamage: number, type: DamageType = "physical"): number {
     if (!this.alive || rawDamage <= 0) return 0;
-    let actualDamage = Math.max(1, Math.floor(rawDamage - this.stats.defense));
+    const reduction = (1 - this.modifier("damageReduction")) * (1 - this.modifier("finalDamageReduction")) *
+      (1 - this.modifier(type === "magic" ? "magicReduction" : "physicalReduction"));
+    if (reduction <= 0) return 0;
+    let actualDamage = Math.max(1, Math.floor((rawDamage - this.stats.defense) * Math.max(0, reduction)));
     for (const layer of this.shields) {
       const absorbed = Math.min(layer.amount, actualDamage);
       layer.amount -= absorbed;
@@ -123,9 +155,11 @@ export class Actor {
     }
     actualDamage = Math.min(this.health, actualDamage);
     this.health = Math.max(0, this.health - actualDamage);
+    if (actualDamage > 0) this.gainEnergy(this.stats.energyOnDamage ?? 0);
     if (!this.alive) {
       this.setState("dead");
       this.shields.splice(0);
+      this.statuses.splice(0);
       this.targetId = undefined;
     }
     return actualDamage;

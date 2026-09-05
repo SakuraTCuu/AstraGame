@@ -33,7 +33,7 @@ export class FogRenderer {
         });
     }
 
-    update(snapshot: DemoSnapshot, camera: cc.Vec2, scale: number, depth: number, radius: number, delta: number): boolean {
+    update(snapshot: DemoSnapshot, camera: cc.Vec2, scale: number, depth: number, radius: number, delta: number, directional = true): boolean {
         if (!this.material) return false;
         this.elapsed += delta;
         const { width, height, cellSize, states } = snapshot.fog;
@@ -53,7 +53,7 @@ export class FogRenderer {
         const light = snapshot.flashlight;
         this.material.setProperty("worldRect", new cc.Vec4(camera.x - 360 / scale, camera.y - 560 / (scale * depth), 720 / scale, 1280 / (scale * depth)));
         this.material.setProperty("grid", new cc.Vec4(width, height, cellSize, 0));
-        this.material.setProperty("light", new cc.Vec4(light.x, light.y, radius, 0));
+        this.material.setProperty("light", new cc.Vec4(light.x, light.y, radius, directional ? 1 : 0));
         this.material.setProperty("beam", new cc.Vec4(light.directionX, light.directionY, light.radius, Math.cos(light.coneAngleDegrees * Math.PI / 360)));
         this.node.active = true;
         return true;

@@ -1,7 +1,8 @@
 import { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
+import { ForegroundRenderer } from "./ForegroundRenderer";
 
-interface ArtBinding { path: string; kind: "spine" | "atlas"; scale: number; height: number; fps: number; flip: boolean; skillAnimations?: Record<string, string>; }
-interface ArtConfig { bundle: string; mapBundle: string; mapName: string; tileSize: number; mapWidth: number; mapHeight: number; depth: number; scale: number; tiles: string[]; bindings: Record<string, ArtBinding>; }
+interface ArtBinding { path: string; kind: "spine" | "atlas"; scale: number; height: number; fps: number; flip: boolean; skillAnimations?: Record<string, string>; skillPhases?: Record<string, { prepare?: string; hold?: string; release: string }>; }
+interface ArtConfig { bundle: string; mapBundle: string; mapName: string; tileSize: number; mapWidth: number; mapHeight: number; depth: number; scale: number; tiles: string[]; bindings: Record<string, ArtBinding>; occlusionPolygons?: Array<Array<{ x: number; y: number }>>; }
 interface ActorView { node: cc.Node; skeleton?: sp.Skeleton; sprite?: cc.Sprite; bars: cc.Graphics; binding: ArtBinding; action: string; age: number; lastX: number; facing: number; castId?: number; }
 
 export class ReferenceArtLayer {
@@ -19,6 +20,7 @@ export class ReferenceArtLayer {
     private readonly frames = new Map<string, cc.SpriteFrame[]>();
     private dead = false;
     private thumb: cc.Node = null;
+    private readonly foreground: ForegroundRenderer;
 
     constructor(host: cc.Node, config: ArtConfig) {
         this.config = config;
@@ -32,6 +34,7 @@ export class ReferenceArtLayer {
         this.actors.zIndex = 2;
         host.addChild(this.ground);
         host.addChild(this.actors);
+        this.foreground = config.occlusionPolygons?.length ? new ForegroundRenderer(host, config.occlusionPolygons) : null;
         this.load(this.mapBundle, `${config.mapName}/thumb`, cc.Texture2D);
         for (const id of Object.keys(config.bindings)) {
             const binding = config.bindings[id];
@@ -129,10 +132,12 @@ export class ReferenceArtLayer {
             if (!existing.has(id) || !present.has(id)) { view.node.destroy(); this.views.delete(id); }
             else view.node.active = present.has(id);
         });
+        if (this.foreground) this.foreground.update(this.ground, snapshot, camera, scale, depth);
     }
 
     destroy(): void {
         this.dead = true;
+        if (this.foreground) this.foreground.destroy();
         this.ground.destroy();
         this.actors.destroy();
         this.loaded.forEach((asset) => asset.decRef());
@@ -192,14 +197,22 @@ export class ReferenceArtLayer {
         if (Math.abs(dx) > 0.2) view.facing = Math.sign(dx);
         view.lastX = actor.x;
         const visual = view.skeleton ? view.skeleton.node : view.sprite.node;
+        visual.y = (cast?.elevation || 0) * this.config.scale;
+        view.bars.node.y = visual.y;
         visual.scaleX = Math.abs(visual.scaleX) * view.facing * (view.binding.flip ? -1 : 1);
         if (view.skeleton) {
             const available = view.skeleton.skeletonData.getRuntimeData().animations;
+            const phases = cast && view.binding.skillPhases?.[cast.skillId];
+            if (phases && cast.phase === "windup" && phases.prepare) {
+                const preparing = available.find((entry) => entry.name === phases.prepare);
+                action = preparing && cast.duration - cast.remaining < preparing.duration / (cast.playbackRate || 1) ? phases.prepare : phases.hold || phases.prepare;
+            }
             if (!available.some((entry) => entry.name === action)) action = action === "dead" ? "die" : "attack";
             if (!available.some((entry) => entry.name === action)) action = "idle";
             const track = view.skeleton.getCurrent(0);
             if (action === "idle" && view.action !== "idle" && view.action !== "move" && track && !track.isComplete()) action = view.action;
-            if (view.action !== action || (cast && view.castId !== cast.id)) view.skeleton.setAnimation(0, action, action === "idle" || action === "move");
+            if (view.action !== action || (cast && view.castId !== cast.id)) view.skeleton.setAnimation(0, action, action === "idle" || action === "move" || phases?.hold === action);
+            view.skeleton.timeScale = cast?.playbackRate || 1;
             view.skeleton.paused = snapshot.runState !== "running";
         } else {
             const key = `${view.binding.path}:${action}`;
@@ -224,5 +237,9 @@ export class ReferenceArtLayer {
         g.fillColor = cc.color(15, 18, 18, 220); g.rect(-width / 2, height, width, 7); g.fill();
         g.fillColor = actor.team === "player" ? cc.color(72, 208, 118) : cc.color(226, 73, 70);
         g.rect(-width / 2 + 1, height + 1, (width - 2) * actor.hp / actor.maxHp, 5); g.fill();
+        if (actor.maxEnergy) {
+            g.fillColor = cc.color(18, 27, 43, 230); g.rect(-width / 2, height - 5, width, 4); g.fill();
+            g.fillColor = cc.color(110, 190, 230); g.rect(-width / 2, height - 5, width * (actor.energy || 0) / actor.maxEnergy, 3); g.fill();
+        }
     }
 }

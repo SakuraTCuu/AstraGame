@@ -17,12 +17,12 @@ The objective remains behavior parity with the WeChat game Zhenxieren, including
 | World map | First reference world geometry, complete detailed ground, panning/zooming overview and source portals | Compare the original overview's connected-tile styling and extend to other main-world maps |
 | Free combat and exploration | Movement and AI share collision/navigation | Compare manual movement, auto travel and combat interruption with repeated live observations |
 | Fog and unlocking | 59 source polygon gates; incense, level, rank, defeat, quest and NPC conditions; UI purchase and reload verified | Connect real quest/rank/level progression and compare the exact fog appearance and transition timing |
-| Flashlight | Direction and cone data; locked fog remains opaque | Match aim switching, softness, occlusion and range from reference observations |
-| 2.5D presentation | Reference ground and temporary character/NPC assets, source grid projection and actor Y ordering | Complete foreground occlusion and provide owned/licensed release art |
+| Flashlight | Source regional switches, ambient/cone rendering and directional pixel checks | Match aim switching, softness and range against live observations |
+| 2.5D presentation | Reference ground/characters, source grid projection, actor Y ordering and 549 foreground polygons | Broaden foreground alignment checks and provide owned/licensed release art |
 | Automatic navigation | A*, overview POI destinations, manual override and route restoration | Match quest destinations and original route markers; verify long routes across all regions |
 | Multiple characters | Four slots, navigation-aware follow, surviving leader selection | Compare compact movement formation and companion/pet behavior |
-| Skills and damage | Tested timed casts, area hits, healing, shields, projectiles and summons | Calibrate actual timing, range, numeric behavior and visuals from repeated reference observations |
-| Boss and normal enemies | Tested pursuit, return, thresholds, summon ownership, respawn and an unmodified-stat full-map victory | Match the reference enemy rules and health-layer counts; current Boss tuning is a fixture |
+| Skills and damage | Source skill coefficients/timelines, multi-target projectiles, energy, public cooldowns, buffs and critical hits | Complete specialized actions, effect playback, defense/critical formulas and remaining source skill issues |
+| Boss and normal enemies | Source first-Boss attacks, charge, jump and HP gate; natural two-gate/Boss run completed with three survivors | Complete other Boss-specific mechanics, damage limits and health-layer counts |
 | State machines | Actor/cast/travel/run states; paid interactions; persisted exploration and respawn timers; coalesced storage writes | Match reference death/revival, restore in-progress enemy combat, and extend long-session checks |
 | Zhushen/H5 foundation | `ExploreRuntime` plus a tested role-scoped `StorageMgr`/`MessageCenter` port adapter | Exercise the actual BaseUI module in the host; current integration tests use service doubles |
 
@@ -32,6 +32,6 @@ Directly observed: portrait framing; a four-slot party; route indicators; group 
 
 Source config now supplies fog costs and prerequisites, portal locations and costs, monster/resource placements, and base respawn parameters. The first two fog gates were reached and purchased through normal simulation movement. Browser tests separately verified a 5-incense purchase, reload restoration and free travel to a repaired portal.
 
-Still unconfirmed or incomplete: full attack/cooldown formulas and damage-type modifiers, dynamic attribute scaling, exact Boss health layers, death/revival, other main-world maps, source quest progression and path-resume timing. Hero combat tuning and some enemy behavior remain independent fixtures.
+Still unconfirmed or incomplete: defense and critical formulas, specialized source skill actions and modifiers, dynamic attribute scaling, exact Boss health layers, death/revival, other main-world maps, source quest progression and path-resume timing. The comparison party now uses source level-10 attributes; it remains separate from the live account.
 
 The initial `discover:` and `clear:` demo rules remain engineering fixtures. Temporary reference art and converted configuration are used only in ignored local preview directories; the tracked implementation and host export contain owned code and fixture data. See `local-reference-preview.md` for current evidence and boundaries.

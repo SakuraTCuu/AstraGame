@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 import { tableRow } from "./reference-cache.mjs";
 import { compileReferenceCondition, parseReferenceItem, referenceFogPolygon } from "./reference-rules.mjs";
+import { createReferenceSkillCompiler } from "./reference-skills.mjs";
 
 function readJsonAsset(data) {
   const json = JSON.parse(data);
@@ -13,7 +14,7 @@ function readJsonAsset(data) {
 export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   const families = new Map();
   for (const [name, table] of Object.entries(tables)) {
-    const family = name.match(/^(Avatar|Hero|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item)_(?:\d+|Xs)$/)?.[1];
+    const family = name.match(/^(Avatar|Hero|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item)_(?:\d+|Xs)$/)?.[1];
     if (!family) continue;
     if (!families.has(family)) families.set(family, new Map());
     for (const id of Object.keys(table)) if (id !== "__KEY_MAP__") families.get(family).set(id, table);
@@ -23,6 +24,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     return table ? tableRow(table, id) : null;
   };
   const sourceMap = row("GameMap", 100001);
+  const skillCompiler = createReferenceSkillCompiler(row);
   const sceneAsset = assets.find((asset) => asset.path === `data/mapCfg/${sourceMap.name}` && asset.type === "cc.JsonAsset");
   const entry = cache.entries.find((entry) => entry.key.includes(`/import/${sceneAsset.uuid.slice(0, 2)}/${sceneAsset.uuid}.`));
   const scene = readJsonAsset(await readFile(entry.file, "utf8"));
@@ -54,7 +56,9 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   const art = { bundle: "reference-resources", mapBundle: "reference-map", mapName: cut.name,
     tileSize: 1024, mapHeight: cut.height, mapWidth: cut.width, depth, scale: 0.82,
     tiles: assets.filter((asset) => asset.bundle === "reference-map" && asset.type === "cc.Texture2D" && asset.native && asset.path.startsWith(`${cut.name}/`)).map((asset) => asset.path),
-    bindings: {}, sourceOrigin: origin, regions: [], overviewScale: sourceMap.worldPicScale || 0.04 };
+    bindings: {}, sourceOrigin: origin, regions: [], overviewScale: sourceMap.worldPicScale || 0.04,
+    occlusionPolygons: Object.values(scene.occlusionLayer).flatMap((column) => Object.values(column).flat()).map((polygon) => polygon.map((point) => toWorld(point.x, point.y))),
+    nightRegions: scene.regionLayer.filter((region) => region.showDirLight).flatMap((region) => region.regionArr.map((rect) => referenceFogPolygon(rect, toWorld))) };
   const blockedCells = new Set(config.world.blocked.map(({ x, y }) => `${x},${y}`));
   const initialPosition = (x, y) => {
     const cx = Math.floor(x / cellSize), cy = Math.floor(y / cellSize);
@@ -81,11 +85,30 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   [13, 1, 9, 8].forEach((id, index) => {
     const hero = row("Hero", id);
     const actor = config.squad.actors[index];
+    const attributes = row("HeroLevel", hero.levelType * 100000 + 10).attr;
+    const compiled = skillCompiler.heroSkills(hero, row("Avatar", hero.display)?.fps || 12);
     actor.name = hero.name;
+    actor.hp = actor.maxHp = attributes.maxhp;
+    actor.attack = attributes.atk;
+    actor.defense = attributes.def;
+    actor.modifiers = compiled.modifiers;
+    actor.maxEnergy = attributes.ultraEnegyMax || 0;
+    actor.energyPerSecond = attributes.ultraEnegyRecoverRate || 0;
+    actor.energyOnSkill = attributes.ultraEnegySkillHit || 0;
+    actor.energyOnDamage = attributes.ultraEnegyBeHit || 0;
+    actor.energy = 0;
+    actor.skillIds = compiled.ids;
+    actor.attackRange = row("Skill", Number(hero.attack.split("_")[0])).firstSelector[0];
+    actor.aggroRange = hero.searchRange;
+    actor.collisionRadius = hero.volume;
     Object.assign(actor, initialPosition(config.world.start.x + config.squad.formationOffsets[index].x,
       config.world.start.y + config.squad.formationOffsets[index].y));
     art.bindings[actor.id] = binding(hero.display);
-    if (art.bindings[actor.id]) art.bindings[actor.id].skillAnimations = Object.fromEntries(actor.skillIds.map((id, index) => [id, index === 0 ? "attack" : `skill${index}`]));
+    if (art.bindings[actor.id]) {
+      const skills = [...skillCompiler.definitions.values()].filter((skill) => actor.skillIds.includes(skill.id));
+      art.bindings[actor.id].skillAnimations = Object.fromEntries(skills.map((skill) => [skill.id, skill.presentation.release]));
+      art.bindings[actor.id].skillPhases = Object.fromEntries(skills.map((skill) => [skill.id, skill.presentation]));
+    }
   });
   const enemies = new Map();
   config.spawns = [];
@@ -137,6 +160,12 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     const boss = monster.type === 2;
     const resource = monster.type === 3;
     const templateId = `reference_monster_${monsterId}`;
+    const enemySkills = [];
+    if (!resource) for (const sourceId of String(monster.skill || "20001").split(",")) {
+      try { const skill = skillCompiler.compile(Number(sourceId.split("_")[0]), row("Avatar", monster.avatar)?.fps || 12); if (skill && skill.actions.length) enemySkills.push(skill); }
+      catch (error) { skillCompiler.issues.push({ id: sourceId, kind: "compile_error", value: error.message }); }
+    }
+    const phaseThresholds = [...new Set(enemySkills.map((skill) => skill.conditions.casterHpAtMost).filter((value) => value > 0 && value < 1))].sort((a, b) => b - a);
     const rewards = [];
     const reward = row("Reward", monster.reward0);
     for (const [key, value] of Object.entries(reward || {})) {
@@ -147,16 +176,23 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     enemies.set(templateId, { id: templateId, name: monster.name || (resource ? row("Item", 4).name : visual?.path.split("/").pop() || "\u602a\u7269"), kind: boss ? "boss" : resource ? "resource" : "enemy",
       x: position.x, y: position.y, hp: monster.attr.maxhp, attack: monster.attr.atk || 0, defense: monster.attr.def || 0,
       moveSpeed: resource ? 0 : Math.max(50, (monster.attr.movespeed || 50) * (monster.runSpeedRate || 100) / 100),
-      attackRange: resource ? 0 : monster.atkRange || 150, aggroRange: resource ? 0 : boss ? 480 : 350, leashRange: resource ? 0 : Math.min(monster.homeRange || 800, 1600),
-      phaseThresholds: boss ? [0.7, 0.3] : undefined, healthBars: boss ? 20 : 1, defeatFlag: `defeat:${monsterId}`, defeatRewards: rewards });
+      attackRange: resource ? 0 : enemySkills.find((skill) => skill.category === "normal")?.range || monster.atkRange || 150,
+      aggroRange: resource ? 0 : monster.atkRange || 350, leashRange: resource ? 0 : monster.homeRange || 800,
+      collisionRadius: row("Avatar", monster.avatar)?.volume || 20,
+      phaseThresholds: boss ? phaseThresholds : undefined, phaseNames: boss ? Array.from({ length: phaseThresholds.length + 1 }, (_, index) => `phase${index + 1}`) : undefined,
+      skillIds: enemySkills.map((skill) => skill.id), healthBars: boss ? 20 : 1, defeatFlag: `defeat:${monsterId}`, defeatRewards: rewards });
     const spawnId = `reference_spawn_${id}`;
     art.bindings[spawnId] = visual;
+    if (visual) {
+      visual.skillAnimations = Object.fromEntries(enemySkills.map((skill) => [skill.id, skill.presentation.release]));
+      visual.skillPhases = Object.fromEntries(enemySkills.map((skill) => [skill.id, skill.presentation]));
+    }
     config.spawns.push({ id: spawnId, trigger: "distance", ...position, triggerRadius: 850, enemyId: templateId,
       count, spawnRadius: count > 1 ? 50 : 0, respawn: Boolean(monster.rebirthTime), respawnDelay: monster.rebirthTime || 45 });
     if (boss) config.world.pointsOfInterest.push({ id: spawnId, name: monster.name, type: "boss", ...position, discoverRadius: 500 });
   }
   config.enemies = [...enemies.values()];
-  config.skills.definitions = config.skills.definitions.filter((skill) => !skill.summonEnemyId);
+  config.skills.definitions = [...config.skills.definitions.filter((skill) => !skill.summonEnemyId), ...skillCompiler.definitions.values()];
   for (const id of families.get("WorldMap").keys()) {
     const region = row("WorldMap", id);
     if (region.mapId !== 100001) continue;
@@ -171,7 +207,8 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     cachedMapTextures: art.tiles.length, enemyTemplates: enemies.size, encounterPlacements: config.spawns.length, missingArt: skipped,
     fogZones: config.fog.unlockZones.length, portals: config.world.pointsOfInterest.filter(poi => poi.type === "portal").length, unsupported,
     requiredMapTiles: requiredTiles.length, missingMapTiles: requiredTiles.filter((path) => !availableTiles.has(path)),
-    limitations: ["Hero stats and skill execution use the independent combat fixture; they do not reconstruct the account.",
+    compiledSkills: skillCompiler.definitions.size, skillIssues: skillCompiler.issues.filter((issue) => issue.kind !== "no_direct_actions" || !skillCompiler.definitions.get(Number(issue.id))?.actions.length),
+    limitations: ["The party uses source level-10 hero attributes, not the live account. Defense math and critical multiplier still need live calibration.",
       "Standalone starts with 20 incense, a repaired home portal and spawn-containing fog already open; host account progression is separate.",
       "Quest progression, full skill formulas, other inventory rewards and dynamic NPC state still require adaptation."] } };
 }

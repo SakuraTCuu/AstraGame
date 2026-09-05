@@ -1,0 +1,18 @@
+{
+  "ver": "1.0.27",
+  "uuid": "868796d5-36f5-40e1-bf23-98d2afc711b0",
+  "importer": "effect",
+  "compiledShaders": [
+    {
+      "glsl1": {
+        "vert": "\nprecision highp float;\nuniform mat4 cc_matViewProj;\nuniform mat4 cc_matWorld;\nattribute vec3 a_position;\nattribute vec2 a_uv0;\nvarying vec2 v_uv;\nvoid main () {\n  vec4 position = vec4(a_position, 1.0);\n  #if CC_USE_MODEL\n    position = cc_matWorld * position;\n  #endif\n  gl_Position = cc_matViewProj * position;\n  v_uv = a_uv0;\n}",
+        "frag": "\nprecision highp float;\nuniform sampler2D texture;\nuniform sampler2D maskTexture;\nvarying vec2 v_uv;\nvoid main () {\n  vec4 color = texture2D(texture, v_uv);\n  color.a *= texture2D(maskTexture, v_uv).r;\n  gl_FragColor = color;\n}"
+      },
+      "glsl3": {
+        "vert": "\nprecision highp float;\nuniform CCGlobal {\n  mat4 cc_matView;\n  mat4 cc_matViewInv;\n  mat4 cc_matProj;\n  mat4 cc_matProjInv;\n  mat4 cc_matViewProj;\n  mat4 cc_matViewProjInv;\n  vec4 cc_cameraPos;\n  vec4 cc_time;\n  mediump vec4 cc_screenSize;\n  mediump vec4 cc_screenScale;\n};\nuniform CCLocal {\n  mat4 cc_matWorld;\n  mat4 cc_matWorldIT;\n};\nin vec3 a_position;\nin vec2 a_uv0;\nout vec2 v_uv;\nvoid main () {\n  vec4 position = vec4(a_position, 1.0);\n  #if CC_USE_MODEL\n    position = cc_matWorld * position;\n  #endif\n  gl_Position = cc_matViewProj * position;\n  v_uv = a_uv0;\n}",
+        "frag": "\nprecision highp float;\nuniform sampler2D texture;\nuniform sampler2D maskTexture;\nin vec2 v_uv;\nvoid main () {\n  vec4 color = texture(texture, v_uv);\n  color.a *= texture(maskTexture, v_uv).r;\n  gl_FragColor = color;\n}"
+      }
+    }
+  ],
+  "subMetas": {}
+}
