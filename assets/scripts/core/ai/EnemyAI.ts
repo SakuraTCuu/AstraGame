@@ -12,7 +12,7 @@ export class EnemyAI {
 
   update(enemy: Actor, targets: readonly Actor[], combat: CombatSystem, deltaSeconds: number,
     move?: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void, skills: readonly SkillDefinition[] = this.skills): void {
-    if (!enemy.alive || combat.isDisplaced(enemy)) return;
+    if (!enemy.alive || combat.isDisplaced(enemy) || enemy.hardControlled) return;
     const leash = enemy.stats.leashRange ?? Infinity;
     const eligible = targets.filter((actor) => actor.alive && actor.position.distance(enemy.homePosition) <= leash);
     const current = targets.find((target) => target.id === enemy.targetId && target.alive);

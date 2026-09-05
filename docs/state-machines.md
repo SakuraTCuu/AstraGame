@@ -95,12 +95,21 @@ READY -> WINDUP -> HIT -> RECOVERY -> COOLDOWN -> READY
 
 ### Impact Displacement
 
-- Supported damage actions can enter the target into `displaced`, interrupting its unfinished cast while retaining its cooldown. Existing projectiles remain independent.
+- Supported damage actions can enter the target into `displaced`, interrupting its unfinished cast while retaining its cooldown unless it has interruption immunity. A protected cast retains its timeline during displacement; existing projectiles remain independent.
 - Displacement follows a fixed direction and distance over its configured duration. It uses the ordinary collision boundary; neither AI, joystick movement nor formation updates add voluntary movement during that interval.
 - A later impact replaces the remaining displacement from the current position. Explicit `unForceMove` or `ignoreControl` states prevent it. Returning actors are excluded by the current local contract.
 - Completion returns the actor to `idle`. A displaced leader replans the remaining automatic route before resuming it. Death, removal, benching, travel resets and encounter resets clear displacement.
 - Damage-based self healing uses actual health removed after defense and shields, including the overkill cap, and passes through healing reduction and the recipient's health cap. It cannot revive its caster.
 - These are runtime contracts. Source knockback parameter units, interpolation, immunity and interruption parity remain audited until measured against the original battle.
+
+### Timed Control States
+
+- A status can create several states, each with its own duration. State duration `-1` is indefinite. States can expire before their Buff or continue after its modifiers expire. Reapplying the same Buff group refreshes its states; other groups retain their independent clocks.
+- Stun, freeze and airborne control block movement and casting. Root blocks movement and movement skills while allowing stationary attacks. Silence blocks tactical and ultimate skills while allowing normal attacks and movement. Explicit `uncontrolled` skill conditions reject all supported controls.
+- Incoming control checks per-kind immunity, source state exclusions and the optional Boss exclusion. Interruption immunity protects a pending cast separately from control immunity. It does not enable new casts while controlled.
+- Unsupported movement is suppressed in joystick, path, AI and formation updates. Hard control enters `controlled` after any interruptible cast is cancelled and returns to `idle` on expiry or cleanse. Freeze pauses the reference animation; root prevents a false walking animation.
+- Cleansing can remove a remaining control after its owner Buff expires. NPC-only and protected-effect rules retain their original ownership. Death and recovery clear both Buffs and states, and configured return cleanup applies to both.
+- Immunity currently blocks new controls without purging existing ones. Airborne height/trajectory, fear movement and other specialized states remain separate adaptation work; source state options and unknown behaviors remain in the local audit.
 
 ## Fog and Discovery
 

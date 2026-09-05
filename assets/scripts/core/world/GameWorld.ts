@@ -152,7 +152,7 @@ export class GameWorld {
     }
     if (leader?.alive) {
       const previous = leader.position;
-      if (!this.autoTravelPaused && !this.combat.isDisplaced(leader)) leader.position = this.path.update(leader.position, leader.movementSpeed, deltaSeconds);
+      if (!this.autoTravelPaused && leader.canMove) leader.position = this.path.update(leader.position, leader.movementSpeed, deltaSeconds);
       const movement = leader.position.subtract(previous);
       if (movement.lengthSquared() > 0) this.facing = movement.normalized();
       this.options.fog.reveal(leader.position, this.revealRadius);
@@ -181,7 +181,7 @@ export class GameWorld {
   }
 
   private readonly moveActor = (actor: Actor, target: Vec2Like, deltaSeconds: number): void => {
-    if (this.combat.isDisplaced(actor)) return;
+    if (!actor.canMove) return;
     const navigation = this.options.navigation;
     const destination = navigation.nearestWalkable(target);
     if (!destination || !navigation.isWorldWalkable(actor.position)) return;

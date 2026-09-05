@@ -1,13 +1,14 @@
 import { StateMachine } from "../fsm/StateMachine";
 import { Vector2 } from "../math/Vector2";
 import type { Vec2Like } from "../math/Vector2";
-import type { DamageType, StatModifiers, StatusDefinition } from "../combat/SkillEffects";
+import type { ControlKind, DamageType, StatModifiers, StatusDefinition, StatusState } from "../combat/SkillEffects";
 
 export type Faction = "player" | "enemy";
-export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "displaced" | "returning" | "dead";
+export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "displaced" | "controlled" | "returning" | "dead";
 
 export interface ShieldLayer { readonly key: string; amount: number; remaining: number; }
 interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; source: Actor; skillId: string; fromPlayer: boolean; }
+interface AppliedState { readonly definition: StatusState; readonly owner: AppliedStatus; remaining: number; }
 export interface PeriodicDamageTick { readonly source: Actor; readonly skillId: string; readonly statusId: string; readonly power: number; readonly damageType: DamageType; }
 
 const TRANSITIONS: Record<ActorState, readonly ActorState[]> = {
@@ -19,7 +20,8 @@ const TRANSITIONS: Record<ActorState, readonly ActorState[]> = {
   attacking: ["idle", "moving", "acquiring", "chasing", "windup", "recovering", "returning", "dead"],
   recovering: ["idle", "moving", "acquiring", "chasing", "windup", "attacking", "returning", "dead"],
   returning: ["idle", "moving", "dead"],
-  displaced: ["idle", "returning", "dead"],
+  displaced: ["idle", "windup", "attacking", "recovering", "controlled", "returning", "dead"],
+  controlled: ["idle", "displaced", "returning", "dead"],
   dead: ["idle"],
 };
 
@@ -75,6 +77,7 @@ export class Actor {
   readonly healthBars: number;
   private readonly shields: ShieldLayer[] = [];
   private readonly statuses: AppliedStatus[] = [];
+  private readonly states: AppliedState[] = [];
   position: Vector2;
   health: number;
   energy: number;
@@ -100,6 +103,7 @@ export class Actor {
     for (const from of Object.keys(TRANSITIONS) as ActorState[]) {
       for (const to of TRANSITIONS[from]) this.fsm.allow(from, to, (actor) => to === "dead" ? !actor.alive : actor.alive);
       if (from !== "dead" && from !== "returning" && from !== "displaced") this.fsm.allow(from, "displaced", (actor) => actor.alive);
+      if (from !== "dead" && from !== "returning" && from !== "controlled") this.fsm.allow(from, "controlled", (actor) => actor.alive);
     }
   }
 
@@ -126,27 +130,49 @@ export class Actor {
   get attackPower(): number { return Math.max(0, this.stats.attack * (1 + this.modifier("attackRate"))); }
   get movementSpeed(): number { return Math.max(0, this.stats.moveSpeed + this.modifier("movementBonus")); }
   modifier(key: keyof StatModifiers): number { return (this.currentStats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0) * status.stacks, 0); }
-  hasStatus(state: string): boolean { return this.statuses.some((entry) => entry.definition.state === state || entry.definition.id === state || entry.definition.group === state); }
+  hasStatus(state: string): boolean { return this.states.some((entry) => entry.definition.id === state) || this.statuses.some((entry) => entry.definition.id === state || entry.definition.group === state); }
+  hasControl(kind: ControlKind): boolean { return this.states.some((entry) => entry.definition.control === kind); }
+  get controlled(): boolean { return this.states.some((entry) => Boolean(entry.definition.control)); }
+  get hardControlled(): boolean { return this.hasControl("stun") || this.hasControl("freeze") || this.hasControl("airborne"); }
+  get canMove(): boolean { return this.alive && this.fsm.state !== "displaced" && !this.hardControlled && !this.hasControl("root"); }
+  blocksCasting(category = "skill"): boolean { return this.hardControlled || (category !== "normal" && this.hasControl("silence")); }
+  get interruptionImmune(): boolean { return this.states.some((entry) => entry.definition.interruptionImmunity) || this.hasStatus("ignoreBreakSkill"); }
+  get displacementImmune(): boolean { return this.states.some((entry) => entry.definition.displacementImmunity) || ["unForceMove", "ignoreControl", "notControl"].some((state) => this.hasStatus(state) || this.tags.has(state)); }
+  private controlImmune(kind: ControlKind): boolean {
+    return this.states.some((entry) => entry.definition.controlImmunity?.includes(kind)) || ["ignoreControl", "notControl"].some((state) => this.hasStatus(state) || this.tags.has(state));
+  }
+  controlSnapshots(): Array<{ kind: ControlKind; remaining: number }> { return this.states.filter((entry) => entry.definition.control).map((entry) => ({ kind: entry.definition.control!, remaining: entry.remaining })); }
+  stateSnapshots(): Array<{ id: string; remaining: number }> { return this.states.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining })); }
   targetCountBonus(group: string): number { return this.statuses.reduce((total, entry) => total + (entry.definition.targetCountBonuses?.[group] ?? 0) * entry.stacks, 0); }
   statusSnapshots(): Array<{ id: string; remaining: number; stacks: number }> { return this.statuses.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining, stacks: entry.stacks })); }
-  addStatus(definition: StatusDefinition, source: Actor = this, skillId = definition.id, fromPlayer = source.faction === "player" || source.kind === "hero"): void {
-    if (!this.alive || (!definition.permanent && definition.duration <= 0)) return;
+  addStatus(definition: StatusDefinition, source: Actor = this, skillId = definition.id, fromPlayer = source.faction === "player" || source.kind === "hero"): boolean {
+    if (!this.alive || (!definition.permanent && definition.duration <= 0) || definition.blockedByStates?.some((state) => this.hasStatus(state) || this.tags.has(state))) return false;
+    const requested = definition.states ?? (definition.state ? [{ id: definition.state, duration: definition.permanent ? -1 : definition.duration }] : []);
+    const states = requested.filter((state) => !(state.excludeBoss && (this.kind === "boss" || this.tags.has("boss"))) && (!state.control || !this.controlImmune(state.control)));
+    if (requested.length && !states.length && !Object.keys(definition.modifiers ?? {}).length && !definition.periodicDamage && !definition.targetCountBonuses) return false;
     const existing = this.statuses.find((entry) => (entry.definition.group ?? entry.definition.id) === (definition.group ?? definition.id));
     const remaining = definition.permanent ? -1 : definition.duration;
     if (existing) {
       existing.stacks = Math.min(definition.maxStacks ?? 1, existing.stacks + 1);
       existing.fromPlayer = (definition.maxStacks ?? 1) > 1 ? existing.fromPlayer || fromPlayer : fromPlayer;
       existing.definition = definition; existing.remaining = remaining; existing.source = source; existing.skillId = skillId;
-    } else this.statuses.push({ definition, remaining, stacks: 1, elapsed: 0, source, skillId, fromPlayer });
+    }
+    const owner = existing ?? { definition, remaining, stacks: 1, elapsed: 0, source, skillId, fromPlayer };
+    if (!existing) this.statuses.push(owner);
+    for (let index = this.states.length - 1; index >= 0; index--) if ((this.states[index].owner.definition.group ?? this.states[index].owner.definition.id) === (definition.group ?? definition.id)) this.states.splice(index, 1);
+    for (const state of states) this.states.push({ definition: state, owner, remaining: state.duration });
     this.refreshHealthModifier();
+    return true;
   }
 
   cleanse(count: number, npcOnly: boolean, random: () => number): string[] {
-    const candidates = this.statuses.filter((entry) => entry.definition.harmful && entry.definition.dispellable !== false && (!npcOnly || !entry.fromPlayer));
+    const candidates = [...new Set([...this.statuses, ...this.states.map((entry) => entry.owner)])].filter((entry) => entry.definition.harmful && entry.definition.dispellable !== false && (!npcOnly || !entry.fromPlayer));
     const removed: string[] = [];
     while (removed.length < count && candidates.length) {
       const [entry] = candidates.splice(Math.min(candidates.length - 1, Math.floor(random() * candidates.length)), 1);
-      this.statuses.splice(this.statuses.indexOf(entry), 1); removed.push(entry.definition.id);
+      const index = this.statuses.indexOf(entry); if (index >= 0) this.statuses.splice(index, 1);
+      for (let state = this.states.length - 1; state >= 0; state--) if (this.states[state].owner === entry) this.states.splice(state, 1);
+      removed.push(entry.definition.id);
     }
     this.refreshHealthModifier(); return removed;
   }
@@ -171,6 +197,7 @@ export class Actor {
     this.targetId = undefined;
     this.shields.splice(0);
     this.statuses.splice(0);
+    this.states.splice(0);
     this.modifiedStats = applyMaxHealthModifier(this.currentStats);
     this.health = this.stats.maxHealth;
     this.setState("idle");
@@ -181,6 +208,7 @@ export class Actor {
     if (!this.fsm.transition(state, this)) throw new Error(`Invalid actor transition ${this.id}: ${this.fsm.state} -> ${state}`);
     if (state === "returning") {
       for (let index = this.statuses.length - 1; index >= 0; index--) if (this.statuses[index].definition.clearOnReturn) this.statuses.splice(index, 1);
+      for (let index = this.states.length - 1; index >= 0; index--) if (this.states[index].owner.definition.clearOnReturn) this.states.splice(index, 1);
       this.refreshHealthModifier();
     }
   }
@@ -197,6 +225,11 @@ export class Actor {
   updateEffects(deltaSeconds: number): PeriodicDamageTick[] {
     const ticks: PeriodicDamageTick[] = [];
     this.gainEnergy((this.stats.energyPerSecond ?? 0) * deltaSeconds);
+    for (let index = this.states.length - 1; index >= 0; index--) {
+      if (this.states[index].remaining === -1) continue;
+      this.states[index].remaining -= deltaSeconds;
+      if (this.states[index].remaining <= 1e-9) this.states.splice(index, 1);
+    }
     for (let index = this.statuses.length - 1; index >= 0; index--) {
       const status = this.statuses[index];
       if (status.definition.periodicDamage) {
@@ -231,8 +264,7 @@ export class Actor {
   }
 
   moveTowards(target: Vec2Like, deltaSeconds: number): void {
-    if (this.fsm.state === "displaced") return;
-    if (!this.alive) return;
+    if (!this.canMove) return;
     this.position = this.position.moveTowards(target, this.movementSpeed * deltaSeconds);
   }
 
@@ -257,6 +289,7 @@ export class Actor {
       this.setState("dead");
       this.shields.splice(0);
       this.statuses.splice(0);
+      this.states.splice(0);
       this.refreshHealthModifier();
       this.targetId = undefined;
     }

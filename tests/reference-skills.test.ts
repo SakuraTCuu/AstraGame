@@ -53,7 +53,7 @@ test("source buffs become timed modifiers and source HP gates remain conditions"
   assert.equal(skill.actions[0].at, 0.25);
   assert.equal(skill.actions[0].status.duration, 3);
   assert.equal(skill.actions[0].status.modifiers.attackRate, 0.2);
-  assert.equal(skill.actions[0].status.state, "ready");
+  assert.deepEqual(skill.actions[0].status.states, [{ id: "ready", duration: 3 }]);
 });
 
 test("hero skill selection enforces star gates and selects the highest unlocked tier", () => {

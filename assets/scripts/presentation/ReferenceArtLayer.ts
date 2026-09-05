@@ -197,7 +197,9 @@ export class ReferenceArtLayer {
     private animate(view: ActorView, actor: ActorSnapshot, snapshot: DemoSnapshot, delta: number): void {
         const moving = Math.abs(actor.x - view.lastX) > 0.1 || ["moving", "chasing", "returning"].includes(actor.state);
         const cast = snapshot.casts.find((cast) => cast.sourceId === actor.id);
-        let action = actor.hp <= 0 ? "dead" : actor.state === "displaced" ? "hurt" : cast ? "attack" : moving ? "move" : "idle";
+        const frozen = actor.controls?.some((control) => control.kind === "freeze");
+        const restrained = actor.controls?.some((control) => control.kind !== "silence");
+        let action = actor.hp <= 0 ? "dead" : actor.state === "displaced" || actor.state === "controlled" ? "hurt" : cast ? "attack" : moving && !restrained ? "move" : "idle";
         if (cast) action = view.binding.skillAnimations && view.binding.skillAnimations[cast.skillId] || "attack";
         const target = snapshot.actors.find((target) => target.id === actor.targetId);
         const dx = target ? target.x - actor.x : actor.x - view.lastX;
@@ -217,10 +219,10 @@ export class ReferenceArtLayer {
             if (!available.some((entry) => entry.name === action)) action = action === "dead" ? "die" : action === "hurt" ? "idle" : "attack";
             if (!available.some((entry) => entry.name === action)) action = "idle";
             const track = view.skeleton.getCurrent(0);
-            if (actor.state !== "displaced" && action === "idle" && view.action !== "idle" && view.action !== "move" && track && !track.isComplete()) action = view.action;
+            if (!restrained && actor.state !== "displaced" && action === "idle" && view.action !== "idle" && view.action !== "move" && track && !track.isComplete()) action = view.action;
             if (view.action !== action || (cast && view.castId !== cast.id)) view.skeleton.setAnimation(0, action, action === "idle" || action === "move" || phases?.hold === action);
             view.skeleton.timeScale = cast?.playbackRate || 1;
-            view.skeleton.paused = snapshot.runState !== "running" && snapshot.runState !== "recovering";
+            view.skeleton.paused = Boolean(frozen) || (snapshot.runState !== "running" && snapshot.runState !== "recovering");
         } else {
             const key = `${view.binding.path}:${action}`;
             let frames = this.frames.get(key);
@@ -231,7 +233,7 @@ export class ReferenceArtLayer {
                 this.frames.set(key, frames);
             }
             if (view.action !== action) view.age = 0;
-            if (snapshot.runState === "running" || snapshot.runState === "recovering") view.age += delta;
+            if (!frozen && (snapshot.runState === "running" || snapshot.runState === "recovering")) view.age += delta;
             if (frames.length) view.sprite.spriteFrame = frames[actor.hp <= 0 ? Math.min(frames.length - 1, Math.floor(view.age * view.binding.fps)) : Math.floor(view.age * view.binding.fps) % frames.length];
         }
         view.action = action;

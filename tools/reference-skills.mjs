@@ -43,6 +43,9 @@ const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", 
   craftDmgBonus: "magicBonus", craftDmgReduction: "magicReduction", maxhpRate: "maxHealthRate", pveFinalDmgRecution: "pveDamageReduction", ultraEnegyRate: "energyGainRate" };
 const list = (source) => source ? splitSkillExpression(source, "|").map(skillTuple) : [];
 const skillId = (id) => `reference_skill_${id}`;
+const controlKinds = ["stun", "freeze", "root", "silence", "airborne"];
+const stateControls = { stun: "stun", stunned: "stun", stunNotBoss: "stun", stunAnim1: "stun", stunAnim2: "stun",
+  frozen: "freeze", traditionFreeze: "freeze", twine: "root", immobilized: "root", silent: "silence", silence: "silence", knockUp: "airborne", flyUp: "airborne" };
 
 export function heroSkillAtStar(source, star = 0) {
   if (!Number.isSafeInteger(star) || star < 0) throw new Error("Invalid hero star");
@@ -98,7 +101,21 @@ export function createReferenceSkillCompiler(lookup) {
     const effects = row.effects ? skillFrames(`[key:0_action:${row.effects}]`)[0] : { actions: [] };
     for (const action of effects.actions) {
       if (action[0] === "changeAttrAction") changeModifier(definition.modifiers, action, id);
-      else if (action[0] === "addStateAction") definition.state = String(action[1]);
+      else if (action[0] === "addStateAction") {
+        const reversed = typeof action[1] === "number" && typeof action[2] === "string";
+        const stateId = String(reversed ? action[2] : action[1]), milliseconds = reversed ? action[1] : action[2] ?? (definition.permanent ? -1 : definition.duration * 1000);
+        if (!Number.isFinite(milliseconds) || (milliseconds <= 0 && milliseconds !== -1)) { report(id, "state_duration", action); continue; }
+        const state = { id: stateId, duration: milliseconds === -1 ? -1 : milliseconds / 1000 };
+        if (stateControls[stateId]) { state.control = stateControls[stateId]; if (stateId === "stunNotBoss") state.excludeBoss = true; }
+        else if (["ignoreControl", "notControl"].includes(stateId)) { state.controlImmunity = [...controlKinds]; state.displacementImmunity = true; }
+        else if (stateId === "unForceMove") state.displacementImmunity = true;
+        else if (stateId === "ignoreBreakSkill") state.interruptionImmunity = true;
+        else if (stateId === "unForzen") state.controlImmunity = ["freeze"];
+        else if (stateId === "unFlyUp") state.controlImmunity = ["airborne"];
+        else report(id, "state_behavior", stateId);
+        if (action.length > 3) report(id, "state_options", action);
+        definition.states ||= []; definition.states.push(state);
+      }
       else if (action[0] === "healAction") immediate.push({ type: "heal", power: Number(action[2] ?? action[1]) / 10000 });
       else if (action[0] === "addTargetAction" && Number.isSafeInteger(action[2])) {
         definition.targetCountBonuses ||= {};
@@ -111,16 +128,17 @@ export function createReferenceSkillCompiler(lookup) {
       }
       else if (!['buffBubbleAction', 'tickZXFlySwordAction'].includes(action[0])) report(id, "buff_action", action);
     }
-    if ((row.name || "").includes("\u72c2\u66b4")) definition.state = "enraged";
+    if ((row.name || "").includes("\u72c2\u66b4")) { definition.states ||= []; definition.states.push({ id: "enraged", duration: definition.permanent ? -1 : definition.duration }); }
     for (const tag of list(row.buffTagActions)) {
       if (tag[0] === "backHomeRemoveTag") definition.clearOnReturn = true;
+      else if (tag[0] === "noStateTag" && typeof tag[1] === "string") { definition.blockedByStates ||= []; definition.blockedByStates.push(tag[1]); }
       else if (tag[0] === "tickSpanChangeByBuffTag" && tag[1] === 2 && tag[2] === `1_${row.group || row.id}` && definition.periodicDamage) definition.periodicDamage.intervalPerStack = tag[3] / 1000;
       else report(id, "buff_tag", tag);
     }
     if (definition.maxStacks > 1 && row.overlieRefreshFirst !== 1) report(id, "stack_expiry", "shared expiry currently refreshes on reapplication");
     definition.dispellable = row.dispel !== -1;
     definition.harmful = Boolean(definition.periodicDamage || Object.entries(definition.modifiers).some(([key, value]) => key === "healReduction" ? value > 0 : value < 0) ||
-      Object.values(definition.targetCountBonuses || {}).some((value) => value < 0) || ["frozen", "stun", "stunned", "silence", "traditionFreeze", "immobilized"].includes(definition.state));
+      Object.values(definition.targetCountBonuses || {}).some((value) => value < 0) || definition.states?.some((state) => state.control));
     const value = { definition, immediate, row };
     statuses.set(id, value);
     return value;
@@ -138,7 +156,8 @@ export function createReferenceSkillCompiler(lookup) {
       else if (condition[0] === "castHpRateCond") conditions.casterHpAtMost = condition[1] / 10000;
       else if (condition[0] === "fightingTimeCond" && condition[1] === ">") conditions.combatTimeAtLeast = condition[2] / 1000;
       else if (condition[0] === "castStateCond") conditions.requiredState = String(condition[2]);
-      else if (condition[0] !== "notControlCond") report(id, "condition", condition);
+      else if (condition[0] === "notControlCond") conditions.uncontrolled = true;
+      else report(id, "condition", condition);
     }
     const shape = row.selectShape ? skillTuple(row.selectShape) : null;
     const area = !shape ? undefined : shape[0] === "circle" ? { shape: "circle", radius: shape[1] } :
@@ -271,7 +290,7 @@ export function createReferenceSkillCompiler(lookup) {
         const entry = /^(\d+)_1$/.exec(String(action[4]));
         if (action[1] !== 10000 || action[2] !== null || action[3] !== 2 || !entry) { report(hero.id, "passive", action); continue; }
         const buff = status(Number(entry[1]));
-        if (!buff.definition.permanent || buff.definition.state || buff.definition.periodicDamage || buff.definition.targetCountBonuses || buff.immediate.length) { report(hero.id, "passive", action); continue; }
+        if (!buff.definition.permanent || buff.definition.state || buff.definition.states?.length || buff.definition.periodicDamage || buff.definition.targetCountBonuses || buff.immediate.length) { report(hero.id, "passive", action); continue; }
         for (const [key, value] of Object.entries(buff.definition.modifiers)) modifiers[key] = (modifiers[key] || 0) + value;
       } else if (action[0] === "hurtCalcBuffAction") {
         const settlement = /^4_(\d+)_(\d+)$/.exec(String(action[4]));

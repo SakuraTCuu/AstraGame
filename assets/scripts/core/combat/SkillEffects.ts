@@ -1,4 +1,15 @@
 export type DamageType = "physical" | "magic" | "soul" | "holy" | "punishment" | "skill";
+export type ControlKind = "stun" | "freeze" | "root" | "silence" | "airborne";
+
+export interface StatusState {
+  readonly id: string;
+  readonly duration: number;
+  readonly control?: ControlKind;
+  readonly excludeBoss?: boolean;
+  readonly controlImmunity?: readonly ControlKind[];
+  readonly displacementImmunity?: boolean;
+  readonly interruptionImmunity?: boolean;
+}
 
 export interface StatModifiers {
   readonly attackRate?: number;
@@ -30,6 +41,8 @@ export interface StatusDefinition {
   readonly permanent?: boolean;
   readonly group?: string;
   readonly state?: string;
+  readonly states?: readonly StatusState[];
+  readonly blockedByStates?: readonly string[];
   readonly modifiers?: StatModifiers;
   readonly clearOnReturn?: boolean;
   readonly maxStacks?: number;
@@ -88,4 +101,5 @@ export interface SkillConditions {
   readonly combatTimeAtLeast?: number;
   readonly requiredState?: string;
   readonly excludedState?: string;
+  readonly uncontrolled?: boolean;
 }

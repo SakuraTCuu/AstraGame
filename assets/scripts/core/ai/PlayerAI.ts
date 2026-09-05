@@ -9,7 +9,7 @@ export class PlayerAI {
   update(player: Actor, leader: Actor, allies: readonly Actor[], enemies: readonly Actor[], skills: readonly SkillDefinition[],
     combat: CombatSystem, deltaSeconds: number, leaderTravelling: boolean, manualControl: boolean, followLeash: number,
     move: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void): void {
-    if (!player.alive || combat.isDisplaced(player)) return;
+    if (!player.alive || combat.isDisplaced(player) || player.hardControlled) return;
     if (player !== leader && manualControl) {
       combat.cancelCaster(player.id);
       player.targetId = undefined;

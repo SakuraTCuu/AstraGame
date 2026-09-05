@@ -556,6 +556,28 @@ try {
   });
   assert.equal(impact.healing.restored, Math.floor(impact.healing.damage * 0.5));
   assert.deepEqual(impact.healing.recipients, ["reference_hero_10"]);
+  const control = await evaluate(() => {
+    const boot = window.__referenceBoot, source = boot.session.roster.actor("reference_hero_10"); boot.enabled = false;
+    source.addStatus({ id: "browser_freeze", duration: 1, harmful: true, states: [{ id: "frozen", duration: 1, control: "freeze" }] });
+    boot.controlProbe = new boot.session.world.combat.constructor(); boot.controlProbe.update(0, [source]);
+    boot.renderer.update(boot.session.getSnapshot(), 0.1);
+    const skeleton = boot.renderer.referenceArt.views.get(source.id).skeleton;
+    return { setup: "One-second freeze fixture on an existing source Spine hero", state: source.fsm.state, movable: source.canMove,
+      paused: skeleton.paused, trackTime: skeleton.getCurrent(0).trackTime };
+  });
+  assert.equal(control.state, "controlled"); assert.equal(control.movable, false); assert.equal(control.paused, true);
+  await delay(250);
+  const frozenTime = await evaluate(() => window.__referenceBoot.renderer.referenceArt.views.get("reference_hero_10").skeleton.getCurrent(0).trackTime);
+  assert.equal(frozenTime, control.trackTime); await capture("control-freeze");
+  control.resumed = await evaluate(() => {
+    const boot = window.__referenceBoot, source = boot.session.roster.actor("reference_hero_10");
+    boot.controlProbe.update(1.05, [source]); boot.renderer.update(boot.session.getSnapshot(), 0.1);
+    const skeleton = boot.renderer.referenceArt.views.get(source.id).skeleton;
+    const result = { state: source.fsm.state, movable: source.canMove, paused: skeleton.paused, controls: source.controlSnapshots() };
+    boot.controlProbe.resetEngagement(); delete boot.controlProbe; boot.enabled = true;
+    return result;
+  });
+  assert.equal(control.resumed.movable, true); assert.equal(control.resumed.paused, false); assert.deepEqual(control.resumed.controls, []);
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -585,7 +607,7 @@ try {
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
-    periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, resetCounts, viewports, errors, failures };
+    periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

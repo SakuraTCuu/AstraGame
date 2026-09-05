@@ -45,7 +45,7 @@ export class SquadFormation {
     for (let index = 0; index < members.length; index += 1) {
       const actor = members[index]!;
       if (move && index === 0) continue;
-      if (!actor.alive || !["idle", "moving"].includes(actor.fsm.state)) continue;
+      if (!actor.canMove || !["idle", "moving"].includes(actor.fsm.state)) continue;
       const target = this.slotPosition(index, anchor, facing);
       const blend = Math.min(1, this.followStrength * deltaSeconds);
       if (move) move(actor, target, deltaSeconds);
