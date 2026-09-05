@@ -15,4 +15,6 @@ export * from "./world/WorldMap";
 export * from "./world/ProgressConditions";
 export * from "./world/ProgressionJournal";
 export * from "./world/PartyDevelopment";
+export * from "./world/HeroRoster";
+export * from "./world/Recruitment";
 export * from "./world/SpawnDirector";

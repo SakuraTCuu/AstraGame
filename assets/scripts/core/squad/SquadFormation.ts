@@ -7,6 +7,10 @@ export const DEFAULT_FORMATION_OFFSETS: readonly Vec2Like[] = [
   { x: -1.25, y: -1 },
   { x: 1.25, y: -1 },
   { x: 0, y: -2 },
+  { x: -2.5, y: -2 },
+  { x: 2.5, y: -2 },
+  { x: -1.25, y: -3 },
+  { x: 1.25, y: -3 },
 ];
 
 export class SquadFormation {
@@ -19,6 +23,11 @@ export class SquadFormation {
     this.members = [...members];
     this.offsets = offsets;
     this.followStrength = followStrength;
+  }
+
+  setMembers(members: readonly Actor[]): void {
+    if (members.length > this.offsets.length || new Set(members.map((actor) => actor.id)).size !== members.length) throw new Error("Invalid formation members");
+    this.members.splice(0, this.members.length, ...members);
   }
 
   slotPosition(index: number, anchor: Vec2Like, facing: Vec2Like = { x: 0, y: 1 }): Vector2 {

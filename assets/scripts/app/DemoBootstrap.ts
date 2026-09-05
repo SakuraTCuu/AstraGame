@@ -5,6 +5,7 @@ import { createLocalDemoPorts } from "../framework/LocalDemoPorts";
 import { RuntimePorts } from "../framework/RuntimePorts";
 import type { JournalAction } from "../presentation/ProgressJournalView";
 import type { DevelopmentAction } from "../presentation/DevelopmentView";
+import type { RosterAction } from "../presentation/RosterView";
 
 const { ccclass } = cc._decorator;
 const JOYSTICK_CENTER = cc.v2(0, -470);
@@ -29,6 +30,8 @@ export default class DemoBootstrap extends cc.Component {
     private developmentTouch = false;
     private resumeAfterDevelopment = false;
     private recoveryTouch = false;
+    private rosterTouch = false;
+    private resumeAfterRoster = false;
 
     get session(): DemoSession { return this.runtime && this.runtime.session; }
 
@@ -118,10 +121,10 @@ export default class DemoBootstrap extends cc.Component {
         if (!this.renderer) return;
         const point = this.node.convertToNodeSpaceAR(event.getLocation());
         if (this.renderer.overview.isOpen) this.renderer.overview.hover(point);
-        else { this.renderer.setHoveredControl(this.renderer.hitControl(point)); this.renderer.journal.hover(point); this.renderer.development.hover(point); }
+        else { this.renderer.setHoveredControl(this.renderer.hitControl(point)); this.renderer.journal.hover(point); this.renderer.development.hover(point); this.renderer.roster.hover(point); }
     }
 
-    private onMouseLeave(): void { if (this.renderer) { this.renderer.setHoveredControl(null); this.renderer.overview.hover(null); this.renderer.journal.hover(null); this.renderer.development.hover(null); } }
+    private onMouseLeave(): void { if (this.renderer) { this.renderer.setHoveredControl(null); this.renderer.overview.hover(null); this.renderer.journal.hover(null); this.renderer.development.hover(null); this.renderer.roster.hover(null); } }
     private onMouseWheel(event: cc.Event.EventMouse): void { if (this.renderer.overview.isOpen) this.renderer.overview.zoom(event.getScrollY() > 0 ? 1 : -1); }
 
     private onTouchStart(event: cc.Event.EventTouch): void {
@@ -132,6 +135,8 @@ export default class DemoBootstrap extends cc.Component {
         this.recoveryTouch = this.session?.runState === "recovering";
         if (this.recoveryTouch) return;
         if (this.renderer.overview.isOpen) { this.renderer.overview.beginDrag(this.touchStart); return; }
+        this.rosterTouch = this.renderer.roster.contains(this.touchStart);
+        if (this.rosterTouch) return;
         this.developmentTouch = this.renderer.development.contains(this.touchStart);
         if (this.developmentTouch) return;
         this.journalTouch = this.renderer.journal.contains(this.touchStart);
@@ -143,7 +148,7 @@ export default class DemoBootstrap extends cc.Component {
     }
 
     private onTouchMove(event: cc.Event.EventTouch): void {
-        if (event.getID() !== this.touchId || this.controlTouch || this.journalTouch || this.developmentTouch || this.recoveryTouch) return;
+        if (event.getID() !== this.touchId || this.controlTouch || this.journalTouch || this.developmentTouch || this.recoveryTouch || this.rosterTouch) return;
         this.touchCurrent = this.toCanvas(event);
         if (this.renderer.overview.isOpen) { if (this.touchStart.y < 470 && this.touchStart.y > -425) this.renderer.overview.drag(this.touchCurrent); return; }
         if (!this.joystickTouch && this.touchStart.y < 470 && !this.renderer.isMinimapPoint(this.touchStart) &&
@@ -175,6 +180,8 @@ export default class DemoBootstrap extends cc.Component {
                     else this.renderer.showInteractionResult("unavailable");
                 } else if (action.kind === "navigate" && !this.session.navigateToPoi(action.id)) this.renderer.rejectDestination();
             }
+        } else if (this.rosterTouch) {
+            this.handleRosterAction(end.sub(this.touchStart).mag() < 18 ? this.renderer.roster.hit(end) : this.renderer.roster.dragAction(this.touchStart, end));
         } else if (this.developmentTouch) {
             if (end.sub(this.touchStart).mag() < 18) this.handleDevelopmentAction(this.renderer.development.hit(end));
         } else if (this.journalTouch) {
@@ -206,6 +213,7 @@ export default class DemoBootstrap extends cc.Component {
     private handleJournalAction(action: JournalAction | null): void {
         if (!action || !this.session) return;
         if (action.kind === "develop") { this.handleDevelopmentAction({ kind: "open" }); return; }
+        if (action.kind === "roster") { this.handleRosterAction({ kind: "open", tab: action.tab }); return; }
         if (action.kind === "open") {
             this.resumeAfterJournal = this.session.runState === "running";
             this.pause(); this.renderer.journal.open(action.tab);
@@ -243,6 +251,19 @@ export default class DemoBootstrap extends cc.Component {
         void this.runtime.flushProgress();
     }
 
+    private handleRosterAction(action: RosterAction | null): void {
+        if (!action || !this.session) return;
+        if (action.kind === "open") {
+            this.resumeAfterRoster = this.session.runState === "running" || this.resumeAfterJournal || this.resumeAfterDevelopment;
+            this.renderer.journal.close(); this.renderer.development.close(); this.resumeAfterJournal = this.resumeAfterDevelopment = false;
+            this.pause(); this.renderer.roster.open(action.tab);
+        } else if (action.kind === "close") {
+            this.renderer.roster.close(); if (this.resumeAfterRoster) this.resume(); this.resumeAfterRoster = false;
+        } else if (action.kind === "assign") this.renderer.roster.showResult(this.session.setLineup(action.index, action.heroId));
+        else this.renderer.roster.showResult(this.session.recruit(action.poolId, action.count) === "completed");
+        this.renderer.update(this.session.getSnapshot(), 0); void this.runtime.flushProgress();
+    }
+
     private onTouchCancel(event: cc.Event.EventTouch): void {
         if (event.getID() !== this.touchId) return;
         if (this.joystickTouch) this.stopJoystick();
@@ -270,6 +291,7 @@ export default class DemoBootstrap extends cc.Component {
         this.journalTouch = false;
         this.developmentTouch = false;
         this.recoveryTouch = false;
+        this.rosterTouch = false;
     }
 
     private toCanvas(event: cc.Event.EventTouch): cc.Vec2 {

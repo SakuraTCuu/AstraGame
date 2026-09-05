@@ -14,11 +14,13 @@ export interface StatModifiers {
   readonly physicalReduction?: number;
   readonly magicReduction?: number;
   readonly criticalChance?: number;
+  readonly healReduction?: number;
 }
 
 export interface StatusDefinition {
   readonly id: string;
   readonly duration: number;
+  readonly permanent?: boolean;
   readonly group?: string;
   readonly state?: string;
   readonly modifiers?: StatModifiers;

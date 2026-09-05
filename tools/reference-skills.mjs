@@ -38,7 +38,7 @@ export function skillFrames(source) {
 const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", normalAtkSpeedRate: "normalAttackSpeedRate",
   movespeed: "movementBonus", damageBonus: "damageBonus", finalDmgBonus: "finalDamageBonus", damageReduction: "damageReduction",
   finalDmgReduction: "finalDamageReduction", ultraDmgBonus: "physicalBonus", magicDmgBonus: "magicBonus",
-  ultraDmgReduction: "physicalReduction", magicDmgReduction: "magicReduction", skillCriticalRate: "criticalChance" };
+  ultraDmgReduction: "physicalReduction", magicDmgReduction: "magicReduction", skillCriticalRate: "criticalChance", healReduction: "healReduction" };
 const list = (source) => source ? splitSkillExpression(source, "|").map(skillTuple) : [];
 const skillId = (id) => `reference_skill_${id}`;
 
@@ -54,7 +54,8 @@ export function createReferenceSkillCompiler(lookup) {
     if (statuses.has(id)) return statuses.get(id);
     const row = lookup("Buff", id);
     if (!row) throw new Error(`Missing buff ${id}`);
-    const definition = { id: `reference_buff_${id}`, group: String(row.group || id), duration: (row.duration || 1000) / 1000, modifiers: {} };
+    const definition = { id: `reference_buff_${id}`, group: String(row.group || id), duration: row.duration === -1 ? 0 : (row.duration || 1000) / 1000,
+      permanent: row.duration === -1, modifiers: {} };
     const immediate = [];
     for (const action of list(row.effects)) {
       if (action[0] === "changeAttrAction") changeModifier(definition.modifiers, action, id);
@@ -63,7 +64,10 @@ export function createReferenceSkillCompiler(lookup) {
       else if (!['buffBubbleAction', 'tickZXFlySwordAction'].includes(action[0])) report(id, "buff_action", action);
     }
     if ((row.name || "").includes("\u72c2\u66b4")) definition.state = "enraged";
-    if (list(row.buffTagActions).some((action) => action[0] === "backHomeRemoveTag")) definition.clearOnReturn = true;
+    for (const tag of list(row.buffTagActions)) {
+      if (tag[0] === "backHomeRemoveTag") definition.clearOnReturn = true;
+      else report(id, "buff_tag", tag);
+    }
     const value = { definition, immediate, row };
     statuses.set(id, value);
     return value;
@@ -137,7 +141,7 @@ export function createReferenceSkillCompiler(lookup) {
     return definition;
   };
   const heroSkills = (hero, fps) => {
-    const ids = [hero.attack, hero.skill1, hero.skill2].map((value) => Number(value.split(",")[0].split("_")[0]));
+    const ids = [hero.attack, hero.skill1, hero.skill2].filter(Boolean).map((value) => Number(value.split(",")[0].split("_")[0]));
     const modifiers = {};
     const passiveActions = [];
     for (const group of (hero.skill5 || "").split(";").filter(Boolean)) {

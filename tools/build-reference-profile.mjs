@@ -5,6 +5,8 @@ import { compileReferenceCondition, parseReferenceItem, referenceFogPolygon } fr
 import { createReferenceSkillCompiler } from "./reference-skills.mjs";
 import { createReferenceRewardCompiler, buildReferenceJournal } from "./reference-progression.mjs";
 import { buildReferenceDevelopment } from "./reference-development.mjs";
+import { buildReferenceRoster } from "./reference-roster.mjs";
+import { buildReferenceRecruitment } from "./reference-recruitment.mjs";
 
 function readJsonAsset(data) {
   const json = JSON.parse(data);
@@ -16,7 +18,7 @@ function readJsonAsset(data) {
 export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   const families = new Map();
   for (const [name, table] of Object.entries(tables)) {
-    const family = name.match(/^(Avatar|Hero|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item|PlayerLevel|Quest|BossFirstKill|Equip|EquipType)(?:_(?:\d+|Xs))?$/)?.[1];
+    const family = name.match(/^(Avatar|Hero|HeroPlace|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item|PlayerLevel|Quest|BossFirstKill|Equip|EquipType|RecruitmentPool|RecruitmentWeight|RecruitmentWeightExtra)(?:_(?:\d+|Xs))?$/)?.[1];
     if (!family) continue;
     if (!families.has(family)) families.set(family, new Map());
     for (const id of Object.keys(table)) if (id !== "__KEY_MAP__") families.get(family).set(id, table);
@@ -206,6 +208,8 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   }
   config.enemies = [...enemies.values()];
   config.journal = buildReferenceJournal(row, (family) => [...(families.get(family)?.keys() ?? [])], config, toWorld, rewardCompiler, progressionIssues);
+  config.recruitment = buildReferenceRecruitment(row, (family) => [...(families.get(family)?.keys() ?? [])], rewardCompiler, assets, progressionIssues);
+  config.roster = buildReferenceRoster(row, (family) => [...(families.get(family)?.keys() ?? [])], config, skillCompiler, art, binding, assets, rewardCompiler, progressionIssues);
   config.development = buildReferenceDevelopment(row, (family) => [...(families.get(family)?.keys() ?? [])], config, rewardCompiler, progressionIssues);
   config.skills.definitions = [...config.skills.definitions.filter((skill) => !skill.summonEnemyId), ...skillCompiler.definitions.values()];
   for (const id of families.get("WorldMap").keys()) {

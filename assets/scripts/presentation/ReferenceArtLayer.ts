@@ -138,8 +138,8 @@ export class ReferenceArtLayer {
     iconFrame(path: string, name: string): cc.SpriteFrame | null {
         if (!this.bundle) return null;
         const asset = this.loaded.get(path);
-        if (!asset) { this.load(this.bundle, path, cc.SpriteAtlas); return null; }
-        return (asset as cc.SpriteAtlas).getSpriteFrame(name);
+        if (!asset) { this.load(this.bundle, path, name ? cc.SpriteAtlas : cc.SpriteFrame); return null; }
+        return name ? (asset as cc.SpriteAtlas).getSpriteFrame(name) : asset as cc.SpriteFrame;
     }
 
     destroy(): void {

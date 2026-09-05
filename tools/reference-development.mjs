@@ -5,8 +5,9 @@ const attributes = (source = {}) => ({ attack: source.atk || 0, defense: source.
 export function buildReferenceDevelopment(lookup, ids, config, rewards, issues) {
   const heroRows = ids("HeroLevel").map((id) => lookup("HeroLevel", id));
   const levelTables = {};
-  const heroes = [13, 1, 9, 8].map((id, index) => {
-    const hero = lookup("Hero", id), actorId = config.squad.actors[index].id;
+  const profiles = config.roster?.heroes || [13, 1, 9, 8].map((sourceId, index) => ({ sourceId, id: config.squad.actors[index].id, initiallyOwned: true }));
+  const heroes = profiles.map((profile) => {
+    const hero = lookup("Hero", profile.sourceId), actorId = profile.id;
     if (!levelTables[hero.levelType]) levelTables[hero.levelType] = heroRows.filter((row) => row.type === hero.levelType && row.attr?.maxhp > 0).map((row) => {
       let cost = {}, condition;
       try {
@@ -16,7 +17,7 @@ export function buildReferenceDevelopment(lookup, ids, config, rewards, issues) 
       } catch (error) { issues.push({ owner: row.id, kind: "hero_cost", source: row.cost }); condition = { kind: "flag", id: `external:hero_cost:${row.id}`, label: "\u7a81\u7834\u6761\u4ef6\u672a\u6ee1\u8db3" }; }
       return { level: row.level, attributes: attributes(row.attr), cost, condition };
     }).sort((a, b) => a.level - b.level);
-    return { actorId, initialLevel: 10, levelTable: String(hero.levelType) };
+    return { actorId, initialLevel: profile.initiallyOwned ? 10 : 1, levelTable: String(hero.levelType), optionalInSave: !profile.initiallyOwned };
   });
   const equipment = [];
   for (const resource of Object.keys(config.world.progression.resources)) {
@@ -35,8 +36,8 @@ export function buildReferenceDevelopment(lookup, ids, config, rewards, issues) 
       attributes: ranges, icon: item?.icon ? { atlas: "uires/equip/equip", frame: item.icon } : undefined,
       condition: unsupported ? { kind: "flag", id: `external:equipment:${id}`, label: "\u88c5\u5907\u6761\u4ef6\u672a\u6ee1\u8db3" } : undefined });
   }
-  const slots = ids("EquipType").map((id) => lookup("EquipType", id)).filter((row) => row.heroSlot <= config.squad.actors.length).map((row) => ({
-    id: `reference_slot_${row.id}`, actorId: config.squad.actors[row.heroSlot - 1].id, type: row.type, name: row.name,
+  const slots = ids("EquipType").map((id) => lookup("EquipType", id)).filter((row) => row.heroSlot <= (config.roster?.slots.length || config.squad.actors.length)).map((row) => ({
+    id: `reference_slot_${row.id}`, ...(config.roster ? { position: row.heroSlot - 1 } : { actorId: config.squad.actors[row.heroSlot - 1].id }), type: row.type, name: row.name,
     condition: compileReferenceCondition(row.condition, lookup),
   }));
   const ranks = ids("MilitaryRank").map((id) => lookup("MilitaryRank", id)).map((row) => ({ rank: row.id, heroLevelLimit: row.heroLvLimit, attributes: attributes(row.attr) }));

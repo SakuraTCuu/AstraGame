@@ -32,7 +32,11 @@ export function compileReferenceCondition(source, lookup, depth = 0) {
   const totalLevel = /^level:(\d+)$/.exec(body);
   if (type === "HeroTotalLevelCondition" && totalLevel) return { kind: "party_total_level", value: Number(totalLevel[1]), label: "\u51fa\u6218\u603b\u7b49\u7ea7" };
   const count = /^num:(\d+)$/.exec(body);
-  const counters = { HisRenameTimesCond: ["rename", "\u66f4\u6539\u540d\u5b57"], HisRecruitCondition: ["recruit", "\u7d2f\u8ba1\u62db\u52df"], DressEquipQualityCondition: ["equipped", "\u7a7f\u6234\u88c5\u5907"] };
+  const counters = { HisRenameTimesCond: ["rename", "\u66f4\u6539\u540d\u5b57"], HisRecruitCondition: ["recruit", "\u7d2f\u8ba1\u62db\u52df"], DressEquipQualityCondition: ["equipped", "\u7a7f\u6234\u88c5\u5907"], HeroAllocCondition: ["party_count", "\u51fa\u6218\u4eba\u6570"] };
+  const heroStar = /^heroId:(\d+)_star:(\d+)$/.exec(body);
+  if (type === "HisHeroStarCond" && heroStar) return { kind: "all", conditions: [{ kind: "flag", id: `hero:${heroStar[1]}`, label: "\u83b7\u5f97\u6307\u5b9a\u9547\u90aa\u4eba" }, { kind: "counter", id: `hero_star:${heroStar[1]}`, value: Number(heroStar[2]), label: "\u6307\u5b9a\u9547\u90aa\u4eba\u661f\u7ea7" }] };
+  const activity = /^activityId:(\d+)$/.exec(body);
+  if (type === "HisActivityOpenedCondition" && activity) return { kind: "flag", id: `activity:${activity[1]}`, label: "\u6d3b\u52a8\u672a\u5f00\u653e" };
   if (count && counters[type]) return { kind: "counter", id: counters[type][0], value: Number(count[1]), label: counters[type][1] };
   const subtype = /^type:(\d+)_subType:(\d+)_num:(\d+)$/.exec(body);
   if (type === "KillMonsterSubTypeCondition" && subtype) return { kind: "counter", id: `defeat:type:${subtype[1]}:subtype:${subtype[2]}`, value: Number(subtype[3]), label: "\u51fb\u8d25\u6307\u5b9a\u7c7b\u578b\u602a\u7269" };

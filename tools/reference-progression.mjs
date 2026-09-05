@@ -60,6 +60,8 @@ export function buildReferenceJournal(lookup, ids, config, toWorld, rewards, iss
     const completeCondition = condition(row);
     if (!destination && (completeCondition.kind === "party_level" || completeCondition.kind === "party_total_level" ||
         (completeCondition.kind === "counter" && completeCondition.id === "equipped"))) destination = { menu: "development" };
+    if (!destination && completeCondition.kind === "counter" && completeCondition.id === "party_count") destination = { menu: "lineup" };
+    if (!destination && completeCondition.kind === "counter" && completeCondition.id === "recruit") destination = { menu: "recruitment" };
     return { id: `reference_quest_${row.id}`, flag: `quest:${row.id}`, name: row.text, category, order: row.index,
       prerequisite, condition: completeCondition, rewards: grant.rewards, destination };
   };

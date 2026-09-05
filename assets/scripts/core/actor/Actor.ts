@@ -113,10 +113,10 @@ export class Actor {
   hasStatus(state: string): boolean { return this.statuses.some((entry) => entry.definition.state === state || entry.definition.id === state); }
   statusSnapshots(): Array<{ id: string; remaining: number }> { return this.statuses.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining })); }
   addStatus(definition: StatusDefinition): void {
-    if (!this.alive || definition.duration <= 0) return;
+    if (!this.alive || (!definition.permanent && definition.duration <= 0)) return;
     const existing = this.statuses.findIndex((entry) => (entry.definition.group ?? entry.definition.id) === (definition.group ?? definition.id));
     if (existing >= 0) this.statuses.splice(existing, 1);
-    this.statuses.push({ definition, remaining: definition.duration });
+    this.statuses.push({ definition, remaining: definition.permanent ? -1 : definition.duration });
   }
   gainEnergy(amount: number): void { if (this.alive) this.energy = Math.max(0, Math.min(this.stats.maxEnergy ?? 0, this.energy + amount)); }
 
@@ -149,6 +149,7 @@ export class Actor {
   updateEffects(deltaSeconds: number): void {
     this.gainEnergy((this.stats.energyPerSecond ?? 0) * deltaSeconds);
     for (let index = this.statuses.length - 1; index >= 0; index--) {
+      if (this.statuses[index].definition.permanent) continue;
       this.statuses[index].remaining -= deltaSeconds;
       if (this.statuses[index].remaining <= 1e-9) this.statuses.splice(index, 1);
     }
@@ -189,7 +190,7 @@ export class Actor {
   heal(amount: number): number {
     if (!this.alive || amount <= 0) return 0;
     const previous = this.health;
-    this.health = Math.min(this.stats.maxHealth, this.health + Math.floor(amount));
+    this.health = Math.min(this.stats.maxHealth, this.health + Math.floor(amount * Math.max(0, 1 - this.modifier("healReduction"))));
     return this.health - previous;
   }
 }

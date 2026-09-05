@@ -11,9 +11,9 @@ export interface EquipmentDefinition {
   readonly icon?: { readonly atlas: string; readonly frame: string };
   readonly condition?: ProgressCondition;
 }
-export interface EquipmentSlotDefinition { readonly id: string; readonly actorId: string; readonly type: number; readonly name: string; readonly condition?: ProgressCondition; }
+export interface EquipmentSlotDefinition { readonly id: string; readonly actorId?: string; readonly position?: number; readonly type: number; readonly name: string; readonly condition?: ProgressCondition; }
 export interface DevelopmentConfig {
-  readonly heroes: readonly { readonly actorId: string; readonly initialLevel: number; readonly levels?: readonly HeroLevelDefinition[]; readonly levelTable?: string }[];
+  readonly heroes: readonly { readonly actorId: string; readonly initialLevel: number; readonly levels?: readonly HeroLevelDefinition[]; readonly levelTable?: string; readonly optionalInSave?: boolean }[];
   readonly levelTables?: Readonly<Record<string, readonly HeroLevelDefinition[]>>;
   readonly equipment: readonly EquipmentDefinition[];
   readonly slots: readonly EquipmentSlotDefinition[];
@@ -34,9 +34,11 @@ export class PartyDevelopment {
   private readonly levels = new Map<string, ReadonlyMap<number, HeroLevelDefinition>>();
   private state: { levels: Record<string, number>; items: EquipmentInstance[]; equipped: Record<string, string>; nextItemId: number };
   private statsKey = "";
+  private activeRoster: readonly (string | null)[];
 
   constructor(actors: readonly Actor[], map: WorldMap, config: DevelopmentConfig, random: () => number) {
     this.actors = actors; this.map = map; this.config = config; this.random = random;
+    this.activeRoster = actors.map((actor) => actor.id);
     for (const actor of actors) this.baseStats.set(actor.id, actor.stats);
     this.state = { levels: {}, items: [], equipped: {}, nextItemId: 1 };
     const levelTables = new Map<readonly HeroLevelDefinition[], ReadonlyMap<number, HeroLevelDefinition>>();
@@ -71,7 +73,7 @@ export class PartyDevelopment {
       }
     }
     for (const slot of config.slots) {
-      if (!slot.id || slots.has(slot.id) || !this.baseStats.has(slot.actorId) || !slot.name) throw new Error("Invalid equipment slot");
+      if (!slot.id || slots.has(slot.id) || (slot.position === undefined ? !this.baseStats.has(slot.actorId!) : !Number.isSafeInteger(slot.position) || slot.position < 0) || !slot.name) throw new Error("Invalid equipment slot");
       slots.add(slot.id); if (slot.condition) validateCondition(slot.condition);
     }
     const ranks = new Set<number>();
@@ -97,10 +99,16 @@ export class PartyDevelopment {
     this.refreshStats();
   }
 
+  setActiveRoster(lineup: readonly (string | null)[]): void {
+    if (lineup.some((id) => id !== null && !this.baseStats.has(id)) || new Set(lineup.filter(Boolean)).size !== lineup.filter(Boolean).length) throw new Error("Invalid development lineup");
+    this.activeRoster = [...lineup]; this.refreshStats();
+  }
+  levelOf(id: string): number { return this.state.levels[id] ?? 0; }
+
   equip(itemId: string, slotId: string): DevelopmentResult {
     const item = this.state.items.find((entry) => entry.id === itemId), slot = this.config.slots.find((entry) => entry.id === slotId);
     const definition = item && this.config.equipment.find((entry) => entry.id === item.definitionId);
-    if (!item || !slot || definition?.type !== slot.type) return "unavailable";
+    if (!item || !slot || !this.slotOwner(slot) || definition?.type !== slot.type) return "unavailable";
     if (!this.map.isConditionMet(slot.condition) || !this.map.isConditionMet(definition.condition)) return "requirements_not_met";
     for (const [id, equipped] of Object.entries(this.state.equipped)) if (equipped === itemId) delete this.state.equipped[id];
     this.state.equipped[slotId] = itemId;
@@ -124,12 +132,12 @@ export class PartyDevelopment {
     return "completed";
   }
 
-  statsFor(actorId: string, state: DevelopmentSave = this.state, rank = this.map.rank): ActorStats {
+  statsFor(actorId: string, state: DevelopmentSave = this.state, rank = this.map.rank, lineup = this.activeRoster): ActorStats {
     const base = this.baseStats.get(actorId)!;
     const attributes = { ...this.levels.get(actorId)!.get(state.levels[actorId])!.attributes };
     const rankStats = this.config.ranks?.find((entry) => entry.rank === rank)?.attributes;
     for (const key of ATTRIBUTES) attributes[key] += rankStats?.[key] ?? 0;
-    for (const slot of this.config.slots.filter((entry) => entry.actorId === actorId)) {
+    for (const slot of this.config.slots.filter((entry) => this.slotOwner(entry, lineup) === actorId)) {
       const item = state.items.find((entry) => entry.id === state.equipped[slot.id]);
       if (item) for (const key of ATTRIBUTES) attributes[key] += item.attributes[key];
     }
@@ -137,6 +145,12 @@ export class PartyDevelopment {
   }
 
   save(): DevelopmentSave { return { levels: { ...this.state.levels }, items: this.state.items.map((item) => ({ ...item, attributes: { ...item.attributes } })), equipped: { ...this.state.equipped }, nextItemId: this.state.nextItemId }; }
+
+  prepareSave(state: DevelopmentSave): DevelopmentSave {
+    const levels = { ...state.levels };
+    for (const hero of this.config.heroes) if (hero.optionalInSave && levels[hero.actorId] === undefined) levels[hero.actorId] = hero.initialLevel;
+    return { ...state, levels };
+  }
 
   validateSave(state: DevelopmentSave, resources: Readonly<Record<string, number>>): void {
     if (!state || !Number.isSafeInteger(state.nextItemId) || state.nextItemId < 1 || Object.keys(state.levels).length !== this.config.heroes.length) throw new Error("Invalid saved development state");
@@ -164,7 +178,7 @@ export class PartyDevelopment {
   }
 
   snapshot() {
-    return { heroes: this.actors.map((actor) => {
+    return { heroes: this.activeRoster.filter((id): id is string => Boolean(id)).map((id) => this.actors.find((actor) => actor.id === id)!).map((actor) => {
       const table = this.levels.get(actor.id)!, level = this.state.levels[actor.id];
       const current = table.get(level)!;
       return { id: actor.id, name: actor.displayName, level, limit: this.levelLimit(), attributes: this.statsFor(actor.id),
@@ -173,17 +187,18 @@ export class PartyDevelopment {
     }), items: this.state.items.map((item) => ({ ...this.config.equipment.find((entry) => entry.id === item.definitionId)!, ...item,
       usable: this.map.isConditionMet(this.config.equipment.find((entry) => entry.id === item.definitionId)!.condition),
       slotId: Object.keys(this.state.equipped).find((id) => this.state.equipped[id] === item.id) })),
-    slots: this.config.slots.map((slot) => ({ ...slot, unlocked: this.map.isConditionMet(slot.condition), itemId: this.state.equipped[slot.id] })) };
+    slots: this.config.slots.map((slot) => ({ ...slot, actorId: this.slotOwner(slot), unlocked: this.map.isConditionMet(slot.condition), itemId: this.state.equipped[slot.id] })) };
   }
 
   private levelLimit(): number { return this.config.ranks?.length ? this.config.ranks.find((entry) => entry.rank === this.map.rank)?.heroLevelLimit ?? 0 : Number.MAX_SAFE_INTEGER; }
   private validAttributes(attributes: GrowthAttributes, healthRequired = false): boolean { return Boolean(attributes && ATTRIBUTES.every((key) => Number.isSafeInteger(attributes[key]) && attributes[key] >= 0) && (!healthRequired || attributes.maxHealth > 0)); }
+  private slotOwner(slot: EquipmentSlotDefinition, lineup = this.activeRoster): string | undefined { return slot.position === undefined ? slot.actorId : lineup[slot.position] ?? undefined; }
   private refreshStats(): void {
-    const key = JSON.stringify([this.map.rank, this.state.levels, this.state.equipped]);
+    const key = JSON.stringify([this.map.rank, this.state.levels, this.state.equipped, this.activeRoster]);
     if (key === this.statsKey) return;
     this.statsKey = key;
     for (const actor of this.actors) actor.updateStats(this.statsFor(actor.id));
-    this.map.setPartyLevels(this.actors.map((actor) => this.state.levels[actor.id]));
+    this.map.setPartyLevels(this.activeRoster.filter((id): id is string => Boolean(id)).map((id) => this.state.levels[id]));
     this.map.setCounter("equipped", Object.keys(this.state.equipped).length);
   }
 }

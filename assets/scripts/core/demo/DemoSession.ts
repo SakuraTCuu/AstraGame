@@ -18,6 +18,10 @@ import { ProgressionJournal } from "../world/ProgressionJournal";
 import type { JournalConfig, ProgressReward, ClaimResult } from "../world/ProgressionJournal";
 import { PartyDevelopment } from "../world/PartyDevelopment";
 import type { DevelopmentConfig, DevelopmentSave, DevelopmentResult } from "../world/PartyDevelopment";
+import { HeroRoster } from "../world/HeroRoster";
+import type { RosterDefinition, RosterSave } from "../world/HeroRoster";
+import { Recruitment } from "../world/Recruitment";
+import type { RecruitmentConfig } from "../world/Recruitment";
 
 export type DefeatReward = ProgressReward;
 
@@ -76,6 +80,8 @@ export interface DemoConfig {
   readonly seed: number;
   readonly journal?: JournalConfig;
   readonly development?: DevelopmentConfig;
+  readonly roster?: RosterDefinition & { readonly actors: readonly DemoActorConfig[] };
+  readonly recruitment?: RecruitmentConfig;
   readonly world: {
     readonly width: number;
     readonly height: number;
@@ -123,6 +129,7 @@ export interface ExplorationSave {
   readonly respawns?: readonly RespawnProgress[];
   readonly development?: DevelopmentSave;
   readonly recoveryPosition?: Vec2Like;
+  readonly roster?: RosterSave;
 }
 
 export type RunState = "running" | "paused" | "recovering" | "won" | "failed";
@@ -189,6 +196,8 @@ export interface DemoSnapshot {
   readonly journal: ReturnType<ProgressionJournal["snapshot"]>;
   readonly development: ReturnType<PartyDevelopment["snapshot"]> | null;
   readonly recovery: { readonly origin: Vec2Like; readonly town: Vec2Like; readonly portalId?: string; readonly portalName?: string } | null;
+  readonly roster: ReturnType<HeroRoster["snapshot"]> | null;
+  readonly recruitment: ReturnType<Recruitment["snapshot"]> | null;
   readonly flashlight: {
     readonly x: number;
     readonly y: number;
@@ -242,6 +251,9 @@ export class DemoSession {
   readonly spawns: SpawnDirector;
   readonly journal: ProgressionJournal;
   readonly development?: PartyDevelopment;
+  readonly roster?: HeroRoster;
+  readonly recruitment?: Recruitment;
+  private readonly playerCatalog = new Map<string, Actor>();
   private readonly config: DemoConfig;
   private readonly fog: FogGrid;
   private readonly fixedStep: number;
@@ -262,7 +274,12 @@ export class DemoSession {
 
   constructor(config: DemoConfig = DEFAULT_CONFIG) {
     this.config = config;
-    const players = config.squad.actors.map((entry) => this.createActor(entry, "player"));
+    const playerConfigs = config.roster?.actors ?? config.squad.actors;
+    for (const entry of playerConfigs) {
+      if (this.playerCatalog.has(entry.id)) throw new Error("Duplicate roster actor");
+      this.playerCatalog.set(entry.id, this.createActor(entry, "player"));
+    }
+    const players = config.squad.actors.map((entry) => { const actor = this.playerCatalog.get(entry.id); if (!actor) throw new Error("Initial party actor is absent from the roster"); return actor; });
     const enemyConfigs = "actors" in config.enemies ? config.enemies.actors : config.enemies;
     for (const enemy of enemyConfigs) this.enemyTemplates.set(enemy.id, enemy);
     const enemies = config.spawns ? [] : enemyConfigs.map((entry) => this.createActor(entry, "enemy"));
@@ -307,7 +324,7 @@ export class DemoSession {
       if (skillDefinitions[normalized.id]) throw new Error(`Duplicate skill ${normalized.id}`);
       skillDefinitions[normalized.id] = normalized;
     }
-    for (const actor of [...config.squad.actors, ...enemyConfigs]) {
+    for (const actor of [...playerConfigs, ...enemyConfigs]) {
       for (const id of actor.skillIds ?? []) if (!skillDefinitions[id]) throw new Error(`Actor ${actor.id} references missing skill ${id}`);
     }
     this.world = new GameWorld({
@@ -328,7 +345,10 @@ export class DemoSession {
     this.fixedStep = 1 / ticksPerSecond;
     this.spawns = new SpawnDirector(this.world, this.map, config.spawns ?? [], this.enemyTemplates, (entry) => this.createActor(entry, "enemy"));
     this.journal = new ProgressionJournal(this.map, config.journal, () => this.world.random.next());
-    this.development = config.development ? new PartyDevelopment(players, this.map, config.development, () => this.world.random.next()) : undefined;
+    this.roster = config.roster ? new HeroRoster([...this.playerCatalog.values()], this.map, config.roster) : undefined;
+    this.development = config.development ? new PartyDevelopment([...this.playerCatalog.values()], this.map, config.development, () => this.world.random.next()) : undefined;
+    if (this.roster) { this.world.setPlayers(this.roster.activeActors()); this.development?.setActiveRoster(this.roster.slots()); }
+    this.recruitment = config.recruitment ? new Recruitment(this.map, config.recruitment, () => this.world.random.next()) : undefined;
     const leader = this.world.leader;
     if (leader) {
       this.map.discoverAt(leader.position);
@@ -346,7 +366,7 @@ export class DemoSession {
     const leader = this.world.leader;
     if (this.state !== "running" || !leader) return "unavailable";
     const result = this.map.interact(id, leader.position, () => this.world.random.next());
-    if (result === "completed") this.development?.syncInventory();
+    if (result === "completed") this.syncProgression();
     if (result === "completed" && this.questDestinationId) this.navigateToQuest(this.questDestinationId);
     return result;
   }
@@ -354,7 +374,7 @@ export class DemoSession {
   claimQuest(id: string): ClaimResult {
     if (this.state !== "running" && this.state !== "paused") return "unavailable";
     const result = this.journal.claim(id);
-    if (result === "claimed") this.development?.syncInventory();
+    if (result === "claimed") this.syncProgression();
     if (result === "claimed" && this.questDestinationId === id) this.questDestinationId = null;
     return result;
   }
@@ -362,14 +382,44 @@ export class DemoSession {
   promoteRank(): ClaimResult {
     if (this.state !== "running" && this.state !== "paused") return "unavailable";
     const result = this.journal.promote();
-    if (result === "claimed") this.development?.syncInventory();
+    if (result === "claimed") this.syncProgression();
     return result;
   }
 
   equipItem(itemId: string, slotId: string): DevelopmentResult { return this.canDevelop() ? this.development!.equip(itemId, slotId) : "unavailable"; }
   unequipItem(slotId: string): DevelopmentResult { return this.canDevelop() ? this.development!.unequip(slotId) : "unavailable"; }
-  upgradeHero(actorId: string): DevelopmentResult { return this.canDevelop() ? this.development!.upgrade(actorId) : "unavailable"; }
+  upgradeHero(actorId: string): DevelopmentResult { return this.canDevelop() && (!this.roster || this.roster.owns(actorId)) ? this.development!.upgrade(actorId) : "unavailable"; }
   private canDevelop(): boolean { return Boolean(this.development && (this.state === "running" || this.state === "paused")); }
+
+  setLineup(index: number, actorId: string | null): boolean {
+    if (!this.roster || (this.state !== "running" && this.state !== "paused")) return false;
+    const next = this.roster.planAssignment(index, actorId);
+    if (!next) return false;
+    const leader = this.world.leader;
+    if (!leader) return false;
+    const actors = next.filter((id): id is string => Boolean(id)).map((id) => this.roster!.actor(id)!);
+    const placements = new Map<Actor, Vector2>();
+    for (let index = 0; index < actors.length; index++) if (!this.world.players.includes(actors[index])) {
+      const target = this.world.formation.slotPosition(index, leader.position, this.world.facingDirection);
+      const position = this.world.options.navigation.nearestWalkable(target);
+      if (!position || position.distance(target) > this.world.options.navigation.cellSize * 3) return false;
+      placements.set(actors[index], position);
+    }
+    this.roster.assign(next); this.development?.setActiveRoster(next);
+    for (const [actor, position] of placements) actor.position = position;
+    this.world.setPlayers(actors);
+    if (this.autoDestination) this.navigationMode = this.world.navigateTo(this.autoDestination) ? "auto_path" : "blocked";
+    return true;
+  }
+
+  private syncProgression(): void { this.roster?.syncOwnership(); this.development?.syncInventory(); }
+
+  recruit(poolId: string, count = 1): "completed" | "insufficient_resources" | "unavailable" {
+    if (!this.recruitment || (this.state !== "running" && this.state !== "paused")) return "unavailable";
+    const result = this.recruitment.draw(poolId, count);
+    if (result === "completed") this.syncProgression();
+    return result;
+  }
 
   recoverParty(destination: "town" | "nearest_portal"): boolean {
     const recovery = this.config.session?.recovery;
@@ -456,44 +506,57 @@ export class DemoSession {
       map: this.map.saveProgress(), exploredCells: this.fog.exploredIndices(),
       party: this.world.players.map((actor) => ({ id: actor.id, x: actor.position.x, y: actor.position.y, hp: actor.health, energy: actor.energy })),
       elapsedSeconds: this.world.elapsedSeconds, randomState: this.world.random.snapshot(), clearedSpawns: this.spawns.clearedPermanentIds(), respawns: this.spawns.respawnProgress(), development: this.development?.save(),
-      recoveryPosition: this.recoveryPosition ?? undefined };
+      recoveryPosition: this.recoveryPosition ?? undefined, roster: this.roster?.save() };
   }
 
   restoreExploration(save: ExplorationSave): void {
     if (save.schema !== 1 || save.configId !== (this.config.meta?.id ?? "default") || save.configVersion !== (this.config.meta?.schemaVersion ?? 1)) throw new Error("Saved exploration uses another configuration");
     if (this.world.elapsedSeconds !== 0 || !Number.isFinite(save.elapsedSeconds) || save.elapsedSeconds < 0 ||
         !Number.isInteger(save.randomState) || save.randomState <= 0 || save.randomState > 0xffffffff) throw new Error("Invalid exploration clock or random state");
-    if (save.party.length !== this.world.players.length || new Set(save.party.map((entry) => entry.id)).size !== save.party.length) throw new Error("Saved party does not match configuration");
+    if (save.roster && !this.roster) throw new Error("Saved roster is not supported by this configuration");
+    const roster = this.roster && (save.roster ?? this.roster.save());
+    if (roster) this.roster!.validateSave(roster, this.map.savedConditionContext(save.map));
+    const lineup = roster?.lineup ?? this.world.players.map((actor) => actor.id);
+    const activeIds = lineup.filter((id): id is string => Boolean(id));
+    if (save.party.length !== activeIds.length || new Set(save.party.map((entry) => entry.id)).size !== save.party.length || save.party.some((entry) => !activeIds.includes(entry.id))) throw new Error("Saved party does not match configuration");
     if (save.recoveryPosition && (!this.config.session?.recovery || ![save.recoveryPosition.x, save.recoveryPosition.y].every(Number.isFinite) ||
         save.recoveryPosition.x < 0 || save.recoveryPosition.y < 0 || save.recoveryPosition.x >= this.config.world.width || save.recoveryPosition.y >= this.config.world.height || save.party.some((actor) => actor.hp > 0))) throw new Error("Invalid saved recovery position");
     if (save.development && !this.development) throw new Error("Saved development is not supported by this configuration");
-    const development = this.development && (save.development ?? this.development.save());
+    const development = this.development && this.development.prepareSave(save.development ?? this.development.save());
     if (development) this.development!.validateSave(development, save.map.resources);
     for (const entry of save.party) {
-      const actor = this.world.players.find((actor) => actor.id === entry.id);
-      const stats = actor && (development ? this.development!.statsFor(actor.id, development, Math.max(this.map.rank, save.map.rank ?? 0)) : actor.stats);
+      const actor = this.playerCatalog.get(entry.id);
+      const stats = actor && (development ? this.development!.statsFor(actor.id, development, Math.max(this.map.rank, save.map.rank ?? 0), lineup) : actor.stats);
       if (!actor || ![entry.x, entry.y, entry.hp].every(Number.isFinite) || entry.hp < 0 || entry.hp > stats!.maxHealth ||
           entry.x < 0 || entry.y < 0 || entry.x >= this.config.world.width || entry.y >= this.config.world.height) throw new Error("Invalid saved party member");
       if (entry.energy !== undefined && (!Number.isFinite(entry.energy) || entry.energy < 0 || entry.energy > (stats!.maxEnergy ?? 0))) throw new Error("Invalid saved energy");
+    }
+    for (const entry of roster?.reserves ?? []) {
+      const actor = this.playerCatalog.get(entry.id)!;
+      const stats = development ? this.development!.statsFor(actor.id, development, Math.max(this.map.rank, save.map.rank ?? 0), lineup) : actor.stats;
+      if (entry.hp > stats.maxHealth || entry.energy > (stats.maxEnergy ?? 0)) throw new Error("Invalid saved reserve vitals");
     }
     this.map.validateProgress(save.map);
     this.fog.validateProgress(save.exploredCells);
     this.spawns.validateProgress(save.clearedSpawns);
     this.spawns.validateRespawns(save.respawns ?? []);
     this.map.restoreProgress(save.map);
+    this.development?.setActiveRoster(lineup);
     if (development) this.development!.restore(development);
+    if (roster) this.roster!.restore(roster);
     this.spawns.restoreCleared(save.clearedSpawns);
     this.spawns.restoreRespawns(save.respawns ?? [], save.elapsedSeconds);
     this.fog.restore(save.exploredCells);
     for (const entry of save.party) {
-      const actor = this.world.players.find((actor) => actor.id === entry.id)!;
+      const actor = this.playerCatalog.get(entry.id)!;
       actor.position = this.world.options.navigation.nearestWalkable(entry) ?? actor.position;
       actor.health = entry.hp;
       actor.energy = entry.energy ?? 0;
       if (!actor.alive) actor.setState("dead");
     }
+    this.world.setPlayers(activeIds.map((id) => this.playerCatalog.get(id)!));
     this.world.random.restore(save.randomState);
-    this.development?.syncInventory();
+    this.syncProgression();
     this.world.elapsedSeconds = save.elapsedSeconds;
     const leader = this.world.leader;
     if (leader) this.fog.reveal(leader.position, this.config.fog.revealRadius);
@@ -602,7 +665,7 @@ export class DemoSession {
           this.map.grantFlag(`first_drop:${template.id}`);
         }
       }
-      this.development?.syncInventory();
+      this.syncProgression();
       this.defeatedEnemies += events.filter((event) => event.type === "death" && enemyIds.has(event.targetId)).length;
       this.frameEvents.push(...events);
       this.explorationEvents.push(...this.map.drainEvents());
@@ -660,6 +723,8 @@ export class DemoSession {
       exploration: { ...this.map.snapshot(), events: [...this.explorationEvents] },
       journal: this.journal.snapshot(),
       development: this.development?.snapshot() ?? null,
+      roster: this.roster?.snapshot((id) => this.development?.levelOf(id) ?? 1) ?? null,
+      recruitment: this.recruitment?.snapshot() ?? null,
       recovery: this.state === "recovering" && this.config.session?.recovery ? { origin: this.recoveryPosition!, town: this.config.session.recovery.town,
         portalId: this.nearestRecoveryPortal()?.id, portalName: this.nearestRecoveryPortal()?.name } : null,
       flashlight: {
@@ -758,7 +823,7 @@ export class DemoSession {
       if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
       previous = action.at;
       for (const status of [...(action.randomStatuses ?? []), ...(action.status ? [action.status] : [])]) {
-        if (!status.id || !Number.isFinite(status.duration) || status.duration <= 0 || Object.values(status.modifiers ?? {}).some((value) => !Number.isFinite(value))) throw new Error(`Invalid status for ${config.id}`);
+        if (!status.id || !Number.isFinite(status.duration) || (!status.permanent && status.duration <= 0) || Object.values(status.modifiers ?? {}).some((value) => !Number.isFinite(value))) throw new Error(`Invalid status for ${config.id}`);
       }
     }
     if (config.motion && (!(config.motion.duration > 0) || !["charge", "jump"].includes(config.motion.kind))) throw new Error(`Invalid skill motion for ${config.id}`);

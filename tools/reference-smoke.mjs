@@ -423,6 +423,52 @@ try {
   assert.ok(revivedAtTown.state === "running" && revivedAtTown.distance < 120 && revivedAtTown.savedAlive && revivedAtTown.savedRecovery === null);
   await capture("recovered-at-town");
   const recovery = { setup: "lethal-damage fixture after normal Boss and equipment play", defeat, defeatRestored, revivedAtPortal, revivedAtTown };
+  await clickDesign(-310, 300); await clickDesign(0, 484); await clickDesign(140, -547); await clickDesign(306, 557);
+  assert.ok(await evaluate(() => window.__referenceBoot.session.map.hasFlag("firstkill:90101")), "First-kill reward was not claimed through the journal");
+  await clickDesign(-166, 300);
+  assert.ok(await evaluate(() => window.__referenceBoot.renderer.roster.isOpen));
+  const rosterBefore = await evaluate(() => [...window.__referenceBoot.session.roster.slots()]);
+  const slotFrom = await screenPoint(-246, 386), slotTo = await screenPoint(-82, 386);
+  await mouse("mousePressed", slotFrom.x, slotFrom.y, 1); await mouse("mouseMoved", slotTo.x, slotTo.y, 1); await mouse("mouseReleased", slotTo.x, slotTo.y);
+  assert.equal(await evaluate(() => window.__referenceBoot.session.roster.slots()[1]), rosterBefore[0]);
+  await mouse("mousePressed", slotFrom.x, slotFrom.y, 1); await mouse("mouseMoved", slotTo.x, slotTo.y, 1); await mouse("mouseReleased", slotTo.x, slotTo.y);
+  assert.deepEqual(await evaluate(() => [...window.__referenceBoot.session.roster.slots()]), rosterBefore);
+  const medicIndex = await evaluate(() => window.__referenceBoot.renderer.roster.rows.findIndex((hero) => hero.id === "hero_medic"));
+  assert.ok(medicIndex >= 0);
+  await clickDesign(-246 + medicIndex % 4 * 164, 139 - Math.floor(medicIndex / 4) * 166);
+  assert.equal(await evaluate(() => window.__referenceBoot.session.world.players.length), 3);
+  await clickDesign(-246 + medicIndex % 4 * 164, 139 - Math.floor(medicIndex / 4) * 166);
+  assert.equal(await evaluate(() => window.__referenceBoot.session.world.players.length), 4);
+  await capture("lineup-four");
+  await clickDesign(160, 485);
+  const recruitBefore = await evaluate(() => window.__referenceBoot.session.map.resourceBalance("item:2"));
+  assert.ok(recruitBefore >= 200);
+  await capture("recruitment-pool");
+  await clickDesign(-174, -548); await clickDesign(-174, -548);
+  const recruitment = await evaluate(() => ({ remaining: window.__referenceBoot.session.map.resourceBalance("item:2"),
+    count: window.__referenceBoot.session.map.counter("recruit"), state: window.__referenceBoot.session.recruitment.snapshot() }));
+  assert.equal(recruitment.remaining, recruitBefore - 200); assert.equal(recruitment.count, 2);
+  await delay(400); await capture("recruitment-result");
+  await clickDesign(306, 557);
+  const fifthHero = await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session;
+    const hero = session.getSnapshot().roster.heroes.find((hero) => !hero.owned && hero.available && hero.cardResource);
+    session.map.setRank(4); session.map.grantResources({ [hero.cardResource]: 1 }); session.update(0.05); boot.renderer.update(session.getSnapshot(), 0.1);
+    return hero.id;
+  });
+  await clickDesign(-166, 300);
+  const fifthIndex = await evaluate((id) => window.__referenceBoot.renderer.roster.rows.findIndex((hero) => hero.id === id), fifthHero);
+  assert.ok(fifthIndex >= 0);
+  await clickDesign(-246 + fifthIndex % 4 * 164, 139 - Math.floor(fifthIndex / 4) * 166);
+  const five = await evaluate(() => ({ lineup: [...window.__referenceBoot.session.roster.slots()], party: window.__referenceBoot.session.getSnapshot().partyIds,
+    development: window.__referenceBoot.session.development.save() }));
+  assert.equal(five.party.length, 5); assert.equal(five.lineup[4], fifthHero);
+  await capture("lineup-five");
+  await evaluate(async () => { await window.__referenceBoot.runtime.flushProgress(); });
+  await send("Page.reload", { ignoreCache: true }); assert.ok(await waitReady());
+  assert.deepEqual(await evaluate(() => [...window.__referenceBoot.session.roster.slots()]), five.lineup);
+  assert.equal(await evaluate(() => window.__referenceBoot.session.map.counter("recruit")), 2);
+  const roster = { reordered: true, toggled: true, five, setup: "rank-four and owned-card fixture after ordinary recruitment" };
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -435,6 +481,7 @@ try {
     await clickDesign(-310, 300);
     await capture(`${name}-journal`);
     await clickDesign(306, 557);
+    await clickDesign(-166, 300); await capture(`${name}-roster`); await clickDesign(306, 557);
     await clickDesign(-238, 300);
     await capture(`${name}-development`);
     await clickDesign(306, 557);
@@ -450,7 +497,7 @@ try {
   assert.ok(resetCounts.every((count) => count.root === resetCounts[0].root && count.world === 8 && count.actors === 4), JSON.stringify(resetCounts));
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
-  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, resetCounts, viewports, errors, failures };
+  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

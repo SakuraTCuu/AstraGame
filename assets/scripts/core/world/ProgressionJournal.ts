@@ -13,7 +13,7 @@ export interface QuestDefinition {
   readonly prerequisite?: ProgressCondition;
   readonly condition: ProgressCondition;
   readonly rewards?: readonly ProgressReward[];
-  readonly destination?: { readonly poiId?: string; readonly position?: Vec2Like; readonly menu?: "development" };
+  readonly destination?: { readonly poiId?: string; readonly position?: Vec2Like; readonly menu?: "development" | "lineup" | "recruitment" };
 }
 export interface RankDefinition { readonly id: number; readonly name: string; readonly questIds: readonly string[]; }
 export interface JournalConfig { readonly quests: readonly QuestDefinition[]; readonly ranks?: readonly RankDefinition[]; }

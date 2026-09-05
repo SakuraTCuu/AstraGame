@@ -80,6 +80,15 @@ export class GameWorld {
   get leader(): Actor | undefined { return this.players.find((player) => player.alive); }
   get allActors(): readonly Actor[] { return [...this.players, ...this.alliedSummons, ...this.enemies]; }
 
+  setPlayers(players: readonly Actor[]): void {
+    if (!players.length || new Set(players.map((actor) => actor.id)).size !== players.length || players.some((actor) => actor.faction !== "player")) throw new Error("Invalid party members");
+    this.formation.setMembers(players);
+    for (const actor of this.players) if (!players.includes(actor)) { this.combat.cancelCaster(actor.id); this.actorPaths.delete(actor.id); actor.targetId = undefined; if (actor.alive) actor.setState("idle"); }
+    for (const summon of [...this.alliedSummons]) if (!players.some((actor) => actor.id === summon.summonerId)) this.removeEnemy(summon.id);
+    this.players.splice(0, this.players.length, ...players);
+    this.previousLeaderId = this.leader?.id; this.path.clear();
+  }
+
   navigateTo(destination: Vec2Like): boolean {
     const leader = this.leader;
     if (!leader?.alive) return false;

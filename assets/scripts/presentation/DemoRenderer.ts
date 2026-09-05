@@ -4,6 +4,7 @@ import { FogRenderer } from "./FogRenderer";
 import { WorldOverview } from "./WorldOverview";
 import { ProgressJournalView } from "./ProgressJournalView";
 import { DevelopmentView } from "./DevelopmentView";
+import { RosterView } from "./RosterView";
 import { pointInPolygon } from "../core/world/WorldGeometry";
 
 interface WorldPoint {
@@ -28,6 +29,7 @@ export class DemoRenderer {
     readonly overview: WorldOverview;
     readonly journal: ProgressJournalView;
     readonly development: DevelopmentView;
+    readonly roster: RosterView;
     private readonly host: cc.Node;
     private readonly worldRoot: cc.Node;
     private readonly minimapSprite: cc.Sprite;
@@ -120,6 +122,7 @@ export class DemoRenderer {
         this.overview = new WorldOverview(host);
         this.journal = new ProgressJournalView(host);
         this.development = new DevelopmentView(host);
+        this.roster = new RosterView(host);
     }
 
     setLoading(message: string): void {
@@ -146,6 +149,7 @@ export class DemoRenderer {
         this.overview.close();
         this.journal.close();
         this.development.close();
+        this.roster.close();
         this.interactionId = null;
         this.setJoystick(cc.Vec2.ZERO, false);
     }
@@ -245,10 +249,12 @@ export class DemoRenderer {
         this.overview.update(snapshot, this.referenceArt && this.referenceArt.overviewTexture());
         this.journal.update(snapshot);
         this.development.update(snapshot, (atlas, name) => this.referenceArt ? this.referenceArt.iconFrame(atlas, name) : null);
-        if (snapshot.recovery) { this.overview.close(); this.journal.node.active = false; this.development.node.active = false; }
-        else if (this.overview.isOpen) { this.journal.node.active = false; this.development.node.active = false; }
-        else if (this.journal.isOpen) this.development.node.active = false;
-        else if (this.development.isOpen) this.journal.node.active = false;
+        this.roster.update(snapshot, (atlas, name) => this.referenceArt ? this.referenceArt.iconFrame(atlas, name) : null);
+        if (snapshot.recovery) { this.overview.close(); this.journal.node.active = false; this.development.node.active = false; this.roster.node.active = false; }
+        else if (this.overview.isOpen) { this.journal.node.active = false; this.development.node.active = false; this.roster.node.active = false; }
+        else if (this.roster.isOpen) { this.journal.node.active = false; this.development.node.active = false; }
+        else if (this.journal.isOpen) { this.development.node.active = false; this.roster.node.active = false; }
+        else if (this.development.isOpen) { this.journal.node.active = false; this.roster.node.active = false; }
     }
 
     pushCombatFeedback(snapshot: DemoSnapshot): void {
@@ -276,6 +282,7 @@ export class DemoRenderer {
         this.overview.destroy();
         this.journal.destroy();
         this.development.destroy();
+        this.roster.destroy();
         if (this.referenceArt) this.referenceArt.destroy();
         if (this.softFog) this.softFog.destroy();
         this.floatTexts.splice(0).forEach((entry) => entry.node.destroy());

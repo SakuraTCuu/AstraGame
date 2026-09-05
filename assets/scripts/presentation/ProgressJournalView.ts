@@ -3,7 +3,7 @@ import type { DemoSnapshot } from "../core/demo/DemoSession";
 type JournalSnapshot = DemoSnapshot["journal"];
 type Quest = JournalSnapshot["quests"][number];
 type Tab = "main" | "boss" | "rank";
-export type JournalAction = { kind: "open"; tab: Tab } | { kind: "close" | "promote" | "develop" } | { kind: "claim" | "navigate"; id: string };
+export type JournalAction = { kind: "open"; tab: Tab } | { kind: "roster"; tab: "lineup" | "recruitment" } | { kind: "close" | "promote" | "develop" } | { kind: "claim" | "navigate"; id: string };
 
 export class ProgressJournalView {
     readonly node: cc.Node;
@@ -51,6 +51,7 @@ export class ProgressJournalView {
             if (!this.contains(point) || !this.tracked) return null;
             if (this.tracked.state === "ready") return { kind: "claim", id: this.tracked.id };
             if (this.tracked.destination?.menu === "development") return { kind: "develop" };
+            if (this.tracked.destination?.menu === "lineup" || this.tracked.destination?.menu === "recruitment") return { kind: "roster", tab: this.tracked.destination.menu };
             if (this.tracked.destination && this.tracked.state === "active") return { kind: "navigate", id: this.tracked.id };
             return { kind: "open", tab: this.tracked.condition.kind === "rank" ? "rank" : "main" };
         }
@@ -71,6 +72,7 @@ export class ProgressJournalView {
             if (!selected || Math.abs(point.x - 135) > 150) return null;
             if (selected.state === "ready") return { kind: "claim", id: selected.id };
             if (selected.state === "active" && selected.destination?.menu === "development") return { kind: "develop" };
+            if (selected.state === "active" && (selected.destination?.menu === "lineup" || selected.destination?.menu === "recruitment")) return { kind: "roster", tab: selected.destination.menu };
             if (selected.state === "active" && selected.destination) return { kind: "navigate", id: selected.id };
         }
         return null;

@@ -1,7 +1,7 @@
 import type { FogGrid } from "../fog/FogGrid";
 import type { Vec2Like } from "../math/Vector2";
 import type { GridNavigation } from "../navigation/GridNavigation";
-import type { ProgressCondition } from "./ProgressConditions";
+import type { ConditionContext, ProgressCondition } from "./ProgressConditions";
 import { meetsCondition, unmetConditions, validateCondition } from "./ProgressConditions";
 import { pointInPolygon, polygonIntersectsRect, validateConvexPolygon } from "./WorldGeometry";
 import type { ProgressReward } from "./ProgressionJournal";
@@ -165,6 +165,11 @@ export class WorldMap {
     this.events.push({ type: "progress_changed", id });
   }
   isConditionMet(condition?: ProgressCondition): boolean { return meetsCondition(condition, this); }
+  savedConditionContext(progress: MapProgress): ConditionContext {
+    return { level: Math.max(this.level, progress.level), rank: Math.max(this.rank, progress.rank ?? 0), partyLevels: this.partyLevels,
+      hasFlag: (id) => this.hasFlag(id) || (progress.flags ?? []).includes(id) || (id.startsWith("poi:") && progress.interactedPoiIds.includes(id.slice(4))),
+      counter: (id) => progress.counters?.[id] ?? this.counter(id) };
+  }
   resourceBalance(id: string): number { return this.balances.get(id) ?? 0; }
   resourceName(id: string): string { return this.resourceNames.get(id) ?? id; }
   grantFlag(id: string): void {
@@ -191,6 +196,14 @@ export class WorldMap {
     if (Object.entries(cost).some(([id, amount]) => this.resourceBalance(id) < amount)) return false;
     for (const [id, amount] of Object.entries(cost)) { this.balances.set(id, this.resourceBalance(id) - amount); this.events.push({ type: "resource_changed", id }); }
     if (Object.keys(cost).length) this.revision += 1;
+    return true;
+  }
+
+  transactRewards(cost: Readonly<Record<string, number>>, rewards: readonly ProgressReward[], random: () => number): boolean {
+    const balances = new Map(this.balances);
+    for (const [id, amount] of Object.entries(cost)) { this.validateResourceAmount(id, amount); if (this.resourceBalance(id) < amount) return false; balances.set(id, this.resourceBalance(id) - amount); }
+    this.validateRewardBatch(rewards, balances);
+    this.spendResources(cost); this.grantRewards(rewards, random);
     return true;
   }
 
