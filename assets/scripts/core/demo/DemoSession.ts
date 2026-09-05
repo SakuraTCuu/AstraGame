@@ -14,6 +14,8 @@ import { SpawnDirector } from "../world/SpawnDirector";
 import type { RespawnProgress, SpawnSnapshot } from "../world/SpawnDirector";
 import type { ExplorationEvent, InteractionResult, MapProgress, WorldObstacle, WorldPoi, WorldProgression, WorldZone } from "../world/WorldMap";
 
+export type DefeatReward = { readonly amount: number; readonly chance?: number } & ({ readonly resource: string } | { readonly experience: true });
+
 export interface DemoActorConfig {
   readonly id: string;
   readonly name?: string;
@@ -44,7 +46,7 @@ export interface DemoActorConfig {
   readonly energyOnDamage?: number;
   readonly criticalMultiplier?: number;
   readonly defeatFlag?: string;
-  readonly defeatRewards?: readonly { readonly resource: string; readonly amount: number; readonly chance?: number }[];
+  readonly defeatRewards?: readonly DefeatReward[];
 }
 
 export interface DemoSpawnConfig {
@@ -259,6 +261,11 @@ export class DemoSession {
     );
     this.map = new WorldMap(navigation, this.fog, { x: 0, y: 0, width: config.world.width, height: config.world.height },
       config.fog.unlockZones, config.world.pointsOfInterest, config.world.obstacles, config.world.progression, config.world.zoneMode);
+    for (const enemy of enemyConfigs) for (const reward of enemy.defeatRewards ?? []) {
+      if (!Number.isSafeInteger(reward.amount) || reward.amount < 0 || !Number.isFinite(reward.chance ?? 1) ||
+          (reward.chance ?? 1) < 0 || (reward.chance ?? 1) > 1 ||
+          ("resource" in reward ? !config.world.progression?.resources[reward.resource] : !config.world.progression?.experienceLevels?.length)) throw new Error(`Invalid defeat reward for ${enemy.id}`);
+    }
     for (const player of players) {
       if (!navigation.isWorldWalkable(player.position)) throw new Error(`Player ${player.id} starts on blocked ground`);
     }
@@ -481,11 +488,16 @@ export class DemoSession {
       const events = this.world.combat.drainEvents();
       for (const event of events) {
         if (event.type !== "death" || !enemyIds.has(event.targetId)) continue;
-        const template = this.spawns.templateForActor(event.targetId);
-        if (template?.defeatFlag) this.map.grantFlag(template.defeatFlag);
+        const template = this.spawns.templateForActor(event.targetId) ?? this.enemyTemplates.get(event.targetId);
+        if (template?.defeatFlag) { this.map.grantFlag(template.defeatFlag); this.map.incrementCounter(template.defeatFlag); }
         const grants: Record<string, number> = {};
-        for (const reward of template?.defeatRewards ?? []) if (this.world.random.next() < (reward.chance ?? 1)) grants[reward.resource] = (grants[reward.resource] ?? 0) + reward.amount;
+        let experience = 0;
+        for (const reward of template?.defeatRewards ?? []) if (this.world.random.next() < (reward.chance ?? 1)) {
+          if ("resource" in reward) grants[reward.resource] = (grants[reward.resource] ?? 0) + reward.amount;
+          else experience += reward.amount;
+        }
         if (Object.keys(grants).length) this.map.grantResources(grants);
+        if (experience) this.map.grantExperience(experience);
       }
       this.defeatedEnemies += events.filter((event) => event.type === "death" && enemyIds.has(event.targetId)).length;
       this.frameEvents.push(...events);

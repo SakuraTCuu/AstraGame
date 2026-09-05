@@ -233,6 +233,23 @@ try {
   });
   await delay(100);
   await capture("battle");
+  const experience = await evaluate(async () => {
+    const boot = window.__referenceBoot, session = boot.session;
+    for (let tick = 0; tick < 1200 && session.runState === "running" && !session.map.snapshot().experience.current; tick++) session.update(0.05);
+    const progress = session.map.saveProgress();
+    const earned = session.config.world.progression.experienceLevels.filter((entry) => entry.level < progress.level)
+      .reduce((sum, entry) => sum + entry.required, progress.experience);
+    const expected = session.config.enemies.reduce((sum, enemy) => sum + (progress.counters[enemy.defeatFlag] || 0) *
+      (enemy.defeatRewards || []).filter((reward) => reward.experience && reward.chance === 1).reduce((total, reward) => total + reward.amount, 0), 0);
+    await boot.runtime.flushProgress();
+    const saved = await boot.runtime.ports.storage.loadExploration(session.config.meta.id);
+    boot.renderer.update(session.getSnapshot(), 0.1);
+    return { earned, expected, level: progress.level, current: progress.experience,
+      savedLevel: saved.map.level, savedExperience: saved.map.experience, countersMatch: JSON.stringify(saved.map.counters) === JSON.stringify(progress.counters) };
+  });
+  assert.ok(experience.earned > 0 && experience.earned === experience.expected, JSON.stringify(experience));
+  assert.ok(experience.level === experience.savedLevel && experience.current === experience.savedExperience && experience.countersMatch);
+  await capture("experience");
   const lightProbe = await evaluate(() => {
     const boot = window.__referenceBoot;
     const original = boot.session.getSnapshot();
@@ -290,7 +307,7 @@ try {
   assert.ok(resetCounts.every((count) => count.root === resetCounts[0].root && count.world === 8 && count.actors === 4), JSON.stringify(resetCounts));
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
-  const report = { initial, foreground, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, resetCounts, viewports, errors, failures };
+  const report = { initial, foreground, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

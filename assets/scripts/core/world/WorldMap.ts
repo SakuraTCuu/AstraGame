@@ -15,10 +15,11 @@ export interface WorldPoi extends Vec2Like {
   readonly interaction?: { readonly radius: number; readonly cost?: ResourceCost; readonly grants?: Readonly<Record<string, number>>; readonly initiallyCompleted?: boolean; readonly condition?: ProgressCondition; readonly allowLockedApproach?: boolean };
 }
 export interface WorldZone { readonly id: string; readonly name?: string; readonly rect: WorldRect; readonly unlock: string; readonly minimumLevel?: number; readonly polygon?: readonly Vec2Like[]; }
-export interface WorldProgression { readonly level: number; readonly rank?: number; readonly initialFlags?: readonly string[]; readonly resources: Readonly<Record<string, { readonly name: string; readonly initial: number }>>; }
-export interface MapProgress { readonly level: number; readonly rank?: number; readonly flags?: readonly string[]; readonly resources: Readonly<Record<string, number>>; readonly discoveredPoiIds: readonly string[]; readonly interactedPoiIds: readonly string[]; readonly completedEncounterIds: readonly string[]; }
+export interface ExperienceLevel { readonly level: number; readonly required: number; }
+export interface WorldProgression { readonly level: number; readonly rank?: number; readonly initialFlags?: readonly string[]; readonly experienceLevels?: readonly ExperienceLevel[]; readonly resources: Readonly<Record<string, { readonly name: string; readonly initial: number }>>; }
+export interface MapProgress { readonly level: number; readonly rank?: number; readonly experience?: number; readonly counters?: Readonly<Record<string, number>>; readonly flags?: readonly string[]; readonly resources: Readonly<Record<string, number>>; readonly discoveredPoiIds: readonly string[]; readonly interactedPoiIds: readonly string[]; readonly completedEncounterIds: readonly string[]; }
 export type InteractionResult = "completed" | "already_completed" | "out_of_range" | "insufficient_resources" | "requirements_not_met" | "locked" | "unavailable";
-export interface ExplorationEvent { readonly type: "poi_discovered" | "poi_interacted" | "zone_unlocked" | "encounter_completed" | "progress_changed" | "resource_changed" | "teleported"; readonly id: string; }
+export interface ExplorationEvent { readonly type: "poi_discovered" | "poi_interacted" | "zone_unlocked" | "encounter_completed" | "progress_changed" | "resource_changed" | "teleported" | "level_up"; readonly id: string; }
 
 function contains(rect: WorldRect, point: Vec2Like): boolean {
   return point.x >= rect.x && point.y >= rect.y && point.x < rect.x + rect.width && point.y < rect.y + rect.height;
@@ -41,6 +42,9 @@ export class WorldMap {
   private readonly interacted = new Set<string>();
   private readonly balances = new Map<string, number>();
   private readonly resourceNames = new Map<string, string>();
+  private readonly experienceLevels = new Map<number, number>();
+  private readonly counters = new Map<string, number>();
+  private experience = 0;
   level: number;
   rank: number;
   private readonly flags = new Set<string>();
@@ -69,6 +73,14 @@ export class WorldMap {
     if (!Number.isSafeInteger(this.rank) || this.rank < 0) throw new Error("Invalid exploration rank");
     for (const flag of progression.initialFlags ?? []) { if (!flag || typeof flag !== "string") throw new Error("Invalid initial flag"); this.flags.add(flag); }
     if (!Number.isSafeInteger(this.level) || this.level < 1) throw new Error("Invalid exploration level");
+    const levels = [...(progression.experienceLevels ?? [])].sort((a, b) => a.level - b.level);
+    for (let index = 0; index < levels.length; index++) {
+      const entry = levels[index];
+      if (!Number.isSafeInteger(entry.level) || entry.level < 1 || !Number.isSafeInteger(entry.required) || entry.required <= 0 ||
+          (index > 0 && entry.level !== levels[index - 1].level + 1)) throw new Error("Invalid experience level table");
+      this.experienceLevels.set(entry.level, entry.required);
+    }
+    if (levels.length && !this.experienceLevels.has(this.level)) throw new Error("Starting level is absent from experience table");
     for (const id of Object.keys(progression.resources)) {
       const resource = progression.resources[id];
       if (!Number.isSafeInteger(resource.initial) || resource.initial < 0) throw new Error(`Invalid resource ${id}`);
@@ -122,6 +134,14 @@ export class WorldMap {
   isEncounterCompleted(id: string): boolean { return this.completed.has(id); }
   isPoiInteracted(id: string): boolean { return this.interacted.has(id); }
   hasFlag(id: string): boolean { return this.flags.has(id) || (id.startsWith("poi:") && this.interacted.has(id.slice(4))); }
+  counter(id: string): number { return this.counters.get(id) ?? 0; }
+  incrementCounter(id: string, amount = 1): void {
+    if (!id || !Number.isSafeInteger(amount) || amount < 0 || !Number.isSafeInteger(this.counter(id) + amount)) throw new Error("Invalid progression count");
+    if (!amount) return;
+    this.counters.set(id, this.counter(id) + amount);
+    this.revision += 1;
+    this.events.push({ type: "progress_changed", id });
+  }
   isConditionMet(condition?: ProgressCondition): boolean { return meetsCondition(condition, this); }
   grantFlag(id: string): void {
     if (!id || this.flags.has(id)) return;
@@ -140,6 +160,24 @@ export class WorldMap {
     }
     for (const id of Object.keys(grants)) { this.balances.set(id, this.balances.get(id)! + grants[id]); this.events.push({ type: "resource_changed", id }); }
     this.revision += 1;
+  }
+
+  grantExperience(amount: number): void {
+    if (!Number.isSafeInteger(amount) || amount < 0 || !Number.isSafeInteger(this.experience + amount)) throw new Error("Invalid experience reward");
+    if (!amount) return;
+    if (!this.experienceLevels.size) throw new Error("Experience requires a level table");
+    let level = this.level, remaining = this.experience + amount;
+    while (this.experienceLevels.has(level + 1) && remaining >= this.experienceLevels.get(level)!) {
+      remaining -= this.experienceLevels.get(level)!;
+      level++;
+      this.events.push({ type: "level_up", id: String(level) });
+    }
+    const changedLevel = level !== this.level;
+    this.level = level;
+    this.experience = this.experienceLevels.has(level + 1) ? remaining : 0;
+    this.revision += 1;
+    this.events.push({ type: "progress_changed", id: "experience" });
+    if (changedLevel) this.refreshUnlocks();
   }
 
   isPortalActive(id: string): boolean {
@@ -173,7 +211,10 @@ export class WorldMap {
 
   setLevel(level: number): void {
     if (!Number.isSafeInteger(level) || level < this.level) throw new Error("Exploration level cannot decrease");
+    if (this.experienceLevels.size && !this.experienceLevels.has(level)) throw new Error("Level is absent from experience table");
+    if (level === this.level) return;
     this.level = level;
+    this.experience = 0;
     this.revision += 1;
     this.refreshUnlocks();
   }
@@ -215,6 +256,8 @@ export class WorldMap {
       interactedPoiIds: [...this.interacted],
       level: this.level,
       rank: this.rank,
+      experience: this.experienceLevels.size ? { current: this.experience, required: this.experienceLevels.has(this.level + 1) ? this.experienceLevels.get(this.level)! : null } : null,
+      counters: this.counterProgress(),
       flags: [...this.flags],
       resources: [...this.balances].map(([id, amount]) => ({ id, name: this.resourceNames.get(id)!, amount })),
       pois: this.pois.map((poi) => ({ ...poi, discovered: this.discovered.has(poi.id), completed: this.interacted.has(poi.id),
@@ -226,12 +269,17 @@ export class WorldMap {
   saveProgress(): MapProgress {
     const resources: Record<string, number> = {};
     for (const [id, amount] of this.balances) resources[id] = amount;
-    return { level: this.level, rank: this.rank, flags: [...this.flags], resources, discoveredPoiIds: [...this.discovered],
+    return { level: this.level, rank: this.rank, experience: this.experience, counters: this.counterProgress(), flags: [...this.flags], resources, discoveredPoiIds: [...this.discovered],
       interactedPoiIds: [...this.interacted], completedEncounterIds: [...this.completed] };
   }
 
   validateProgress(progress: MapProgress): void {
     if (!Number.isSafeInteger(progress.level) || progress.level < 1) throw new Error("Invalid saved level");
+    const experience = progress.experience ?? 0;
+    if (!Number.isSafeInteger(experience) || experience < 0 ||
+        (this.experienceLevels.size && !this.experienceLevels.has(progress.level)) ||
+        (this.experienceLevels.has(progress.level + 1) ? experience >= this.experienceLevels.get(progress.level)! : experience !== 0)) throw new Error("Invalid saved experience");
+    for (const [id, amount] of Object.entries(progress.counters ?? {})) if (!id || !Number.isSafeInteger(amount) || amount < 0) throw new Error("Invalid saved progression count");
     for (const [id, amount] of Object.entries(progress.resources)) this.validateResourceAmount(id, amount);
     if (Object.keys(progress.resources).length !== this.balances.size) throw new Error("Saved resources do not match configuration");
     for (const id of progress.discoveredPoiIds) if (!this.pois.some((poi) => poi.id === id)) throw new Error(`Unknown saved POI ${id}`);
@@ -244,6 +292,8 @@ export class WorldMap {
   restoreProgress(progress: MapProgress): void {
     this.validateProgress(progress);
     this.level = Math.max(this.level, progress.level);
+    this.experience = progress.level >= this.level ? progress.experience ?? 0 : 0;
+    for (const [id, amount] of Object.entries(progress.counters ?? {})) this.counters.set(id, Math.max(this.counter(id), amount));
     this.rank = Math.max(this.rank, progress.rank ?? 0);
     for (const id of progress.flags ?? []) this.flags.add(id);
     for (const [id, amount] of Object.entries(progress.resources)) this.balances.set(id, amount);
@@ -253,6 +303,12 @@ export class WorldMap {
     this.refreshUnlocks();
     this.events.splice(0);
     this.revision += 1;
+  }
+
+  private counterProgress(): Record<string, number> {
+    const counters: Record<string, number> = {};
+    for (const [id, amount] of this.counters) counters[id] = amount;
+    return counters;
   }
 
   private refreshUnlocks(): void {

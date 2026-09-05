@@ -21,7 +21,14 @@ for (let tick = 0; tick < 6000 && session.runState === "running" && !session.map
 }
 const report = { defeated: session.map.hasFlag("defeat:102020001"), elapsedSeconds: session.world.elapsedSeconds,
   skills: [...skills], phases: [...phases], survivors: session.world.players.filter((actor) => actor.alive).length,
+  level: session.map.level, experience: session.map.snapshot().experience, bossKillCount: session.map.counter("defeat:102020001"),
   usedTeleport: false, modifiedCombatStats: false };
 console.log(JSON.stringify(report, null, 2));
 assert.ok(report.defeated && report.survivors > 0);
 assert.ok(skills.has("reference_skill_5000204") && skills.has("reference_skill_5000203"));
+assert.ok(report.level > 1 && report.bossKillCount === 1, "Combat did not advance source experience and kill progression");
+const restored = new DemoSession(config);
+restored.restoreExploration(session.saveExploration());
+assert.equal(restored.map.level, report.level);
+assert.deepEqual(restored.map.snapshot().experience, report.experience);
+assert.equal(restored.map.counter("defeat:102020001"), 1);

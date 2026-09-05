@@ -24,6 +24,8 @@ export function compileReferenceCondition(source, lookup, depth = 0) {
     return { kind: type === "AndCondition" ? "all" : "any", conditions: splitConditions(body.slice(1, -1)).map((entry) => compileReferenceCondition(entry.trim(), lookup, depth + 1)) };
   }
   if (body.startsWith("{") && body.endsWith("}")) body = body.slice(1, -1);
+  const killCount = /^id:(\d+)_num:(\d+)$/.exec(body);
+  if (type === "HisKillMonsterCondition" && killCount) return { kind: "counter", id: `defeat:${killCount[1]}`, value: Number(killCount[2]), label: `\u51fb\u8d25${lookup("Monster", Number(killCount[1]))?.name || "\u602a\u7269"}` };
   const fields = /^([A-Za-z]+)\s*:\s*(\d+)$/.exec(body);
   if (!fields) throw new Error(`Unsupported condition arguments ${source}`);
   const value = Number(fields[2]);

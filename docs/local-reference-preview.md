@@ -32,9 +32,11 @@ The current first-map supplement fills 648 missing tiles from the verified resou
 
 The reference adapter includes 59 fog gates and 31 portals, source item costs, level/rank/defeat/quest/NPC conditions, and incense gathering probabilities. Fog rectangles are converted from the editor's 120-unit grid into convex world polygons. The overview supports panning, zooming, destination selection and repaired-portal travel. Opening it pauses the standalone simulation; this behavior still needs reference comparison.
 
-Exploration saves are isolated by configuration and, in Zhushen, by role. They preserve balances, flags, opened gates, explored cells, party positions/HP/energy, the random state, permanent clears and respawn timers. Explicit restart clears this exploration save. Active buffs, in-progress enemy HP and cast/cooldown state are not yet resumed.
+Exploration saves are isolated by configuration and, in Zhushen, by role. They preserve balances, level/experience, counted kills, flags, opened gates, explored cells, party positions/HP/energy, the random state, permanent clears and respawn timers. Existing saves without experience/count fields load with zero for those fields. Explicit restart clears this exploration save. Active buffs, in-progress enemy HP and cast/cooldown state are not yet resumed.
 
 The standalone comparison preset starts at world level 1 with 20 incense, its home portal repaired and fog containing the spawn open. The four heroes use level-10 attributes from the source tables. This is not the user's live account.
+
+Source item 7 rewards now advance team experience using all 1525 `PlayerLevel` rows. The first world has 98 enemy templates with experience rewards. Experience carries across thresholds and immediately refreshes level-gated exploration. Kill-count conditions retain their required counts; one historical defeat is not treated as completion of a multi-kill task. Daily gain limits and account-dependent reward scaling remain unconfirmed. At the last configured level the local simulation stops accumulating experience.
 
 The skill adapter compiles source coefficients, pre/post timing, target counts, projectiles, public cooldown groups, energy costs, HP/time gates and supported buffs. The core resolves multi-hit timelines, homing projectiles, healing, forced critical hits, attack-speed modifiers, charges and jumps. Boss HP phases come from their skill conditions; timed enrage is a separate status.
 
@@ -46,12 +48,13 @@ Still incomplete: defense/critical calibration, specialized enemy actions and co
 
 ## Validation On 2026-09-05
 
-- 70 deterministic tests passed, including skill-frame parsing, multi-hit cancellation, multi-target homing heals, energy/public cooldown gates, buff expiry and jump dodging.
+- 74 deterministic tests passed, including skill-frame parsing, multi-hit cancellation, multi-target homing heals, energy/public cooldown gates, buff expiry, jump dodging, experience rollover and progression-save compatibility.
 - Creator 2.4.15 Web Mobile build succeeded.
 - Reference browser smoke opened the overview, selected a gate, navigated to it and clicked its unlock command. The balance changed from 20 to 15. Reload restored the same balance, position and 109 explored cells. Repaired-portal travel changed position without spending more incense. Combat, atlas animation, desktop/mobile views and three restarts passed without console errors or failed requests.
 - Desktop 1280 x 800 and mobile 390 x 844 captures were inspected. Detailed map coverage is recorded in `audit.json` as required and missing tile paths.
 - Foreground render-texture checks found 3153 covered samples in the starting view. A renderer-only flashlight probe measured alpha 0 ahead versus 64 behind, independently of gameplay progression.
 - Three post-combat restarts retained eight world-layer children and four character views. The damage-label pool remained bounded.
+- Browser combat earned 20 experience, matching the source rewards for its counted kills. Storage retained the same level, experience and counters; the HUD was inspected at desktop and mobile sizes.
 - The independent fixture still completed its full navigation, unlock and Boss sequence in about 183 seconds of simulated time.
-- The source Boss run reached both paid gates and defeated the first Boss in about 89.55 simulated seconds, with three survivors, without teleporting or changing combat stats. It observed normal attacks, charge, jump, phase 2 and death. Run it with `node --no-warnings --loader ./tests/ts-loader.mjs tools/reference-boss-smoke.mjs` after staging.
+- The source Boss run reached both paid gates and defeated the first Boss in about 89.1 simulated seconds, with three survivors, without teleporting or changing combat stats. It observed normal attacks, charge, jump, phase 2 and death. Natural rewards advanced the team to level 2 with 40/600 experience; reload preserved the level, experience and one Boss kill. Run it with `node --no-warnings --loader ./tests/ts-loader.mjs tools/reference-boss-smoke.mjs` after staging.
 - The Zhushen package contains 90 owned files. Current host type checking reports zero module errors and 17 other host diagnostics. A runtime test inside the host remains outstanding; no reference assets or converted source tables are exported.

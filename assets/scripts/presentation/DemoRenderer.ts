@@ -589,6 +589,10 @@ export class DemoRenderer {
         const total = snapshot.fog.width * snapshot.fog.height;
         this.statusLabel.string = `${this.config.world.name || "MIST VALLEY"}   ${Math.floor(snapshot.elapsedSeconds)}s\nSQUAD ${players.filter((actor) => actor.hp > 0).length}/${players.length}  HOSTILES ${enemies.length}  EXPLORED ${Math.round(discovered / total * 100)}%`;
         if (snapshot.exploration.resources.length) this.statusLabel.string = `${this.config.world.name}  Lv.${snapshot.exploration.level}\n${snapshot.exploration.resources.map((resource) => `${resource.name} ${resource.amount}`).join("   ")}`;
+        if (snapshot.exploration.experience) {
+            const experience = snapshot.exploration.experience;
+            this.statusLabel.string += `   EXP ${experience.current}/${experience.required ?? "MAX"}`;
+        }
         this.objectiveLabel.string = this.interactionFeedbackTime > 0 && this.interactionFeedback ? this.interactionFeedback : this.navigationFeedback > 0 ? "PATH BLOCKED" : bossPhase
             ? `BOSS - ${bossPhase.toUpperCase()}`
             : leader && leader.state === "attacking"

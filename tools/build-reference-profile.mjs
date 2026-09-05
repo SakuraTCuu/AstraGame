@@ -14,7 +14,7 @@ function readJsonAsset(data) {
 export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   const families = new Map();
   for (const [name, table] of Object.entries(tables)) {
-    const family = name.match(/^(Avatar|Hero|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item)_(?:\d+|Xs)$/)?.[1];
+    const family = name.match(/^(Avatar|Hero|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item|PlayerLevel)(?:_(?:\d+|Xs))?$/)?.[1];
     if (!family) continue;
     if (!families.has(family)) families.set(family, new Map());
     for (const id of Object.keys(table)) if (id !== "__KEY_MAP__") families.get(family).set(id, table);
@@ -46,7 +46,9 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   config.world = { ...config.world, id: "reference-world", name: sourceMap.desc,
     width: Math.floor(cut.width / cellSize) * cellSize, height: Math.floor(cut.height / depth / cellSize) * cellSize,
     cellSize, obstacles: [], pointsOfInterest: [], blocked: [], start: toWorld(...sourceMap.born.split(",").map(Number)), zoneMode: "overlay",
-    progression: { level: 1, rank: 0, initialFlags: [], resources: { incense: { name: row("Item", 4).name, initial: 20 } } } };
+    progression: { level: 1, rank: 0, initialFlags: [],
+      experienceLevels: [...families.get("PlayerLevel").keys()].map((id) => { const level = row("PlayerLevel", id); return { level: level.level, required: level.exp }; }).sort((a, b) => a.level - b.level),
+      resources: { incense: { name: row("Item", 4).name, initial: 20 } } } };
   for (let y = 0; y < config.world.height / cellSize; y++) for (let x = 0; x < config.world.width / cellSize; x++) {
     const blocked = [[0.15, 0.15], [0.85, 0.15], [0.5, 0.5], [0.15, 0.85], [0.85, 0.85]].some(([dx, dy]) =>
       sourceBlocked(origin.x + (x + dx) * cellSize, origin.y + (y + dy) * cellSize * depth));
@@ -169,9 +171,9 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     const rewards = [];
     const reward = row("Reward", monster.reward0);
     for (const [key, value] of Object.entries(reward || {})) {
-      if (!/^options\d+$/.test(key) || typeof value !== "string" || !value.startsWith("item|id:4_")) continue;
+      if (!/^options\d+$/.test(key) || typeof value !== "string" || !/^item\|id:(?:4|7)_/.test(value)) continue;
       const item = parseReferenceItem(value);
-      rewards.push({ resource: "incense", amount: item.amount, chance: item.chance });
+      rewards.push({ ...(item.itemId === 7 ? { experience: true } : { resource: "incense" }), amount: item.amount, chance: item.chance });
     }
     enemies.set(templateId, { id: templateId, name: monster.name || (resource ? row("Item", 4).name : visual?.path.split("/").pop() || "\u602a\u7269"), kind: boss ? "boss" : resource ? "resource" : "enemy",
       x: position.x, y: position.y, hp: monster.attr.maxhp, attack: monster.attr.atk || 0, defense: monster.attr.def || 0,
