@@ -197,7 +197,7 @@ export class ReferenceArtLayer {
     private animate(view: ActorView, actor: ActorSnapshot, snapshot: DemoSnapshot, delta: number): void {
         const moving = Math.abs(actor.x - view.lastX) > 0.1 || ["moving", "chasing", "returning"].includes(actor.state);
         const cast = snapshot.casts.find((cast) => cast.sourceId === actor.id);
-        let action = actor.hp <= 0 ? "dead" : cast ? "attack" : moving ? "move" : "idle";
+        let action = actor.hp <= 0 ? "dead" : actor.state === "displaced" ? "hurt" : cast ? "attack" : moving ? "move" : "idle";
         if (cast) action = view.binding.skillAnimations && view.binding.skillAnimations[cast.skillId] || "attack";
         const target = snapshot.actors.find((target) => target.id === actor.targetId);
         const dx = target ? target.x - actor.x : actor.x - view.lastX;
@@ -214,10 +214,10 @@ export class ReferenceArtLayer {
                 const preparing = available.find((entry) => entry.name === phases.prepare);
                 action = preparing && cast.duration - cast.remaining < preparing.duration / (cast.playbackRate || 1) ? phases.prepare : phases.hold || phases.prepare;
             }
-            if (!available.some((entry) => entry.name === action)) action = action === "dead" ? "die" : "attack";
+            if (!available.some((entry) => entry.name === action)) action = action === "dead" ? "die" : action === "hurt" ? "idle" : "attack";
             if (!available.some((entry) => entry.name === action)) action = "idle";
             const track = view.skeleton.getCurrent(0);
-            if (action === "idle" && view.action !== "idle" && view.action !== "move" && track && !track.isComplete()) action = view.action;
+            if (actor.state !== "displaced" && action === "idle" && view.action !== "idle" && view.action !== "move" && track && !track.isComplete()) action = view.action;
             if (view.action !== action || (cast && view.castId !== cast.id)) view.skeleton.setAnimation(0, action, action === "idle" || action === "move" || phases?.hold === action);
             view.skeleton.timeScale = cast?.playbackRate || 1;
             view.skeleton.paused = snapshot.runState !== "running" && snapshot.runState !== "recovering";

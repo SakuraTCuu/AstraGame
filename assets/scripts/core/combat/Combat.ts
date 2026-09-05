@@ -52,7 +52,7 @@ export interface SkillDefinition {
 }
 
 export interface CombatEvent {
-  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse";
+  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback";
   readonly sourceId: string;
   readonly targetId: string;
   readonly value?: number;
@@ -87,6 +87,8 @@ interface Cast {
 }
 
 interface Projectile { readonly cast: Cast; readonly expiresAt: number; position: Vector2; lastUpdate: number; impactAt?: number; impactCast?: Cast; actionIndex: number; }
+interface Displacement { readonly actor: Actor; readonly direction: Vector2; readonly distance: number; readonly duration: number; readonly startedAt: number; progress: number; }
+type CombatMovement = SkillMotion["kind"] | "knockback";
 export interface SummonRequest { readonly sourceId: string; readonly enemyId: string; readonly count: number; readonly limit: number; readonly radius: number; readonly position: Vec2Like; }
 export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; }
 export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number; }
@@ -120,6 +122,7 @@ export class CombatSystem {
   private readonly casts = new Map<string, Cast>();
   private readonly triggeredCasts = new Map<number, Cast>();
   private readonly projectiles = new Map<number, Projectile>();
+  private readonly displacements = new Map<string, Displacement>();
   private readonly summons: SummonRequest[] = [];
   private actors: readonly Actor[] = [];
   private time = 0;
@@ -130,7 +133,7 @@ export class CombatSystem {
   private readonly random: () => number;
   private readonly mode: "pve" | "pvp";
   private readonly definitions: Readonly<Record<string, SkillDefinition>>;
-  private move: ((actor: Actor, destination: Vec2Like, kind: SkillMotion["kind"]) => void) | undefined;
+  private move: ((actor: Actor, destination: Vec2Like, kind: CombatMovement) => void) | undefined;
   readonly events: CombatEvent[] = [];
 
   constructor(random?: () => number, mode: "pve" | "pvp" = "pve", definitions: Readonly<Record<string, SkillDefinition>> = {}) {
@@ -149,7 +152,7 @@ export class CombatSystem {
     }
   }
 
-  update(deltaSeconds: number, actors: readonly Actor[], move?: (actor: Actor, destination: Vec2Like, kind: SkillMotion["kind"]) => void): void {
+  update(deltaSeconds: number, actors: readonly Actor[], move?: (actor: Actor, destination: Vec2Like, kind: CombatMovement) => void): void {
     this.actors = actors;
     this.move = move;
     this.time += deltaSeconds;
@@ -162,6 +165,15 @@ export class CombatSystem {
       if (actor.alive && target && target.alive && target.faction !== actor.faction && actor.fsm.state !== "returning") this.combatTimes.set(actor.id, (this.combatTimes.get(actor.id) ?? 0) + deltaSeconds);
       else this.combatTimes.delete(actor.id);
     }
+    for (const [id, displacement] of this.displacements) {
+      const actor = displacement.actor;
+      if (byId.get(id) !== actor || !actor.alive || actor.fsm.state !== "displaced" || this.displacementImmune(actor)) { this.cancelDisplacement(id); continue; }
+      const progress = Math.min(1, (this.time - displacement.startedAt) / displacement.duration);
+      const destination = actor.position.add(displacement.direction.scale(displacement.distance * (progress - displacement.progress)));
+      displacement.progress = progress;
+      if (this.move) this.move(actor, destination, "knockback"); else actor.position = destination;
+      if (progress >= 1 - 1e-9) this.cancelDisplacement(id);
+    }
     for (const [id, cast] of this.casts) {
       if (!cast.source.alive || cast.source.fsm.state === "returning") { this.cancelCaster(id); continue; }
       if (cast.skill.motion && this.time >= cast.hitAt) this.updateMotion(cast);
@@ -173,6 +185,7 @@ export class CombatSystem {
       }
     }
     for (const [id, cast] of [...this.triggeredCasts]) {
+      if (!this.triggeredCasts.has(id)) continue;
       if (!cast.source.alive || !byId.has(cast.source.id) || cast.source.fsm.state === "returning") { this.cancelCaster(cast.source.id); continue; }
       if (!cast.resolved && this.time + 1e-9 >= cast.hitAt) this.launch(cast);
       if (cast.resolved && cast.skill.actions && !cast.skill.projectileSpeed) this.advanceActions(cast);
@@ -197,7 +210,8 @@ export class CombatSystem {
     }
   }
 
-  isBusy(actor: Actor): boolean { return this.casts.has(actor.id); }
+  isBusy(actor: Actor): boolean { return this.casts.has(actor.id) || this.isDisplaced(actor); }
+  isDisplaced(actor: Actor): boolean { return this.displacements.has(actor.id); }
   isWindingUp(actor: Actor): boolean { const cast = this.casts.get(actor.id); return Boolean(cast && !cast.resolved); }
   cooldownRemaining(actor: Actor, skill: SkillDefinition): number { return this.cooldowns.get(this.cooldownKey(actor, skill)) ?? 0; }
   canUse(actor: Actor, skill: SkillDefinition): boolean {
@@ -235,7 +249,13 @@ export class CombatSystem {
       if (entry.triggered) this.triggeredCasts.delete(entry.id);
       if (!entry.resolved || entry.actionIndex < (entry.skill.actions?.length ?? 0)) this.events.push({ type: "cast_cancelled", sourceId: id, targetId: entry.targetId, skillId: entry.skill.id });
     }
-    if (cast?.source.alive && cast.source.fsm.state !== "returning") cast.source.setState("idle");
+    if (cast?.source.alive && cast.source.fsm.state !== "returning" && cast.source.fsm.state !== "displaced") cast.source.setState("idle");
+  }
+
+  cancelDisplacement(id: string): void {
+    const displacement = this.displacements.get(id);
+    this.displacements.delete(id);
+    if (displacement?.actor.alive && displacement.actor.fsm.state === "displaced") displacement.actor.setState("idle");
   }
 
   castSnapshots(): CastSnapshot[] {
@@ -260,6 +280,7 @@ export class CombatSystem {
   drainSummons(): SummonRequest[] { return this.summons.splice(0); }
 
   resetEngagement(): void {
+    for (const id of this.displacements.keys()) this.cancelDisplacement(id);
     this.casts.clear(); this.triggeredCasts.clear(); this.projectiles.clear(); this.summons.splice(0);
     this.cooldowns.clear(); this.publicCooldowns.clear(); this.combatTimes.clear(); this.events.splice(0);
     this.actors = []; this.move = undefined;
@@ -305,7 +326,7 @@ export class CombatSystem {
     for (const trigger of parent.skill.onRelease ?? []) {
       const child = this.definitions[trigger.skillId];
       if (!child || child.motion) throw new Error(`Invalid triggered skill ${trigger.skillId}`);
-      if (!parent.source.alive || parent.triggerChain.includes(child.id) || parent.triggerChain.length >= 8) continue;
+      if (!parent.source.alive || this.isDisplaced(parent.source) || parent.triggerChain.includes(child.id) || parent.triggerChain.length >= 8) continue;
       if (!this.conditionsMet(parent.source, this.actors.find((actor) => actor.id === parent.targetId), trigger.conditions)) continue;
       if ((trigger.chance ?? 1) < 1 && this.random() >= (trigger.chance ?? 1)) continue;
       const target = selectSkillTarget(parent.source, this.actors, child);
@@ -382,9 +403,10 @@ export class CombatSystem {
         const critical = Boolean(action?.forceCritical || skill.forceCritical || (chance > 0 && this.random() < chance));
         const damage = this.applyDamage(source, target, skill.id, action?.power ?? skill.power, type, critical);
         if (action?.healFromDamage && damage > 0) {
-          const allies = this.actors.filter((actor) => actor.alive && actor.faction === source.faction);
+          const allies = action.healFromDamageRecipient === "self" ? (source.alive ? [source] : []) : this.actors.filter((actor) => actor.alive && actor.faction === source.faction);
           for (const ally of allies) { const value = ally.heal(damage * action.healFromDamage / allies.length); this.events.push({ type: "heal", sourceId: source.id, targetId: ally.id, value, skillId: skill.id }); }
         }
+        if (action?.knockback) this.knockBack(cast, target, action.knockback);
         if (target.alive && action?.settleStatus) for (const tick of target.settlePeriodicStatus(action.settleStatus.group, action.settleStatus.seconds))
           this.applyDamage(tick.source, target, skill.id, tick.power, tick.damageType, false, tick.statusId);
       }
@@ -409,8 +431,23 @@ export class CombatSystem {
     const absorbed = previousShield - target.shield;
     if (absorbed > 0) this.events.push({ type: "absorb", sourceId: source.id, targetId: target.id, value: absorbed, skillId });
     this.events.push({ type: "damage", sourceId: source.id, targetId: target.id, value: damage, skillId, critical, damageType: type, ...(periodic ? { periodic, statusId } : {}) });
-    if (!target.alive) { this.cancelCaster(target.id); this.events.push({ type: "death", sourceId: source.id, targetId: target.id, skillId }); }
+    if (!target.alive) { this.cancelCaster(target.id); this.cancelDisplacement(target.id); this.events.push({ type: "death", sourceId: source.id, targetId: target.id, skillId }); }
     return damage;
+  }
+
+  private displacementImmune(actor: Actor): boolean {
+    return ["unForceMove", "ignoreControl"].some((state) => actor.hasStatus(state) || actor.tags.has(state));
+  }
+
+  private knockBack(cast: Cast, target: Actor, motion: NonNullable<SkillAction["knockback"]>): void {
+    if (!target.alive || target.fsm.state === "returning" || this.displacementImmune(target)) return;
+    let direction = target.position.subtract(cast.source.position).normalized();
+    if (direction.lengthSquared() === 0) direction = cast.point.subtract(cast.origin).normalized();
+    if (direction.lengthSquared() === 0) direction = new Vector2(0, 1);
+    this.cancelCaster(target.id);
+    this.displacements.set(target.id, { actor: target, direction, distance: motion.distance, duration: motion.duration, startedAt: this.time, progress: 0 });
+    target.setState("displaced");
+    this.events.push({ type: "knockback", sourceId: cast.source.id, targetId: target.id, skillId: cast.skill.id, value: motion.distance });
   }
 
   private hitTargets(cast: Cast, projectile: boolean): Actor[] {
@@ -458,7 +495,7 @@ export class CombatSystem {
     while (cast.actionIndex < actions.length && cast.startedAt + actions[cast.actionIndex].at / cast.speed <= this.time + 1e-9) {
       const action = actions[cast.actionIndex++];
       this.resolveHit(cast, false, action);
-      if (!cast.source.alive) break;
+      if (!cast.source.alive || this.isDisplaced(cast.source)) break;
     }
   }
 

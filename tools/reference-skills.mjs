@@ -170,9 +170,18 @@ export function createReferenceSkillCompiler(lookup) {
     }
     for (const frame of frames) {
       const at = definition.projectileSpeed ? Math.max(0, frame.frame / fps) : motion ? windup + definition.motion.duration + frame.frame / fps : Math.max(windup, frame.frame / fps);
+      let damageStep;
       for (const action of frame.actions) {
-        if (action[0] === "damageAction" || action[0] === "healAction") actions.push({ at, type: action[0] === "damageAction" ? "damage" : "heal", power: action[1] / 10000,
-          damageType: damageType(frame.damageType, id), forceCritical: definition.forceCritical });
+        if (action[0] === "damageAction" || action[0] === "healAction") {
+          const step = { at, type: action[0] === "damageAction" ? "damage" : "heal", power: action[1] / 10000,
+            damageType: damageType(frame.damageType, id), forceCritical: definition.forceCritical };
+          actions.push(step); if (step.type === "damage") damageStep = step;
+        } else if (action[0] === "repelAction" && damageStep && action.length === 3 && action[1] > 0 && action[2] > 0) {
+          damageStep.knockback = { duration: action[1] / 1000, distance: action[2] };
+          report(id, "knockback_parity", { durationMilliseconds: action[1], distance: action[2], interpretation: "linear displacement; timing, immunity and interruption require live comparison" });
+        } else if (action[0] === "healByDmgAction" && damageStep && action.length === 2 && action[1] >= 0) {
+          damageStep.healFromDamage = action[1] / 10000; damageStep.healFromDamageRecipient = "self";
+        }
         else if (action[0] === "addBuffAction") {
           const buff = status(action[1]);
           const recipient = action[2] === 1 ? "self" : action[2] === 2 ? "allies" : "targets";

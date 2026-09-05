@@ -632,7 +632,7 @@ export class DemoSession {
     let ticks = 0;
     while ((this.state === "running" || this.state === "recovering") && this.accumulator + Number.EPSILON >= this.fixedStep) {
       const leader = this.world.leader;
-      if (leader?.alive && this.moveIntent.lengthSquared() > 0) {
+      if (leader?.alive && !this.world.combat.isDisplaced(leader) && this.moveIntent.lengthSquared() > 0) {
         leader.position = this.world.options.navigation.moveWithCollision(leader.position,
           this.moveIntent.scale(leader.movementSpeed * this.fixedStep));
       } else if (leader?.alive && this.navigationMode === "resume_wait") {
@@ -829,6 +829,9 @@ export class DemoSession {
     for (const action of config.actions ?? []) {
       if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
       if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
+      if (action.healFromDamage !== undefined && (action.type !== "damage" || !Number.isFinite(action.healFromDamage) || action.healFromDamage < 0)) throw new Error(`Invalid damage healing for ${config.id}`);
+      if (action.healFromDamageRecipient !== undefined && !["self", "allies"].includes(action.healFromDamageRecipient)) throw new Error(`Invalid damage healing recipient for ${config.id}`);
+      if (action.knockback && (action.type !== "damage" || ![action.knockback.distance, action.knockback.duration].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid knockback for ${config.id}`);
       if (action.settleStatus && (!action.settleStatus.group || !Number.isFinite(action.settleStatus.seconds) || action.settleStatus.seconds <= 0)) throw new Error(`Invalid periodic settlement for ${config.id}`);
       previous = action.at;
       if (action.cleanse && (!Number.isSafeInteger(action.cleanse.count) || action.cleanse.count < 1)) throw new Error(`Invalid cleanse for ${config.id}`);

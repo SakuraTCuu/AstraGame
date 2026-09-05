@@ -12,6 +12,19 @@ test("frame expressions preserve action order, frame timing and damage types", (
   assert.throws(() => skillFrames("[key:2_action:[damageAction,1]"), /Unbalanced|Invalid/);
 });
 
+test("impact knockback and self healing attach to their own damage frame only", () => {
+  const compiler = createReferenceSkillCompiler(() => ({ skillType: 8, preTime: 500,
+    frameKey: "[key:6_action:[damageAction,12000]_dmgType:[1]|[repelAction,300,20]|[healByDmgAction,5000]]&[key:9_action:[damageAction,5000]_dmgType:[1]]" }));
+  const skill = compiler.compile(1, 12);
+  assert.equal(skill.actions[0].at, 0.5); assert.equal(skill.actions[0].power, 1.2);
+  assert.deepEqual(skill.actions[0].knockback, { duration: 0.3, distance: 20 });
+  assert.equal(skill.actions[0].healFromDamage, 0.5); assert.equal(skill.actions[0].healFromDamageRecipient, "self");
+  assert.equal(skill.actions[1].knockback, undefined); assert.equal(skill.actions[1].healFromDamage, undefined);
+  assert.deepEqual(compiler.issues.map((issue) => issue.kind), ["knockback_parity"]);
+  const unsupported = createReferenceSkillCompiler(() => ({ skillType: 2, frameKey: "[key:0_action:[repelAction,300,20]|[healByDmgAction,5000]]" }));
+  assert.equal(unsupported.compile(1).actions.length, 0); assert.equal(unsupported.issues.filter((issue) => issue.kind === "action").length, 2);
+});
+
 test("the adapter converts source timing, projectile and energy units explicitly", () => {
   const row = { skillType: 8, firstSelector: [300, 3], preTime: 500, postTime: 1250, cd: 15000, publicCd: 1000, publicCdGroup: 1,
     selectShape: "[circle,10]", skillTagActions: "[lockProTag,600,3000,1,1]|[castCostTag,ultraEnegy,10000]|[criticalTag]",

@@ -76,6 +76,7 @@ export class GameWorld {
     this.bosses.delete(id);
     this.actorPaths.delete(id);
     this.combat.cancelCaster(id);
+    this.combat.cancelDisplacement(id);
   }
 
   get leader(): Actor | undefined { return this.players.find((player) => player.alive); }
@@ -84,7 +85,7 @@ export class GameWorld {
   setPlayers(players: readonly Actor[]): void {
     if (!players.length || new Set(players.map((actor) => actor.id)).size !== players.length || players.some((actor) => actor.faction !== "player")) throw new Error("Invalid party members");
     this.formation.setMembers(players);
-    for (const actor of this.players) if (!players.includes(actor)) { this.combat.cancelCaster(actor.id); this.actorPaths.delete(actor.id); actor.targetId = undefined; if (actor.alive) actor.setState("idle"); }
+    for (const actor of this.players) if (!players.includes(actor)) { this.combat.cancelCaster(actor.id); this.combat.cancelDisplacement(actor.id); this.actorPaths.delete(actor.id); actor.targetId = undefined; if (actor.alive) actor.setState("idle"); }
     for (const summon of [...this.alliedSummons]) if (!players.some((actor) => actor.id === summon.summonerId)) this.removeEnemy(summon.id);
     this.players.splice(0, this.players.length, ...players);
     this.previousLeaderId = this.leader?.id; this.path.clear();
@@ -111,6 +112,7 @@ export class GameWorld {
     this.leaderTravelActive = this.autoTravelPaused = this.manualControlActive = false;
     for (const actor of this.allActors) {
       this.combat.cancelCaster(actor.id);
+      this.combat.cancelDisplacement(actor.id);
       actor.targetId = undefined;
       if (actor.alive) actor.setState("idle");
     }
@@ -133,18 +135,24 @@ export class GameWorld {
   update(deltaSeconds: number): void {
     if (deltaSeconds <= 0) return;
     this.elapsedSeconds += deltaSeconds;
+    const previousLeader = this.leader;
+    const wasDisplaced = previousLeader && this.combat.isDisplaced(previousLeader);
     this.combat.update(deltaSeconds, this.allActors, (actor, destination, kind) => {
       actor.position = kind === "jump" ? Vector2.from(destination) :
         this.options.navigation.moveWithCollision(actor.position, Vector2.from(destination).subtract(actor.position));
     });
     const leader = this.leader;
+    if (leader && leader === previousLeader && wasDisplaced && !this.combat.isDisplaced(leader) && !this.path.complete) {
+      const points = this.path.remainingWaypoints();
+      if (!this.navigateTo(points[points.length - 1])) this.path.clear();
+    }
     if (leader?.id !== this.previousLeaderId) {
       this.path.clear();
       this.previousLeaderId = leader?.id;
     }
     if (leader?.alive) {
       const previous = leader.position;
-      if (!this.autoTravelPaused) leader.position = this.path.update(leader.position, leader.movementSpeed, deltaSeconds);
+      if (!this.autoTravelPaused && !this.combat.isDisplaced(leader)) leader.position = this.path.update(leader.position, leader.movementSpeed, deltaSeconds);
       const movement = leader.position.subtract(previous);
       if (movement.lengthSquared() > 0) this.facing = movement.normalized();
       this.options.fog.reveal(leader.position, this.revealRadius);
@@ -173,6 +181,7 @@ export class GameWorld {
   }
 
   private readonly moveActor = (actor: Actor, target: Vec2Like, deltaSeconds: number): void => {
+    if (this.combat.isDisplaced(actor)) return;
     const navigation = this.options.navigation;
     const destination = navigation.nearestWalkable(target);
     if (!destination || !navigation.isWorldWalkable(actor.position)) return;

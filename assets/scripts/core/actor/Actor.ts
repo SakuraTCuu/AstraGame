@@ -4,7 +4,7 @@ import type { Vec2Like } from "../math/Vector2";
 import type { DamageType, StatModifiers, StatusDefinition } from "../combat/SkillEffects";
 
 export type Faction = "player" | "enemy";
-export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "returning" | "dead";
+export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "displaced" | "returning" | "dead";
 
 export interface ShieldLayer { readonly key: string; amount: number; remaining: number; }
 interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; source: Actor; skillId: string; fromPlayer: boolean; }
@@ -19,6 +19,7 @@ const TRANSITIONS: Record<ActorState, readonly ActorState[]> = {
   attacking: ["idle", "moving", "acquiring", "chasing", "windup", "recovering", "returning", "dead"],
   recovering: ["idle", "moving", "acquiring", "chasing", "windup", "attacking", "returning", "dead"],
   returning: ["idle", "moving", "dead"],
+  displaced: ["idle", "returning", "dead"],
   dead: ["idle"],
 };
 
@@ -98,6 +99,7 @@ export class Actor {
     this.fsm = new StateMachine<ActorState, Actor>(this.health > 0 ? "idle" : "dead");
     for (const from of Object.keys(TRANSITIONS) as ActorState[]) {
       for (const to of TRANSITIONS[from]) this.fsm.allow(from, to, (actor) => to === "dead" ? !actor.alive : actor.alive);
+      if (from !== "dead" && from !== "returning" && from !== "displaced") this.fsm.allow(from, "displaced", (actor) => actor.alive);
     }
   }
 
@@ -229,6 +231,7 @@ export class Actor {
   }
 
   moveTowards(target: Vec2Like, deltaSeconds: number): void {
+    if (this.fsm.state === "displaced") return;
     if (!this.alive) return;
     this.position = this.position.moveTowards(target, this.movementSpeed * deltaSeconds);
   }

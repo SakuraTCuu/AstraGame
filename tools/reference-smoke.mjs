@@ -509,6 +509,53 @@ try {
   assert.equal(periodicArt.find((hero) => hero.id === "reference_hero_2").dotDamageBonus, 0);
   assert.equal(periodicArt.find((hero) => hero.id === "reference_hero_16").triggeredHealing, 1);
   await capture("periodic-heroes");
+  await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session, world = session.world, art = boot.renderer.referenceArt;
+    boot.enabled = false;
+    const source = session.roster.actor("reference_hero_10");
+    const spawn = session.config.spawns.find((entry) => art.config.bindings[entry.id] && session.config.enemies.find((enemy) => enemy.id === entry.enemyId)?.kind === "enemy");
+    if (!spawn) throw new Error("No source enemy art for impact probe");
+    const target = new source.constructor({ id: `${spawn.id}:impact_probe`, faction: "enemy", position: source.position.add({ x: 40, y: 0 }),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 0, aggroRange: 250 } });
+    world.addEnemy(target);
+    boot.impactProbe = { source, target, position: target.position, hp: source.health, energy: source.energy,
+      combat: new world.combat.constructor(() => 0.3, "pve", world.options.skillDefinitions) };
+    boot.renderer.update(session.getSnapshot(), 0.1);
+  });
+  for (let index = 0; index < 50; index++) {
+    if (await evaluate(() => {
+      const boot = window.__referenceBoot; boot.renderer.update(boot.session.getSnapshot(), 0.05);
+      return boot.renderer.referenceArt.views.has(boot.impactProbe.target.id);
+    })) break;
+    await delay(100);
+  }
+  const impact = await evaluate(() => {
+    const boot = window.__referenceBoot, probe = boot.impactProbe, { source, target, combat } = probe;
+    if (!combat.use(source, target, boot.session.world.options.skillDefinitions.reference_skill_10100201, [source, target])) throw new Error("Impact probe tactical failed");
+    for (let index = 0; index < 13; index++) combat.update(0.05, [source, target]);
+    boot.renderer.update(boot.session.getSnapshot(), 0.1);
+    const view = boot.renderer.referenceArt.views.get(target.id);
+    return { setup: "Source tactical against a stationary browser fixture using cached enemy art", state: target.fsm.state,
+      distance: target.position.distance(probe.position), visible: Boolean(view?.node.active), action: view?.action, damage: 10000 - target.health };
+  });
+  assert.equal(impact.state, "displaced"); assert.ok(impact.distance > 0 && impact.distance < 100 && impact.damage > 0);
+  assert.equal(impact.visible, true); assert.ok(["hurt", "idle"].includes(impact.action));
+  await capture("impact-midpoint");
+  impact.healing = await evaluate(() => {
+    const boot = window.__referenceBoot, probe = boot.impactProbe, { source, target, combat } = probe;
+    for (let index = 0; index < 20; index++) combat.update(0.05, [source, target]);
+    target.position = probe.position; source.health = 100; source.gainEnergy(source.stats.maxEnergy); combat.drainEvents();
+    if (!combat.use(source, target, boot.session.world.options.skillDefinitions.reference_skill_10100101, [source, target])) throw new Error("Impact probe ultimate failed");
+    for (let index = 0; index < 30; index++) combat.update(0.05, [source, target]);
+    const events = combat.drainEvents(), damage = events.filter((event) => event.type === "damage").reduce((sum, event) => sum + event.value, 0);
+    const result = { damage, restored: source.health - 100, recipients: events.filter((event) => event.type === "heal").map((event) => event.targetId) };
+    combat.resetEngagement(); source.health = probe.hp; source.energy = probe.energy;
+    boot.session.world.removeEnemy(target.id); delete boot.impactProbe; boot.enabled = true;
+    boot.renderer.update(boot.session.getSnapshot(), 0.1);
+    return result;
+  });
+  assert.equal(impact.healing.restored, Math.floor(impact.healing.damage * 0.5));
+  assert.deepEqual(impact.healing.recipients, ["reference_hero_10"]);
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -538,7 +585,7 @@ try {
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
-    periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, resetCounts, viewports, errors, failures };
+    periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

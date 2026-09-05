@@ -93,6 +93,15 @@ READY -> WINDUP -> HIT -> RECOVERY -> COOLDOWN -> READY
 - Shields absorb damage before HP and expire at duration end.
 - Death is resolved immediately after the hit batch; dead units cannot cast later in the same tick.
 
+### Impact Displacement
+
+- Supported damage actions can enter the target into `displaced`, interrupting its unfinished cast while retaining its cooldown. Existing projectiles remain independent.
+- Displacement follows a fixed direction and distance over its configured duration. It uses the ordinary collision boundary; neither AI, joystick movement nor formation updates add voluntary movement during that interval.
+- A later impact replaces the remaining displacement from the current position. Explicit `unForceMove` or `ignoreControl` states prevent it. Returning actors are excluded by the current local contract.
+- Completion returns the actor to `idle`. A displaced leader replans the remaining automatic route before resuming it. Death, removal, benching, travel resets and encounter resets clear displacement.
+- Damage-based self healing uses actual health removed after defense and shields, including the overkill cap, and passes through healing reduction and the recipient's health cap. It cannot revive its caster.
+- These are runtime contracts. Source knockback parameter units, interpolation, immunity and interruption parity remain audited until measured against the original battle.
+
 ## Fog and Discovery
 
 Each fog cell is one of:

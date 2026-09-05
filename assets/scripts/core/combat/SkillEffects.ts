@@ -67,6 +67,8 @@ export interface SkillAction {
   readonly status?: StatusDefinition;
   readonly randomStatuses?: readonly StatusDefinition[];
   readonly healFromDamage?: number;
+  readonly healFromDamageRecipient?: "self" | "allies";
+  readonly knockback?: { readonly distance: number; readonly duration: number };
   readonly settleStatus?: { readonly group: string; readonly seconds: number };
   readonly healingBonuses?: readonly HealingBonus[];
   readonly cleanse?: { readonly count: number; readonly npcOnly?: boolean };
