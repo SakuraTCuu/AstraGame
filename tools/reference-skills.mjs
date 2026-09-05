@@ -38,7 +38,8 @@ export function skillFrames(source) {
 const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", normalAtkSpeedRate: "normalAttackSpeedRate",
   movespeed: "movementBonus", damageBonus: "damageBonus", finalDmgBonus: "finalDamageBonus", damageReduction: "damageReduction",
   finalDmgReduction: "finalDamageReduction", ultraDmgBonus: "physicalBonus", magicDmgBonus: "magicBonus",
-  ultraDmgReduction: "physicalReduction", magicDmgReduction: "magicReduction", skillCriticalRate: "criticalChance", healReduction: "healReduction" };
+  ultraDmgReduction: "physicalReduction", magicDmgReduction: "magicReduction", skillCriticalRate: "criticalChance", healReduction: "healReduction",
+  dotDmgBonus: "dotDamageBonus", dotDmgReduction: "dotDamageReduction" };
 const list = (source) => source ? splitSkillExpression(source, "|").map(skillTuple) : [];
 const skillId = (id) => `reference_skill_${id}`;
 
@@ -60,6 +61,11 @@ export function heroSkillAtStar(source, star = 0) {
 export function createReferenceSkillCompiler(lookup) {
   const definitions = new Map(), statuses = new Map(), issues = [];
   const report = (id, kind, value) => issues.push({ id: String(id), kind, value });
+  const damageType = (value, id) => {
+    const type = { 1: "soul", 2: "magic", 3: "physical" }[value];
+    if (!type && value !== undefined) report(id, "damage_type", value);
+    return type || "physical";
+  };
   const changeModifier = (modifiers, action, id) => {
     const key = modifierNames[action[1]];
     if (!key || !Number.isFinite(action[2])) { report(id, "modifier", action); return; }
@@ -70,19 +76,27 @@ export function createReferenceSkillCompiler(lookup) {
     const row = lookup("Buff", id);
     if (!row) throw new Error(`Missing buff ${id}`);
     const definition = { id: `reference_buff_${id}`, group: String(row.group || id), duration: row.duration === -1 ? 0 : (row.duration || 1000) / 1000,
-      permanent: row.duration === -1, modifiers: {} };
+      permanent: row.duration === -1, maxStacks: row.overlieAddEffect || 1, modifiers: {} };
     const immediate = [];
-    for (const action of list(row.effects)) {
+    const effects = row.effects ? skillFrames(`[key:0_action:${row.effects}]`)[0] : { actions: [] };
+    for (const action of effects.actions) {
       if (action[0] === "changeAttrAction") changeModifier(definition.modifiers, action, id);
       else if (action[0] === "addStateAction") definition.state = String(action[1]);
       else if (action[0] === "healAction") immediate.push({ type: "heal", power: Number(action[2] ?? action[1]) / 10000 });
+      else if (action[0] === "buffDamageAction" && action[1] > 0 && action[2] === 6 && !definition.periodicDamage) {
+        definition.periodicDamage = { interval: action[1] / 1000, power: action[3] / 10000, damageType: damageType(effects.damageType, id),
+          scaleWithStacks: action[4] === (row.group || row.id) };
+        if (action[5]) report(id, "periodic_damage_option", action);
+      }
       else if (!['buffBubbleAction', 'tickZXFlySwordAction'].includes(action[0])) report(id, "buff_action", action);
     }
     if ((row.name || "").includes("\u72c2\u66b4")) definition.state = "enraged";
     for (const tag of list(row.buffTagActions)) {
       if (tag[0] === "backHomeRemoveTag") definition.clearOnReturn = true;
+      else if (tag[0] === "tickSpanChangeByBuffTag" && tag[1] === 2 && tag[2] === `1_${row.group || row.id}` && definition.periodicDamage) definition.periodicDamage.intervalPerStack = tag[3] / 1000;
       else report(id, "buff_tag", tag);
     }
+    if (definition.maxStacks > 1 && row.overlieRefreshFirst !== 1) report(id, "stack_expiry", "shared expiry currently refreshes on reapplication");
     const value = { definition, immediate, row };
     statuses.set(id, value);
     return value;
@@ -134,7 +148,7 @@ export function createReferenceSkillCompiler(lookup) {
       const at = definition.projectileSpeed ? Math.max(0, frame.frame / fps) : motion ? windup + definition.motion.duration + frame.frame / fps : Math.max(windup, frame.frame / fps);
       for (const action of frame.actions) {
         if (action[0] === "damageAction" || action[0] === "healAction") actions.push({ at, type: action[0] === "damageAction" ? "damage" : "heal", power: action[1] / 10000,
-          damageType: frame.damageType === 2 ? "magic" : "physical", forceCritical: definition.forceCritical });
+          damageType: damageType(frame.damageType, id), forceCritical: definition.forceCritical });
         else if (action[0] === "addBuffAction") {
           const buff = status(action[1]);
           const recipient = action[2] === 1 ? "self" : action[2] === 2 ? "allies" : "targets";
@@ -197,6 +211,13 @@ export function createReferenceSkillCompiler(lookup) {
           parent.coefficient = child.coefficient;
           report(parent.sourceId, "sword_fan_timing", { tick, interpretation: "one projectile per selected target; projectile speed pending live comparison" });
         }
+      } else if (action[0] === "hurtCalcBuffAction") {
+        const settlement = /^4_(\d+)_(\d+)$/.exec(String(action[4]));
+        if (!settlement || action[2] !== 10000 || action[3] !== `1_${settlement[1]}`) { report(hero.id, "passive", action); continue; }
+        for (const parent of skills.filter((skill) => lookup("Skill", skill.sourceId).skillgroup === action[1])) {
+          for (const step of parent.actions) if (step.type === "damage") step.settleStatus = { group: settlement[1], seconds: Number(settlement[2]) / 1000 };
+        }
+        report(hero.id, "periodic_settlement_parity", "full periodic ticks over the configured duration without consuming the status; rounding and attack snapshot require live comparison");
       } else report(hero.id, "passive", action);
     }
     return { ids: skills.map((skill) => skill.id), modifiers };

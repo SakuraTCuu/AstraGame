@@ -69,6 +69,23 @@ test("rank limits block upgrades, successful upgrades consume their configured c
   assert.equal(session.map.resourceBalance("merit"), 7);
 });
 
+test("level thresholds unlock energy capacity and regeneration and restore before energy validation", () => {
+  const data = config();
+  const profile = { ...data, enemies: [], spawns: [], development: { ...data.development!, levelTables: { shared: data.development!.levelTables!.shared.map((row) => ({ ...row,
+    energy: row.level === 1 ? { maxEnergy: 0, energyPerSecond: 0, energyOnSkill: 0, energyOnDamage: 0 } :
+      row.level === 2 ? { maxEnergy: 100, energyPerSecond: 20, energyOnSkill: 10, energyOnDamage: 2 } : undefined })) } } };
+  const session = new DemoSession(profile), source = session.world.players[0];
+  const ultimate = { id: "ultimate", target: "enemy" as const, range: 4, cooldown: 1, power: 1, energyCost: 100 };
+  source.gainEnergy(100); assert.equal(source.energy, 0); assert.equal(session.world.combat.canUse(source, ultimate), false);
+  session.map.setRank(2); assert.equal(session.upgradeHero(source.id), "completed");
+  for (let index = 0; index < 100; index++) session.update(0.05);
+  assert.equal(source.energy, 100); assert.equal(session.world.combat.canUse(source, ultimate), true);
+  const saved = session.saveExploration(), restored = new DemoSession(profile); restored.restoreExploration(saved);
+  assert.equal(restored.world.players[0].stats.maxEnergy, 100); assert.equal(restored.world.players[0].energy, 100);
+  restored.map.grantResources({ merit: 10 }); assert.equal(restored.upgradeHero(source.id), "completed");
+  assert.equal(restored.world.players[0].stats.energyPerSecond, 20);
+});
+
 test("grown health, rolled equipment and assignments restore before party health validation", () => {
   const session = new DemoSession(config()); session.update(0.3);
   const item = session.development!.snapshot().items[0];

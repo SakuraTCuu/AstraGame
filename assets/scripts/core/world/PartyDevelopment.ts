@@ -4,7 +4,8 @@ import { validateCondition } from "./ProgressConditions";
 import type { WorldMap } from "./WorldMap";
 
 export interface GrowthAttributes { readonly attack: number; readonly defense: number; readonly maxHealth: number; }
-export interface HeroLevelDefinition { readonly level: number; readonly attributes: GrowthAttributes; readonly cost?: Readonly<Record<string, number>>; readonly condition?: ProgressCondition; }
+export interface HeroEnergyAttributes { readonly maxEnergy: number; readonly energyPerSecond: number; readonly energyOnSkill: number; readonly energyOnDamage: number; }
+export interface HeroLevelDefinition { readonly level: number; readonly attributes: GrowthAttributes; readonly energy?: HeroEnergyAttributes; readonly cost?: Readonly<Record<string, number>>; readonly condition?: ProgressCondition; }
 export interface EquipmentDefinition {
   readonly id: string; readonly resource: string; readonly name: string; readonly type: number; readonly quality: number;
   readonly attributes: Readonly<Record<keyof GrowthAttributes, readonly [number, number]>>;
@@ -32,6 +33,7 @@ export class PartyDevelopment {
   private readonly random: () => number;
   private readonly baseStats = new Map<string, ActorStats>();
   private readonly levels = new Map<string, ReadonlyMap<number, HeroLevelDefinition>>();
+  private readonly energyLevels = new Map<string, readonly HeroLevelDefinition[]>();
   private state: { levels: Record<string, number>; items: EquipmentInstance[]; equipped: Record<string, string>; nextItemId: number };
   private statsKey = "";
   private activeRoster: readonly (string | null)[];
@@ -51,6 +53,7 @@ export class PartyDevelopment {
         const parsed = new Map<number, HeroLevelDefinition>();
         for (const level of source) {
           if (!Number.isSafeInteger(level.level) || level.level < 1 || parsed.has(level.level) || !this.validAttributes(level.attributes, true)) throw new Error("Invalid hero level");
+          if (level.energy && ["maxEnergy", "energyPerSecond", "energyOnSkill", "energyOnDamage"].some((key) => !Number.isFinite(level.energy![key]) || level.energy![key] < 0)) throw new Error("Invalid hero energy growth");
           parsed.set(level.level, level);
           for (const [resource, amount] of Object.entries(level.cost ?? {})) map.validateReward({ resource, amount });
           if (level.condition) validateCondition(level.condition);
@@ -59,6 +62,7 @@ export class PartyDevelopment {
       }
       if (!table.has(hero.initialLevel)) throw new Error("Initial hero level is absent from configuration");
       this.levels.set(hero.actorId, table);
+      this.energyLevels.set(hero.actorId, source.filter((level) => level.energy).slice().sort((a, b) => b.level - a.level));
       this.state.levels[hero.actorId] = hero.initialLevel;
     }
     if (config.heroes.length !== actors.length) throw new Error("Development roster must match the party");
@@ -141,7 +145,8 @@ export class PartyDevelopment {
       const item = state.items.find((entry) => entry.id === state.equipped[slot.id]);
       if (item) for (const key of ATTRIBUTES) attributes[key] += item.attributes[key];
     }
-    return { ...base, ...attributes };
+    const energy = this.energyLevels.get(actorId)!.find((entry) => entry.level <= state.levels[actorId])?.energy;
+    return { ...base, ...attributes, ...energy };
   }
 
   save(): DevelopmentSave { return { levels: { ...this.state.levels }, items: this.state.items.map((item) => ({ ...item, attributes: { ...item.attributes } })), equipped: { ...this.state.equipped }, nextItemId: this.state.nextItemId }; }

@@ -8,15 +8,21 @@ export function buildReferenceDevelopment(lookup, ids, config, rewards, issues) 
   const profiles = config.roster?.heroes || [13, 1, 9, 8].map((sourceId, index) => ({ sourceId, id: config.squad.actors[index].id, initiallyOwned: true }));
   const heroes = profiles.map((profile) => {
     const hero = lookup("Hero", profile.sourceId), actorId = profile.id;
-    if (!levelTables[hero.levelType]) levelTables[hero.levelType] = heroRows.filter((row) => row.type === hero.levelType && row.attr?.maxhp > 0).map((row) => {
+    if (!levelTables[hero.levelType]) {
+      let previousEnergy;
+      levelTables[hero.levelType] = heroRows.filter((row) => row.type === hero.levelType && row.attr?.maxhp > 0).sort((a, b) => a.level - b.level).map((row) => {
       let cost = {}, condition;
       try {
         for (const entry of String(row.cost || "").split(",").filter(Boolean)) {
           const item = parseReferenceItem(entry); cost[rewards.resource(item.itemId)] = (cost[rewards.resource(item.itemId)] || 0) + item.amount;
         }
       } catch (error) { issues.push({ owner: row.id, kind: "hero_cost", source: row.cost }); condition = { kind: "flag", id: `external:hero_cost:${row.id}`, label: "\u7a81\u7834\u6761\u4ef6\u672a\u6ee1\u8db3" }; }
-      return { level: row.level, attributes: attributes(row.attr), cost, condition };
-    }).sort((a, b) => a.level - b.level);
+      const energy = { maxEnergy: row.attr.ultraEnegyMax || 0, energyPerSecond: row.attr.ultraEnegyRecoverRate || 0,
+        energyOnSkill: row.attr.ultraEnegySkillHit || 0, energyOnDamage: row.attr.ultraEnegyBeHit || 0 };
+      const key = JSON.stringify(energy), changed = key !== previousEnergy; previousEnergy = key;
+      return { level: row.level, attributes: attributes(row.attr), energy: changed ? energy : undefined, cost, condition };
+      });
+    }
     return { actorId, initialLevel: profile.initiallyOwned ? 10 : 1, levelTable: String(hero.levelType), optionalInSave: !profile.initiallyOwned };
   });
   const equipment = [];

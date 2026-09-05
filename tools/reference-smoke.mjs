@@ -469,6 +469,29 @@ try {
   assert.deepEqual(await evaluate(() => [...window.__referenceBoot.session.roster.slots()]), five.lineup);
   assert.equal(await evaluate(() => window.__referenceBoot.session.map.counter("recruit")), 2);
   const roster = { reordered: true, toggled: true, five, setup: "rank-four and owned-card fixture after ordinary recruitment" };
+  const periodicHeroes = await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session;
+    const results = [2, 26].map((sourceId, index) => {
+      const id = `reference_hero_${sourceId}`, hero = session.roster.config.heroes.find((hero) => hero.id === id);
+      session.map.grantResources({ [hero.cardResource]: 1, "item:3": 1000 }); session.roster.syncOwnership();
+      while (session.development.levelOf(id) < 10) { if (session.upgradeHero(id) !== "completed") throw new Error(`Cannot grow ${id}`); }
+      if (!session.setLineup(index, id)) throw new Error(`Cannot deploy ${id}`);
+      const actor = session.roster.actor(id); actor.gainEnergy(actor.stats.maxEnergy);
+      return { id, level: session.development.levelOf(id), maxEnergy: actor.stats.maxEnergy };
+    });
+    boot.renderer.update(session.getSnapshot(), 0.1);
+    return results;
+  });
+  assert.ok(periodicHeroes.every((hero) => hero.level === 10 && hero.maxEnergy === 10000));
+  assert.ok(await waitReady(), "Periodic heroes did not load their battle art");
+  await evaluate(async () => { await window.__referenceBoot.runtime.flushProgress(); });
+  await send("Page.reload", { ignoreCache: true }); assert.ok(await waitReady());
+  const periodicArt = await evaluate((heroes) => heroes.map(({ id }) => {
+    const boot = window.__referenceBoot, view = boot.renderer.referenceArt.views.get(id), actor = boot.session.roster.actor(id);
+    return { id, spine: Boolean(view?.skeleton?.skeletonData), action: view?.action, level: boot.session.development.levelOf(id), maxEnergy: actor.stats.maxEnergy, energy: actor.energy };
+  }), periodicHeroes);
+  assert.ok(periodicArt.every((hero) => hero.spine && hero.action && hero.level === 10 && hero.maxEnergy === 10000 && hero.energy > 0));
+  await capture("periodic-heroes");
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -497,7 +520,8 @@ try {
   assert.ok(resetCounts.every((count) => count.root === resetCounts[0].root && count.world === 8 && count.actors === 4), JSON.stringify(resetCounts));
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
-  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster, resetCounts, viewports, errors, failures };
+  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
+    periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

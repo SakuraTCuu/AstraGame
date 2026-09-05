@@ -69,3 +69,25 @@ test("zero-star heroes do not receive gated active or passive skills", () => {
   assert.deepEqual(result.modifiers, { attackRate: 0.1 });
   assert.deepEqual(new Set(queried), new Set([1, 2, 4]));
 });
+
+test("annotated periodic buff actions preserve damage type, stacks and interval changes", () => {
+  const rows = { Skill: { 1: { skillType: 2, frameKey: "[key:0_action:[addBuffAction,9,0]]" } },
+    Buff: { 9: { id: 9, group: 9, duration: 7000, overlieAddEffect: 3, overlieRefreshFirst: 1,
+      effects: "[buffDamageAction,2000,6,2500,9,0]_dmgType:[1]", buffTagActions: "[tickSpanChangeByBuffTag,2,1_9,-100]" } } };
+  const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  const status = compiler.compile(1).actions[0].status;
+  assert.equal(status.maxStacks, 3); assert.equal(status.duration, 7);
+  assert.deepEqual(status.periodicDamage, { interval: 2, power: 0.25, damageType: "soul", scaleWithStacks: true, intervalPerStack: -0.1 });
+  assert.deepEqual(compiler.issues, []);
+});
+
+test("configured buff settlement attaches only to the matching damage skill group", () => {
+  const rows = { 1: { skillType: 1, skillgroup: 10, frameKey: "[key:0_action:[damageAction,10000]_dmgType:[3]]" },
+    2: { skillType: 8, skillgroup: 20, frameKey: "[key:1_action:[damageAction,20000]_dmgType:[3]]" },
+    3: { skillType: 3, triggerActions: "[hurtCalcBuffAction,20,10000,1_9,4_9_6000]" } };
+  const compiler = createReferenceSkillCompiler((family, id) => family === "Skill" ? rows[id] : undefined);
+  compiler.heroSkills({ attack: "1_0", skill2: "2_0", skill5: "3_0" }, 10);
+  assert.equal(compiler.definitions.get(1).actions[0].settleStatus, undefined);
+  assert.deepEqual(compiler.definitions.get(2).actions[0].settleStatus, { group: "9", seconds: 6 });
+  assert.equal(compiler.definitions.get(2).actions[0].damageType, "physical");
+});

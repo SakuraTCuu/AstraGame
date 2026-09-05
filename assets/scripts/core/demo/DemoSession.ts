@@ -821,9 +821,14 @@ export class DemoSession {
     for (const action of config.actions ?? []) {
       if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
       if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
+      if (action.settleStatus && (!action.settleStatus.group || !Number.isFinite(action.settleStatus.seconds) || action.settleStatus.seconds <= 0)) throw new Error(`Invalid periodic settlement for ${config.id}`);
       previous = action.at;
       for (const status of [...(action.randomStatuses ?? []), ...(action.status ? [action.status] : [])]) {
         if (!status.id || !Number.isFinite(status.duration) || (!status.permanent && status.duration <= 0) || Object.values(status.modifiers ?? {}).some((value) => !Number.isFinite(value))) throw new Error(`Invalid status for ${config.id}`);
+        if (!Number.isSafeInteger(status.maxStacks ?? 1) || (status.maxStacks ?? 1) < 1) throw new Error(`Invalid status stack limit for ${config.id}`);
+        const periodic = status.periodicDamage;
+        if (periodic && (![periodic.interval, periodic.power, periodic.intervalPerStack ?? 0].every(Number.isFinite) || periodic.interval <= 0 || periodic.power < 0 ||
+            periodic.interval + Math.min(0, periodic.intervalPerStack ?? 0) * (status.maxStacks ?? 1) <= 0)) throw new Error(`Invalid periodic damage for ${config.id}`);
       }
     }
     if (config.motion && (!(config.motion.duration > 0) || !["charge", "jump"].includes(config.motion.kind))) throw new Error(`Invalid skill motion for ${config.id}`);

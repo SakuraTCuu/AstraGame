@@ -1,4 +1,4 @@
-export type DamageType = "physical" | "magic";
+export type DamageType = "physical" | "magic" | "soul";
 
 export interface StatModifiers {
   readonly attackRate?: number;
@@ -15,6 +15,8 @@ export interface StatModifiers {
   readonly magicReduction?: number;
   readonly criticalChance?: number;
   readonly healReduction?: number;
+  readonly dotDamageBonus?: number;
+  readonly dotDamageReduction?: number;
 }
 
 export interface StatusDefinition {
@@ -25,6 +27,14 @@ export interface StatusDefinition {
   readonly state?: string;
   readonly modifiers?: StatModifiers;
   readonly clearOnReturn?: boolean;
+  readonly maxStacks?: number;
+  readonly periodicDamage?: {
+    readonly interval: number;
+    readonly power: number;
+    readonly damageType?: DamageType;
+    readonly scaleWithStacks?: boolean;
+    readonly intervalPerStack?: number;
+  };
 }
 
 export interface SkillAction {
@@ -38,6 +48,7 @@ export interface SkillAction {
   readonly status?: StatusDefinition;
   readonly randomStatuses?: readonly StatusDefinition[];
   readonly healFromDamage?: number;
+  readonly settleStatus?: { readonly group: string; readonly seconds: number };
 }
 
 export interface SkillMotion {

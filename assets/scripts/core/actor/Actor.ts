@@ -7,6 +7,8 @@ export type Faction = "player" | "enemy";
 export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "returning" | "dead";
 
 export interface ShieldLayer { readonly key: string; amount: number; remaining: number; }
+interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; source: Actor; skillId: string; }
+export interface PeriodicDamageTick { readonly source: Actor; readonly skillId: string; readonly statusId: string; readonly power: number; readonly damageType: DamageType; }
 
 const TRANSITIONS: Record<ActorState, readonly ActorState[]> = {
   idle: ["moving", "acquiring", "chasing", "windup", "attacking", "recovering", "returning", "dead"],
@@ -65,7 +67,7 @@ export class Actor {
   readonly displayName: string;
   readonly healthBars: number;
   private readonly shields: ShieldLayer[] = [];
-  private readonly statuses: Array<{ definition: StatusDefinition; remaining: number }> = [];
+  private readonly statuses: AppliedStatus[] = [];
   position: Vector2;
   health: number;
   energy: number;
@@ -109,14 +111,27 @@ export class Actor {
   get shield(): number { return this.shields.reduce((sum, layer) => sum + layer.amount, 0); }
   get attackPower(): number { return Math.max(0, this.stats.attack * (1 + this.modifier("attackRate"))); }
   get movementSpeed(): number { return Math.max(0, this.stats.moveSpeed + this.modifier("movementBonus")); }
-  modifier(key: keyof StatModifiers): number { return (this.stats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0), 0); }
+  modifier(key: keyof StatModifiers): number { return (this.stats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0) * status.stacks, 0); }
   hasStatus(state: string): boolean { return this.statuses.some((entry) => entry.definition.state === state || entry.definition.id === state); }
-  statusSnapshots(): Array<{ id: string; remaining: number }> { return this.statuses.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining })); }
-  addStatus(definition: StatusDefinition): void {
+  statusSnapshots(): Array<{ id: string; remaining: number; stacks: number }> { return this.statuses.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining, stacks: entry.stacks })); }
+  addStatus(definition: StatusDefinition, source: Actor = this, skillId = definition.id): void {
     if (!this.alive || (!definition.permanent && definition.duration <= 0)) return;
-    const existing = this.statuses.findIndex((entry) => (entry.definition.group ?? entry.definition.id) === (definition.group ?? definition.id));
-    if (existing >= 0) this.statuses.splice(existing, 1);
-    this.statuses.push({ definition, remaining: definition.permanent ? -1 : definition.duration });
+    const existing = this.statuses.find((entry) => (entry.definition.group ?? entry.definition.id) === (definition.group ?? definition.id));
+    const remaining = definition.permanent ? -1 : definition.duration;
+    if (existing) {
+      existing.stacks = Math.min(definition.maxStacks ?? 1, existing.stacks + 1);
+      existing.definition = definition; existing.remaining = remaining; existing.source = source; existing.skillId = skillId;
+    } else this.statuses.push({ definition, remaining, stacks: 1, elapsed: 0, source, skillId });
+  }
+
+  settlePeriodicStatus(group: string, seconds: number): PeriodicDamageTick[] {
+    const ticks: PeriodicDamageTick[] = [];
+    for (const status of this.statuses) {
+      if ((status.definition.group ?? status.definition.id) !== group || !status.definition.periodicDamage) continue;
+      const count = Math.floor((seconds + 1e-9) / this.statusInterval(status));
+      for (let index = 0; index < count; index++) ticks.push(this.statusTick(status));
+    }
+    return ticks;
   }
   gainEnergy(amount: number): void { if (this.alive) this.energy = Math.max(0, Math.min(this.stats.maxEnergy ?? 0, this.energy + amount)); }
 
@@ -146,17 +161,32 @@ export class Actor {
     return this.shield - previous;
   }
 
-  updateEffects(deltaSeconds: number): void {
+  updateEffects(deltaSeconds: number): PeriodicDamageTick[] {
+    const ticks: PeriodicDamageTick[] = [];
     this.gainEnergy((this.stats.energyPerSecond ?? 0) * deltaSeconds);
     for (let index = this.statuses.length - 1; index >= 0; index--) {
-      if (this.statuses[index].definition.permanent) continue;
-      this.statuses[index].remaining -= deltaSeconds;
-      if (this.statuses[index].remaining <= 1e-9) this.statuses.splice(index, 1);
+      const status = this.statuses[index];
+      if (status.definition.periodicDamage) {
+        status.elapsed += status.definition.permanent ? deltaSeconds : Math.min(deltaSeconds, status.remaining);
+        const interval = this.statusInterval(status);
+        while (status.elapsed + 1e-9 >= interval) { ticks.push(this.statusTick(status)); status.elapsed = Math.max(0, status.elapsed - interval); }
+      }
+      if (status.definition.permanent) continue;
+      status.remaining -= deltaSeconds;
+      if (status.remaining <= 1e-9) this.statuses.splice(index, 1);
     }
     for (let index = this.shields.length - 1; index >= 0; index -= 1) {
       this.shields[index].remaining -= deltaSeconds;
       if (this.shields[index].remaining <= 1e-9 || this.shields[index].amount <= 0) this.shields.splice(index, 1);
     }
+    return ticks;
+  }
+
+  private statusInterval(status: AppliedStatus): number { return Math.max(0.001, status.definition.periodicDamage!.interval + (status.definition.periodicDamage!.intervalPerStack ?? 0) * status.stacks); }
+  private statusTick(status: AppliedStatus): PeriodicDamageTick {
+    const effect = status.definition.periodicDamage!;
+    return { source: status.source, skillId: status.skillId, statusId: status.definition.id, damageType: effect.damageType ?? "physical",
+      power: effect.power * (effect.scaleWithStacks ? status.stacks : 1) };
   }
 
   moveTowards(target: Vec2Like, deltaSeconds: number): void {
@@ -164,10 +194,11 @@ export class Actor {
     this.position = this.position.moveTowards(target, this.movementSpeed * deltaSeconds);
   }
 
-  receiveDamage(rawDamage: number, type: DamageType = "physical"): number {
+  receiveDamage(rawDamage: number, type: DamageType = "physical", periodic = false): number {
     if (!this.alive || rawDamage <= 0) return 0;
     const reduction = (1 - this.modifier("damageReduction")) * (1 - this.modifier("finalDamageReduction")) *
-      (1 - this.modifier(type === "magic" ? "magicReduction" : "physicalReduction"));
+      (1 - (type === "soul" ? 0 : this.modifier(type === "magic" ? "magicReduction" : "physicalReduction"))) *
+      (periodic ? Math.max(0, 1 - this.modifier("dotDamageReduction")) : 1);
     if (reduction <= 0) return 0;
     let actualDamage = Math.max(1, Math.floor((rawDamage - this.stats.defense) * Math.max(0, reduction)));
     for (const layer of this.shields) {

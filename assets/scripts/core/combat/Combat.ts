@@ -59,6 +59,8 @@ export interface CombatEvent {
   readonly y?: number;
   readonly critical?: boolean;
   readonly damageType?: DamageType;
+  readonly periodic?: boolean;
+  readonly statusId?: string;
 }
 
 interface Cast {
@@ -138,7 +140,7 @@ export class CombatSystem {
     const byId = new Map(actors.map((actor) => [actor.id, actor]));
     for (const id of this.combatTimes.keys()) if (!byId.has(id)) this.combatTimes.delete(id);
     for (const actor of actors) {
-      actor.updateEffects(deltaSeconds);
+      for (const tick of actor.updateEffects(deltaSeconds)) this.applyDamage(tick.source, actor, tick.skillId, tick.power, tick.damageType, false, tick.statusId);
       const target = actor.targetId && byId.get(actor.targetId);
       if (actor.alive && target && target.alive && target.faction !== actor.faction && actor.fsm.state !== "returning") this.combatTimes.set(actor.id, (this.combatTimes.get(actor.id) ?? 0) + deltaSeconds);
       else this.combatTimes.delete(actor.id);
@@ -285,35 +287,42 @@ export class CombatSystem {
     for (const target of targets) {
       if (!target.alive) continue;
       if (action?.type === "status") {
-        if (action.status) { target.addStatus(action.status); this.events.push({ type: "status", sourceId: source.id, targetId: target.id, skillId: skill.id }); }
+        if (action.status) { target.addStatus(action.status, source, skill.id); this.events.push({ type: "status", sourceId: source.id, targetId: target.id, skillId: skill.id }); }
       } else if (skill.type === "shield" && !action) {
         const value = target.addShield(`${source.id}:${skill.id}`, source.attackPower * skill.power, skill.duration ?? 0);
         this.events.push({ type: "shield", sourceId: source.id, targetId: target.id, value, skillId: skill.id });
       } else if (action?.type === "heal" || (!action && (skill.type === "heal" || (skill.target !== "enemy" && skill.type !== "damage")))) {
         const value = target.heal(source.attackPower * (action?.power ?? skill.power));
         this.events.push({ type: "heal", sourceId: source.id, targetId: target.id, value, skillId: skill.id });
-        if (action?.randomStatuses?.length) target.addStatus(action.randomStatuses[Math.min(action.randomStatuses.length - 1, Math.floor(this.random() * action.randomStatuses.length))]);
+        if (action?.randomStatuses?.length) target.addStatus(action.randomStatuses[Math.min(action.randomStatuses.length - 1, Math.floor(this.random() * action.randomStatuses.length))], source, skill.id);
       } else {
-        const previousShield = target.shield;
         const type = action?.damageType ?? skill.damageType ?? "physical";
         const chance = Math.max(0, Math.min(1, source.modifier("criticalChance")));
         const critical = Boolean(action?.forceCritical || skill.forceCritical || (chance > 0 && this.random() < chance));
-        const multiplier = (1 + source.modifier("damageBonus")) * (1 + source.modifier("finalDamageBonus")) *
-          (1 + source.modifier(type === "magic" ? "magicBonus" : "physicalBonus")) * (critical ? source.stats.criticalMultiplier ?? 1.5 : 1);
-        const damage = target.receiveDamage(source.attackPower * (action?.power ?? skill.power) * multiplier, type);
-        const absorbed = previousShield - target.shield;
-        if (absorbed > 0) this.events.push({ type: "absorb", sourceId: source.id, targetId: target.id, value: absorbed, skillId: skill.id });
-        this.events.push({ type: "damage", sourceId: source.id, targetId: target.id, value: damage, skillId: skill.id, critical, damageType: type });
+        const damage = this.applyDamage(source, target, skill.id, action?.power ?? skill.power, type, critical);
         if (action?.healFromDamage && damage > 0) {
           const allies = this.actors.filter((actor) => actor.alive && actor.faction === source.faction);
           for (const ally of allies) { const value = ally.heal(damage * action.healFromDamage / allies.length); this.events.push({ type: "heal", sourceId: source.id, targetId: ally.id, value, skillId: skill.id }); }
         }
-        if (!target.alive) {
-          this.cancelCaster(target.id);
-          this.events.push({ type: "death", sourceId: source.id, targetId: target.id, skillId: skill.id });
-        }
+        if (target.alive && action?.settleStatus) for (const tick of target.settlePeriodicStatus(action.settleStatus.group, action.settleStatus.seconds))
+          this.applyDamage(tick.source, target, skill.id, tick.power, tick.damageType, false, tick.statusId);
       }
     }
+  }
+
+  private applyDamage(source: Actor, target: Actor, skillId: string, power: number, type: DamageType, critical = false, statusId?: string): number {
+    if (!target.alive) return 0;
+    const periodic = statusId !== undefined;
+    const multiplier = (1 + source.modifier("damageBonus")) * (1 + source.modifier("finalDamageBonus")) *
+      (1 + (type === "soul" ? 0 : source.modifier(type === "magic" ? "magicBonus" : "physicalBonus"))) *
+      (periodic ? Math.max(0, 1 + source.modifier("dotDamageBonus")) : 1) * (critical ? source.stats.criticalMultiplier ?? 1.5 : 1);
+    const previousShield = target.shield;
+    const damage = target.receiveDamage(source.attackPower * power * multiplier, type, periodic);
+    const absorbed = previousShield - target.shield;
+    if (absorbed > 0) this.events.push({ type: "absorb", sourceId: source.id, targetId: target.id, value: absorbed, skillId });
+    this.events.push({ type: "damage", sourceId: source.id, targetId: target.id, value: damage, skillId, critical, damageType: type, ...(periodic ? { periodic, statusId } : {}) });
+    if (!target.alive) { this.cancelCaster(target.id); this.events.push({ type: "death", sourceId: source.id, targetId: target.id, skillId }); }
+    return damage;
   }
 
   private hitTargets(cast: Cast, projectile: boolean): Actor[] {
