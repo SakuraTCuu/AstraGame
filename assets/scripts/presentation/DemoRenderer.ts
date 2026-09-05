@@ -1,4 +1,6 @@
 import { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
+import { ReferenceArtLayer } from "./ReferenceArtLayer";
+import { FogRenderer } from "./FogRenderer";
 
 interface WorldPoint {
     x: number;
@@ -20,7 +22,10 @@ const DEPTH_SCALE = 0.58;
 
 export class DemoRenderer {
     private readonly host: cc.Node;
+    private readonly worldRoot: cc.Node;
+    private readonly minimapSprite: cc.Sprite;
     private readonly worldGraphics: cc.Graphics;
+    private readonly fogGraphics: cc.Graphics;
     private readonly overlayGraphics: cc.Graphics;
     private readonly minimapGraphics: cc.Graphics;
     private readonly resultGraphics: cc.Graphics;
@@ -46,14 +51,34 @@ export class DemoRenderer {
     private feedbackLane = 0;
     private destination: WorldPoint = null;
     private navigationFeedback = 0;
+    private referenceArt: ReferenceArtLayer = null;
+    private worldScale = WORLD_SCALE;
+    private depthScale = DEPTH_SCALE;
+    private softFog: FogRenderer = null;
+    private softFogReady = false;
 
     constructor(host: cc.Node) {
         this.host = host;
+        this.worldRoot = new cc.Node("WorldViewport");
+        this.worldRoot.setContentSize(VIEW_WIDTH, VIEW_HEIGHT);
+        this.worldRoot.addComponent(cc.Mask).type = cc.Mask.Type.RECT;
+        host.addChild(this.worldRoot);
+        this.ownedNodes.push(this.worldRoot);
         this.worldGraphics = this.createGraphics("WorldGraphics", 0);
+        this.fogGraphics = this.createGraphics("FogGraphics", 4);
+        this.worldGraphics.node.parent = this.worldRoot;
+        this.fogGraphics.node.parent = this.worldRoot;
         this.overlayGraphics = this.createGraphics("OverlayGraphics", 10);
         this.minimapGraphics = this.createGraphics("MinimapGraphics", 20);
         this.resultGraphics = this.createGraphics("ResultGraphics", 35);
         this.controlGraphics = this.createGraphics("ControlGraphics", 40);
+        const minimapNode = new cc.Node("ReferenceMinimap");
+        minimapNode.zIndex = 19;
+        host.addChild(minimapNode);
+        this.ownedNodes.push(minimapNode);
+        this.minimapSprite = minimapNode.addComponent(cc.Sprite);
+        this.minimapSprite.sizeMode = cc.Sprite.SizeMode.CUSTOM;
+        minimapNode.active = false;
         this.statusLabel = this.createLabel("Status", 24, cc.color(226, 238, 232), cc.v2(0, 565), cc.Label.HorizontalAlign.LEFT);
         this.objectiveLabel = this.createLabel("Objective", 21, cc.color(246, 215, 133), cc.v2(0, 505), cc.Label.HorizontalAlign.CENTER);
         this.loadingLabel = this.createLabel("Loading", 28, cc.color(235, 228, 207), cc.v2(0, 0), cc.Label.HorizontalAlign.CENTER);
@@ -76,6 +101,13 @@ export class DemoRenderer {
 
     initialize(config: any): void {
         this.config = config;
+        if (this.referenceArt) this.referenceArt.destroy();
+        this.referenceArt = config.presentation && config.presentation.reference ? new ReferenceArtLayer(this.worldRoot, config.presentation.reference) : null;
+        this.worldScale = this.referenceArt ? config.presentation.reference.scale : WORLD_SCALE;
+        this.depthScale = this.referenceArt ? config.presentation.reference.depth : DEPTH_SCALE;
+        if (this.softFog) this.softFog.destroy();
+        this.softFog = new FogRenderer(this.worldRoot);
+        this.softFogReady = false;
         const start = config.world && config.world.start ? config.world.start : { x: 520, y: 520 };
         this.camera.set(cc.v2(start.x, start.y));
         this.cameraTarget.set(cc.v2(start.x, start.y));
@@ -108,8 +140,8 @@ export class DemoRenderer {
 
     screenToWorld(screen: cc.Vec2): WorldPoint {
         return {
-            x: this.camera.x + screen.x / WORLD_SCALE,
-            y: this.camera.y + (screen.y + 80) / (WORLD_SCALE * DEPTH_SCALE),
+            x: this.camera.x + screen.x / this.worldScale,
+            y: this.camera.y + (screen.y + 80) / (this.worldScale * this.depthScale),
         };
     }
 
@@ -139,6 +171,8 @@ export class DemoRenderer {
             this.camera.y += (this.cameraTarget.y - this.camera.y) * follow;
         }
         this.updateFloatTexts(deltaSeconds);
+        if (this.referenceArt) this.referenceArt.update(snapshot, this.camera, deltaSeconds);
+        if (this.softFog) this.softFogReady = this.softFog.update(snapshot, this.camera, this.worldScale, this.depthScale, this.config.fog.revealRadius, deltaSeconds);
         this.drawWorld(snapshot);
         this.drawOverlay(snapshot);
         this.updateActorLabels(snapshot);
@@ -168,6 +202,8 @@ export class DemoRenderer {
     }
 
     destroy(): void {
+        if (this.referenceArt) this.referenceArt.destroy();
+        if (this.softFog) this.softFog.destroy();
         this.floatTexts.splice(0).forEach((entry) => entry.node.destroy());
         this.floatPool.splice(0).forEach((label) => label.node.destroy());
         this.ownedNodes.splice(0).forEach((node) => node.destroy());
@@ -203,24 +239,27 @@ export class DemoRenderer {
 
     private project(point: WorldPoint): cc.Vec2 {
         return cc.v2(
-            (point.x - this.camera.x) * WORLD_SCALE,
-            (point.y - this.camera.y) * WORLD_SCALE * DEPTH_SCALE - 80,
+            (point.x - this.camera.x) * this.worldScale,
+            (point.y - this.camera.y) * this.worldScale * this.depthScale - 80,
         );
     }
 
     private drawWorld(snapshot: DemoSnapshot): void {
         const g = this.worldGraphics;
         g.clear();
-        g.fillColor = cc.color(20, 36, 43);
-        g.rect(-VIEW_WIDTH / 2, -VIEW_HEIGHT / 2, VIEW_WIDTH, VIEW_HEIGHT);
-        g.fill();
-        this.drawGround(g);
-        this.drawObstacles(g);
+        if (!this.referenceArt) {
+            g.fillColor = cc.color(20, 36, 43);
+            g.rect(-VIEW_WIDTH / 2, -VIEW_HEIGHT / 2, VIEW_WIDTH, VIEW_HEIGHT);
+            g.fill();
+            this.drawGround(g);
+            this.drawObstacles(g);
+        }
         this.drawPathMarker(g);
         this.drawCastAreas(g, snapshot);
         this.drawActors(g, snapshot);
         this.drawProjectiles(g, snapshot);
-        this.drawFog(g, snapshot);
+        this.fogGraphics.clear();
+        if (!this.softFogReady) this.drawFog(this.fogGraphics, snapshot);
     }
 
     private drawGround(g: cc.Graphics): void {
@@ -235,9 +274,9 @@ export class DemoRenderer {
                 const alternate = (Math.floor(x / cell) + Math.floor(y / cell)) % 2 === 0;
                 g.fillColor = alternate ? cc.color(35, 59, 63) : cc.color(31, 53, 58);
                 g.moveTo(p.x, p.y);
-                g.lineTo(p.x + cell * WORLD_SCALE, p.y);
-                g.lineTo(p.x + cell * WORLD_SCALE, p.y + cell * WORLD_SCALE * DEPTH_SCALE);
-                g.lineTo(p.x, p.y + cell * WORLD_SCALE * DEPTH_SCALE);
+                g.lineTo(p.x + cell * this.worldScale, p.y);
+                g.lineTo(p.x + cell * this.worldScale, p.y + cell * this.worldScale * this.depthScale);
+                g.lineTo(p.x, p.y + cell * this.worldScale * this.depthScale);
                 g.close();
                 g.fill();
             }
@@ -264,10 +303,10 @@ export class DemoRenderer {
             if (!this.isVisible(p, 500)) return;
             g.fillColor = entry.shape === "circle" ? cc.color(29, 65, 72) : cc.color(27, 44, 45);
             if (entry.shape === "circle") {
-                g.ellipse(p.x, p.y, entry.radius * WORLD_SCALE, entry.radius * WORLD_SCALE * DEPTH_SCALE);
+                g.ellipse(p.x, p.y, entry.radius * this.worldScale, entry.radius * this.worldScale * this.depthScale);
             } else {
-                g.rect(p.x - entry.width * WORLD_SCALE / 2, p.y - entry.height * WORLD_SCALE * DEPTH_SCALE / 2,
-                    entry.width * WORLD_SCALE, entry.height * WORLD_SCALE * DEPTH_SCALE);
+                g.rect(p.x - entry.width * this.worldScale / 2, p.y - entry.height * this.worldScale * this.depthScale / 2,
+                    entry.width * this.worldScale, entry.height * this.worldScale * this.depthScale);
             }
             g.fill();
             g.strokeColor = cc.color(56, 85, 75);
@@ -294,6 +333,7 @@ export class DemoRenderer {
     private drawActors(g: cc.Graphics, snapshot: DemoSnapshot): void {
         const actors = snapshot.actors.slice().sort((left, right) => right.y - left.y || left.id.localeCompare(right.id));
         actors.forEach((actor) => {
+            if (this.referenceArt && this.referenceArt.hasActor(actor.id)) return;
             const p = this.project(actor);
             if (!this.isVisible(p, 100)) return;
             const boss = actor.kind === "boss";
@@ -344,10 +384,10 @@ export class DemoRenderer {
     private drawFog(g: cc.Graphics, snapshot: DemoSnapshot): void {
         this.drawFlashlight(g, snapshot);
         const size = snapshot.fog.cellSize;
-        const minWorldX = this.camera.x - VIEW_WIDTH / (2 * WORLD_SCALE) - size;
-        const maxWorldX = this.camera.x + VIEW_WIDTH / (2 * WORLD_SCALE) + size;
-        const minWorldY = this.camera.y - VIEW_HEIGHT / (2 * WORLD_SCALE * DEPTH_SCALE) - size;
-        const maxWorldY = this.camera.y + VIEW_HEIGHT / (2 * WORLD_SCALE * DEPTH_SCALE) + size;
+        const minWorldX = this.camera.x - VIEW_WIDTH / (2 * this.worldScale) - size;
+        const maxWorldX = this.camera.x + VIEW_WIDTH / (2 * this.worldScale) + size;
+        const minWorldY = this.camera.y - VIEW_HEIGHT / (2 * this.worldScale * this.depthScale) - size;
+        const maxWorldY = this.camera.y + VIEW_HEIGHT / (2 * this.worldScale * this.depthScale) + size;
         for (let x = Math.max(0, Math.floor(minWorldX / size)); x <= Math.min(snapshot.fog.width - 1, Math.ceil(maxWorldX / size)); x += 1) {
             for (let y = Math.max(0, Math.floor(minWorldY / size)); y <= Math.min(snapshot.fog.height - 1, Math.ceil(maxWorldY / size)); y += 1) {
                 const world = { x: x * size, y: y * size };
@@ -355,7 +395,7 @@ export class DemoRenderer {
                 const state = snapshot.fog.states[y * snapshot.fog.width + x];
                 const alpha = state === "locked" ? 255 : state === "visible" ? 18 : state === "explored" ? 92 : 226;
                 g.fillColor = cc.color(7, 14, 20, alpha);
-                g.rect(p.x, p.y, size * WORLD_SCALE + 1, size * WORLD_SCALE * DEPTH_SCALE + 1);
+                g.rect(p.x, p.y, size * this.worldScale + 1, size * this.worldScale * this.depthScale + 1);
                 g.fill();
             }
         }
@@ -364,9 +404,9 @@ export class DemoRenderer {
     private drawFlashlight(g: cc.Graphics, snapshot: DemoSnapshot): void {
         const light = snapshot.flashlight;
         const center = this.project(light);
-        const baseAngle = Math.atan2(light.directionY * DEPTH_SCALE, light.directionX);
+        const baseAngle = Math.atan2(light.directionY * this.depthScale, light.directionX);
         const half = light.coneAngleDegrees * Math.PI / 360;
-        const radius = light.radius * WORLD_SCALE;
+        const radius = light.radius * this.worldScale;
         g.fillColor = cc.color(238, 218, 137, 25);
         g.moveTo(center.x, center.y);
         const segments = 18;
@@ -420,10 +460,17 @@ export class DemoRenderer {
         const g = this.minimapGraphics;
         g.clear();
         const left = 170;
-        const bottom = 370;
+        const bottom = this.referenceArt ? 385 : 370;
         const width = 168;
-        const height = 145;
-        g.fillColor = cc.color(8, 17, 22, 218);
+        const height = this.referenceArt ? 117 : 145;
+        const thumbnail = this.referenceArt && this.referenceArt.overviewTexture();
+        this.minimapSprite.node.active = Boolean(thumbnail);
+        if (thumbnail) {
+            if (!this.minimapSprite.spriteFrame || this.minimapSprite.spriteFrame.getTexture() !== thumbnail) this.minimapSprite.spriteFrame = new cc.SpriteFrame(thumbnail);
+            this.minimapSprite.node.setContentSize(width, height);
+            this.minimapSprite.node.setPosition(left + width / 2, bottom + height / 2);
+        }
+        g.fillColor = cc.color(8, 17, 22, thumbnail ? 0 : 218);
         g.rect(left, bottom, width, height);
         g.fill();
         g.strokeColor = cc.color(135, 153, 139);
@@ -496,7 +543,7 @@ export class DemoRenderer {
         const bossPhase = boss ? snapshot.bossPhases[boss.id] : null;
         const discovered = snapshot.discoveredFogCells.length;
         const total = snapshot.fog.width * snapshot.fog.height;
-        this.statusLabel.string = `MIST VALLEY   ${Math.floor(snapshot.elapsedSeconds)}s\nSQUAD ${players.filter((actor) => actor.hp > 0).length}/${players.length}  HOSTILES ${enemies.length}  EXPLORED ${Math.round(discovered / total * 100)}%`;
+        this.statusLabel.string = `${this.config.world.name || "MIST VALLEY"}   ${Math.floor(snapshot.elapsedSeconds)}s\nSQUAD ${players.filter((actor) => actor.hp > 0).length}/${players.length}  HOSTILES ${enemies.length}  EXPLORED ${Math.round(discovered / total * 100)}%`;
         this.objectiveLabel.string = this.navigationFeedback > 0 ? "PATH BLOCKED" : bossPhase
             ? `BOSS - ${bossPhase.toUpperCase()}`
             : leader && leader.state === "attacking"
@@ -540,7 +587,7 @@ export class DemoRenderer {
             const area = cast.area;
             if (area.shape === "circle") {
                 const point = this.project(cast.point);
-                g.ellipse(point.x, point.y, area.radius * WORLD_SCALE, area.radius * WORLD_SCALE * DEPTH_SCALE);
+                g.ellipse(point.x, point.y, area.radius * this.worldScale, area.radius * this.worldScale * this.depthScale);
             } else {
                 const angle = Math.atan2(cast.point.y - cast.origin.y, cast.point.x - cast.origin.x);
                 const origin = this.project(cast.origin);

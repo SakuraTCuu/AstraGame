@@ -9,6 +9,9 @@ import {
 
 class CocosConfigPort implements RuntimeConfigPort {
     public load<T>(path: string): Promise<T> {
+        if (cc.sys.isBrowser && typeof window !== "undefined" &&
+            ["localhost", "127.0.0.1"].includes(window.location.hostname) &&
+            new URLSearchParams(window.location.search).get("reference") === "1") return this.loadReference<T>();
         return new Promise<T>((resolve, reject) => {
             cc.resources.load(path, cc.JsonAsset, (error: Error, asset: cc.JsonAsset) => {
                 if (error) {
@@ -17,6 +20,24 @@ class CocosConfigPort implements RuntimeConfigPort {
                 }
                 resolve(asset.json as T);
             });
+        });
+    }
+
+    private async loadReference<T>(): Promise<T> {
+        for (const name of ["reference-resources", "reference-map"]) {
+            if (!cc.assetManager.getBundle(name)) await new Promise<void>((resolve, reject) =>
+                cc.assetManager.loadBundle(`./reference-preview/${name}`, (error: Error) => error ? reject(error) : resolve()));
+        }
+        return new Promise<T>((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open("GET", "./reference-preview/profile.json");
+            request.timeout = 30000;
+            request.onload = () => {
+                if (request.status !== 200) { reject(new Error("Local reference profile is unavailable")); return; }
+                try { resolve(JSON.parse(request.responseText)); } catch (error) { reject(error); }
+            };
+            request.onerror = request.ontimeout = () => reject(new Error("Local reference profile request failed"));
+            request.send();
         });
     }
 }

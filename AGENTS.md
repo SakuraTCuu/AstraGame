@@ -23,4 +23,4 @@ These instructions apply to the whole `client/` tree.
 - Use original placeholders or assets with explicit project rights.
 - Do not add extracted third-party game code, images, audio, fonts, text, or configuration.
 - Reference-game observations belong in ignored local capture directories unless the user defines an approved evidence repository.
-
+- The user authorized temporary use of a supplied local resource cache on 2026-09-05. Resource-only staging under ignored `reference-preview` directories is permitted for local comparison. Keep cached assets and converted game tables out of Git and host exports.

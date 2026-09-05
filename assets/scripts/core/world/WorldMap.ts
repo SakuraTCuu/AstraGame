@@ -6,9 +6,16 @@ export interface WorldRect { readonly x: number; readonly y: number; readonly wi
 export type WorldObstacle =
   | { readonly id: string; readonly shape: "rect"; readonly x: number; readonly y: number; readonly width: number; readonly height: number }
   | { readonly id: string; readonly shape: "circle"; readonly x: number; readonly y: number; readonly radius: number };
-export interface WorldPoi extends Vec2Like { readonly id: string; readonly type: string; readonly discoverRadius: number; }
-export interface WorldZone { readonly id: string; readonly rect: WorldRect; readonly unlock: string; }
-export interface ExplorationEvent { readonly type: "poi_discovered" | "zone_unlocked" | "encounter_completed"; readonly id: string; }
+export interface ResourceCost { readonly resource: string; readonly amount: number; }
+export interface WorldPoi extends Vec2Like {
+  readonly id: string; readonly name?: string; readonly type: string; readonly discoverRadius: number;
+  readonly interaction?: { readonly radius: number; readonly cost?: ResourceCost; readonly grants?: Readonly<Record<string, number>>; readonly initiallyCompleted?: boolean };
+}
+export interface WorldZone { readonly id: string; readonly name?: string; readonly rect: WorldRect; readonly unlock: string; readonly minimumLevel?: number; }
+export interface WorldProgression { readonly level: number; readonly resources: Readonly<Record<string, { readonly name: string; readonly initial: number }>>; }
+export interface MapProgress { readonly level: number; readonly resources: Readonly<Record<string, number>>; readonly discoveredPoiIds: readonly string[]; readonly interactedPoiIds: readonly string[]; readonly completedEncounterIds: readonly string[]; }
+export type InteractionResult = "completed" | "already_completed" | "out_of_range" | "insufficient_resources" | "locked" | "unavailable";
+export interface ExplorationEvent { readonly type: "poi_discovered" | "poi_interacted" | "zone_unlocked" | "encounter_completed"; readonly id: string; }
 
 function contains(rect: WorldRect, point: Vec2Like): boolean {
   return point.x >= rect.x && point.y >= rect.y && point.x < rect.x + rect.width && point.y < rect.y + rect.height;
@@ -28,6 +35,11 @@ export class WorldMap {
   private readonly unlocked = new Set<string>();
   private readonly discovered = new Set<string>();
   private readonly completed = new Set<string>();
+  private readonly interacted = new Set<string>();
+  private readonly balances = new Map<string, number>();
+  private readonly resourceNames = new Map<string, string>();
+  private level: number;
+  revision = 0;
   private readonly events: ExplorationEvent[] = [];
 
   constructor(
@@ -37,16 +49,31 @@ export class WorldMap {
     zones: readonly WorldZone[] = [],
     pois: readonly WorldPoi[] = [],
     obstacles: readonly WorldObstacle[] = [],
+    progression: WorldProgression = { level: 1, resources: {} },
   ) {
     this.navigation = navigation;
     this.fog = fog;
     this.bounds = bounds;
     this.zones = zones;
     this.pois = pois;
+    this.level = progression.level;
+    if (!Number.isSafeInteger(this.level) || this.level < 1) throw new Error("Invalid exploration level");
+    for (const id of Object.keys(progression.resources)) {
+      const resource = progression.resources[id];
+      if (!Number.isSafeInteger(resource.initial) || resource.initial < 0) throw new Error(`Invalid resource ${id}`);
+      this.balances.set(id, resource.initial);
+      this.resourceNames.set(id, resource.name);
+    }
     const ids = new Set<string>();
     for (const poi of pois) {
       if (ids.has(poi.id) || !contains(bounds, poi) || !(poi.discoverRadius > 0)) throw new Error(`Invalid POI ${poi.id}`);
       ids.add(poi.id);
+      if (poi.interaction) {
+        if (!(poi.interaction.radius > 0)) throw new Error(`Invalid interaction radius ${poi.id}`);
+        if (poi.interaction.cost) this.validateResourceAmount(poi.interaction.cost.resource, poi.interaction.cost.amount);
+        for (const id of Object.keys(poi.interaction.grants ?? {})) this.validateResourceAmount(id, poi.interaction.grants![id]);
+        if (poi.interaction.initiallyCompleted) this.interacted.add(poi.id);
+      }
     }
     ids.clear();
     for (const zone of zones) {
@@ -56,11 +83,12 @@ export class WorldMap {
       for (const other of zones) {
         if (other !== zone && overlapArea(zone.rect, other.rect) > 0) throw new Error(`Overlapping zones ${zone.id} and ${other.id}`);
       }
-      if (zone.unlock === "initial") this.unlocked.add(zone.id);
+      if (zone.minimumLevel !== undefined && (!Number.isInteger(zone.minimumLevel) || zone.minimumLevel < 1)) throw new Error(`Invalid zone level ${zone.id}`);
+      if (zone.unlock === "initial") { if ((zone.minimumLevel ?? 1) <= this.level) this.unlocked.add(zone.id); }
       else {
         const [kind, id, extra] = zone.unlock.split(":");
-        if (!id || extra || (kind !== "discover" && kind !== "clear")) throw new Error(`Invalid unlock condition for ${zone.id}`);
-        if (kind === "discover" && !pois.some((poi) => poi.id === id)) throw new Error(`Unknown unlock POI ${id}`);
+        if (!id || extra || !["discover", "clear", "interact"].includes(kind)) throw new Error(`Invalid unlock condition for ${zone.id}`);
+        if ((kind === "discover" || kind === "interact") && !pois.some((poi) => poi.id === id && (kind !== "interact" || poi.interaction))) throw new Error(`Unknown unlock POI ${id}`);
       }
     }
     for (const obstacle of obstacles) {
@@ -73,11 +101,48 @@ export class WorldMap {
       if (outside || obstacles.some((obstacle) => this.intersectsObstacle(rect, obstacle))) navigation.setBlocked({ x, y }, true);
     });
     this.refreshLocks();
+    this.refreshUnlocks();
   }
 
   isZoneUnlocked(id: string): boolean { return this.unlocked.has(id); }
   isPoiDiscovered(id: string): boolean { return this.discovered.has(id); }
   isEncounterCompleted(id: string): boolean { return this.completed.has(id); }
+  isPoiInteracted(id: string): boolean { return this.interacted.has(id); }
+
+  isPortalActive(id: string): boolean {
+    const poi = this.pois.find((entry) => entry.id === id);
+    return Boolean(poi && poi.type === "portal" && this.interacted.has(id) && this.isPositionUnlocked(poi));
+  }
+
+  interact(id: string, position: Vec2Like): InteractionResult {
+    const poi = this.pois.find((entry) => entry.id === id);
+    if (!poi?.interaction) return "unavailable";
+    if (!this.isPositionUnlocked(poi)) return "locked";
+    if (this.interacted.has(id)) return "already_completed";
+    if (Math.hypot(position.x - poi.x, position.y - poi.y) > poi.interaction.radius || !this.navigation.isSegmentWalkable(position, poi)) return "out_of_range";
+    const cost = poi.interaction.cost;
+    if (cost && this.balances.get(cost.resource)! < cost.amount) return "insufficient_resources";
+    const next = new Map(this.balances);
+    if (cost) next.set(cost.resource, next.get(cost.resource)! - cost.amount);
+    for (const resource of Object.keys(poi.interaction.grants ?? {})) {
+      const balance = next.get(resource)! + poi.interaction.grants![resource];
+      if (!Number.isSafeInteger(balance)) throw new Error(`Resource overflow: ${resource}`);
+      next.set(resource, balance);
+    }
+    for (const [resource, amount] of next) this.balances.set(resource, amount);
+    this.interacted.add(id);
+    this.revision += 1;
+    this.events.push({ type: "poi_interacted", id });
+    this.refreshUnlocks();
+    return "completed";
+  }
+
+  setLevel(level: number): void {
+    if (!Number.isSafeInteger(level) || level < this.level) throw new Error("Exploration level cannot decrease");
+    this.level = level;
+    this.revision += 1;
+    this.refreshUnlocks();
+  }
 
   isPositionUnlocked(point: Vec2Like): boolean {
     if (!contains(this.bounds, point)) return false;
@@ -91,37 +156,75 @@ export class WorldMap {
       const distance = Math.hypot(position.x - poi.x, position.y - poi.y);
       if (distance > poi.discoverRadius || !this.navigation.isSegmentWalkable(position, poi)) continue;
       this.discovered.add(poi.id);
+      this.revision += 1;
       this.events.push({ type: "poi_discovered", id: poi.id });
-      this.unlockFor(`discover:${poi.id}`);
+      this.refreshUnlocks();
     }
   }
 
   completeEncounter(id: string): void {
     if (this.completed.has(id)) return;
     this.completed.add(id);
+    this.revision += 1;
     this.events.push({ type: "encounter_completed", id });
-    this.unlockFor(`clear:${id}`);
+    this.refreshUnlocks();
   }
 
   drainEvents(): ExplorationEvent[] { return this.events.splice(0); }
 
-  snapshot(): { zones: Array<WorldZone & { unlocked: boolean }>; discoveredPoiIds: string[]; completedEncounterIds: string[] } {
+  snapshot() {
     return {
       zones: this.zones.map((zone) => ({ ...zone, unlocked: this.unlocked.has(zone.id) })),
       discoveredPoiIds: [...this.discovered],
       completedEncounterIds: [...this.completed],
+      interactedPoiIds: [...this.interacted],
+      level: this.level,
+      resources: [...this.balances].map(([id, amount]) => ({ id, name: this.resourceNames.get(id)!, amount })),
+      pois: this.pois.map((poi) => ({ ...poi, discovered: this.discovered.has(poi.id), completed: this.interacted.has(poi.id),
+        unlocked: this.isPositionUnlocked(poi), canAfford: !poi.interaction?.cost || this.balances.get(poi.interaction.cost.resource)! >= poi.interaction.cost.amount })),
     };
   }
 
-  private unlockFor(condition: string): void {
+  saveProgress(): MapProgress {
+    const resources: Record<string, number> = {};
+    for (const [id, amount] of this.balances) resources[id] = amount;
+    return { level: this.level, resources, discoveredPoiIds: [...this.discovered],
+      interactedPoiIds: [...this.interacted], completedEncounterIds: [...this.completed] };
+  }
+
+  restoreProgress(progress: MapProgress): void {
+    if (!Number.isSafeInteger(progress.level) || progress.level < 1) throw new Error("Invalid saved level");
+    for (const [id, amount] of Object.entries(progress.resources)) this.validateResourceAmount(id, amount);
+    if (Object.keys(progress.resources).length !== this.balances.size) throw new Error("Saved resources do not match configuration");
+    for (const id of progress.discoveredPoiIds) if (!this.pois.some((poi) => poi.id === id)) throw new Error(`Unknown saved POI ${id}`);
+    for (const id of progress.interactedPoiIds) if (!this.pois.some((poi) => poi.id === id && poi.interaction)) throw new Error(`Unknown saved interaction ${id}`);
+    this.level = Math.max(this.level, progress.level);
+    for (const [id, amount] of Object.entries(progress.resources)) this.balances.set(id, amount);
+    for (const id of progress.discoveredPoiIds) this.discovered.add(id);
+    for (const id of progress.interactedPoiIds) this.interacted.add(id);
+    for (const id of progress.completedEncounterIds) this.completed.add(id);
+    this.refreshUnlocks();
+    this.events.splice(0);
+    this.revision += 1;
+  }
+
+  private refreshUnlocks(): void {
     let changed = false;
     for (const zone of this.zones) {
-      if (zone.unlock !== condition || this.unlocked.has(zone.id)) continue;
+      const [kind, id] = zone.unlock.split(":");
+      const condition = kind === "initial" || (kind === "discover" && this.discovered.has(id)) ||
+        (kind === "interact" && this.interacted.has(id)) || (kind === "clear" && this.completed.has(id));
+      if (!condition || (zone.minimumLevel ?? 1) > this.level || this.unlocked.has(zone.id)) continue;
       this.unlocked.add(zone.id);
       this.events.push({ type: "zone_unlocked", id: zone.id });
       changed = true;
+      this.revision += 1;
     }
     if (changed) this.refreshLocks();
+  }
+
+  private validateResourceAmount(id: string, amount: number): void {
+    if (!this.balances.has(id) || !Number.isSafeInteger(amount) || amount < 0) throw new Error(`Invalid resource amount: ${id}`);
   }
 
   private refreshLocks(): void {

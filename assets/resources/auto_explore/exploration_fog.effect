@@ -1,0 +1,68 @@
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: vs
+      frag: fs
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      properties:
+        texture: { value: white }
+        fogTexture: { value: black }
+        worldRect: { value: [0, 0, 720, 1280] }
+        grid: { value: [1, 1, 96, 0] }
+        light: { value: [0, 0, 440, 0] }
+        beam: { value: [1, 0, 620, 0.87] }
+}%
+
+CCProgram vs %{
+  precision highp float;
+  #include <cc-global>
+  #include <cc-local>
+  in vec3 a_position;
+  in vec2 a_uv0;
+  out vec2 v_uv;
+  void main () {
+    vec4 position = vec4(a_position, 1.0);
+    #if CC_USE_MODEL
+      position = cc_matWorld * position;
+    #endif
+    gl_Position = cc_matViewProj * position;
+    v_uv = a_uv0;
+  }
+}%
+
+CCProgram fs %{
+  precision highp float;
+  in vec2 v_uv;
+  uniform sampler2D texture;
+  uniform sampler2D fogTexture;
+  uniform Fog {
+    vec4 worldRect;
+    vec4 grid;
+    vec4 light;
+    vec4 beam;
+  };
+  void main () {
+    vec2 world = worldRect.xy + vec2(v_uv.x, 1.0 - v_uv.y) * worldRect.zw;
+    vec2 cell = world / grid.z;
+    vec2 fogUv = cell / grid.xy;
+    float explored = texture(fogTexture, fogUv).r;
+    float locked = texture(fogTexture, (floor(cell) + 0.5) / grid.xy).g;
+    vec2 offset = world - light.xy;
+    float distanceToLight = length(offset);
+    float radial = 1.0 - smoothstep(light.z * 0.65, light.z, distanceToLight);
+    float direction = dot(offset / max(distanceToLight, 0.01), normalize(beam.xy));
+    float cone = smoothstep(beam.w, min(0.999, beam.w + 0.1), direction);
+    cone *= 1.0 - smoothstep(beam.z * 0.45, beam.z, distanceToLight);
+    float visibility = max(radial, cone);
+    float alpha = mix(mix(0.96, 0.5, explored), 0.02, visibility);
+    alpha = mix(alpha, 1.0, step(0.5, locked));
+    vec3 tint = mix(vec3(0.025, 0.035, 0.045), vec3(0.1, 0.1, 0.07), cone * 0.2);
+    gl_FragColor = vec4(tint, alpha * texture(texture, v_uv).a);
+  }
+}%

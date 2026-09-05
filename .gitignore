@@ -20,4 +20,6 @@ Thumbs.db
 # Local-only captures and reference material
 reference-private/
 captures/
-
+reference-preview/
+assets/reference_preview/
+assets/reference_preview.meta

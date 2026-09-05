@@ -1,0 +1,195 @@
+import { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
+
+interface ArtBinding { path: string; kind: "spine" | "atlas"; scale: number; height: number; fps: number; flip: boolean; skillAnimations?: Record<string, string>; }
+interface ArtConfig { bundle: string; mapBundle: string; mapName: string; tileSize: number; mapWidth: number; mapHeight: number; depth: number; scale: number; tiles: string[]; bindings: Record<string, ArtBinding>; }
+interface ActorView { node: cc.Node; skeleton?: sp.Skeleton; sprite?: cc.Sprite; bars: cc.Graphics; binding: ArtBinding; action: string; age: number; lastX: number; facing: number; castId?: number; }
+
+export class ReferenceArtLayer {
+    private readonly ground: cc.Node;
+    private readonly actors: cc.Node;
+    private readonly config: ArtConfig;
+    private readonly bundle: cc.AssetManager.Bundle;
+    private readonly mapBundle: cc.AssetManager.Bundle;
+    private readonly tiles = new Map<string, cc.Node>();
+    private readonly views = new Map<string, ActorView>();
+    private readonly loaded = new Map<string, cc.Asset>();
+    private readonly pending = new Set<string>();
+    private readonly failed = new Set<string>();
+    private readonly available: Set<string>;
+    private readonly frames = new Map<string, cc.SpriteFrame[]>();
+    private dead = false;
+    private thumb: cc.Node = null;
+
+    constructor(host: cc.Node, config: ArtConfig) {
+        this.config = config;
+        this.bundle = cc.assetManager.getBundle(config.bundle);
+        this.mapBundle = cc.assetManager.getBundle(config.mapBundle);
+        if (!this.bundle || !this.mapBundle) throw new Error("Reference bundles are not loaded");
+        this.available = new Set(config.tiles);
+        this.ground = new cc.Node("ReferenceGround");
+        this.ground.zIndex = -1;
+        this.actors = new cc.Node("ReferenceActors");
+        this.actors.zIndex = 2;
+        host.addChild(this.ground);
+        host.addChild(this.actors);
+        this.load(this.mapBundle, `${config.mapName}/thumb`, cc.Texture2D);
+        for (const id of Object.keys(config.bindings)) {
+            const binding = config.bindings[id];
+            if (binding && id.indexOf("hero_") === 0) this.load(this.bundle, binding.path, binding.kind === "spine" ? sp.SkeletonData : cc.SpriteAtlas);
+        }
+    }
+
+    hasActor(id: string): boolean { return this.views.has(id); }
+    overviewTexture(): cc.Texture2D { return this.loaded.get(`${this.config.mapName}/thumb`) as cc.Texture2D; }
+
+    update(snapshot: DemoSnapshot, camera: cc.Vec2, delta: number): void {
+        const project = (x: number, y: number) => cc.v2((x - camera.x) * this.config.scale, (y - camera.y) * this.config.scale * this.config.depth - 80);
+        const { tileSize, scale, depth, mapHeight, mapWidth, mapName } = this.config;
+        const thumbnail = this.loaded.get(`${mapName}/thumb`) as cc.Texture2D;
+        if (thumbnail && !this.thumb) {
+            this.thumb = this.spriteNode("ReferenceOverviewGround", thumbnail);
+            this.thumb.zIndex = -1;
+            this.thumb.setContentSize(mapWidth * scale, mapHeight * scale);
+            this.ground.addChild(this.thumb);
+        }
+        if (this.thumb) this.thumb.setPosition(project(mapWidth / 2, mapHeight / (depth * 2)));
+        const minX = Math.floor((camera.x - 500) / tileSize);
+        const maxX = Math.floor((camera.x + 500) / tileSize);
+        const row = (mapHeight - camera.y * depth) / tileSize;
+        const activeTiles = new Set<string>();
+        for (let x = minX; x <= maxX; x++) for (let y = Math.floor(row - 1.2); y <= Math.ceil(row + 1.2); y++) {
+            const key = `${mapName}/${x}_${y}`;
+            if (!this.available.has(key)) continue;
+            activeTiles.add(key);
+            const texture = this.loaded.get(key) as cc.Texture2D;
+            if (!texture) { this.load(this.mapBundle, key, cc.Texture2D); continue; }
+            let node = this.tiles.get(key);
+            if (!node) { node = this.spriteNode(key, texture); this.ground.addChild(node); this.tiles.set(key, node); }
+            node.active = true;
+            const logicalWidth = Math.min(tileSize, mapWidth - x * tileSize);
+            const logicalHeight = Math.min(tileSize, mapHeight - y * tileSize);
+            node.setContentSize(logicalWidth * scale, logicalHeight * scale);
+            node.setPosition(project(x * tileSize + logicalWidth / 2, (mapHeight - y * tileSize - logicalHeight / 2) / depth));
+        }
+        this.tiles.forEach((node, key) => { if (!activeTiles.has(key)) { node.destroy(); this.tiles.delete(key); } });
+        this.loaded.forEach((asset, key) => {
+            if (key.startsWith(`${mapName}/`) && !key.endsWith("/thumb") && !activeTiles.has(key)) { asset.decRef(); this.loaded.delete(key); }
+        });
+        const present = new Set<string>();
+        snapshot.actors.forEach((actor) => {
+            const point = project(actor.x, actor.y);
+            if (Math.abs(point.x) > 650 || Math.abs(point.y) > 1000) return;
+            const bindingKey = this.config.bindings[actor.id] ? actor.id : actor.id.split(":")[0].replace(/@\d+$/, "");
+            const binding = this.config.bindings[bindingKey];
+            if (!binding) return;
+            const asset = this.loaded.get(binding.path);
+            if (!asset) { this.load(this.bundle, binding.path, binding.kind === "spine" ? sp.SkeletonData : cc.SpriteAtlas); return; }
+            let view = this.views.get(actor.id);
+            if (!view) { view = this.createActor(actor, binding, asset); this.views.set(actor.id, view); }
+            present.add(actor.id);
+            view.node.active = true;
+            view.node.setPosition(point);
+            view.node.zIndex = Math.round(100000 - actor.y);
+            this.animate(view, actor, snapshot, delta);
+        });
+        this.views.forEach((view, id) => {
+            if (!snapshot.actors.some((actor) => actor.id === id)) { view.node.destroy(); this.views.delete(id); }
+            else view.node.active = present.has(id);
+        });
+    }
+
+    destroy(): void {
+        this.dead = true;
+        this.ground.destroy();
+        this.actors.destroy();
+        this.loaded.forEach((asset) => asset.decRef());
+        this.loaded.clear();
+        this.views.clear();
+    }
+
+    private load(bundle: cc.AssetManager.Bundle, path: string, type: typeof cc.Asset): void {
+        if (this.loaded.has(path) || this.pending.has(path) || this.failed.has(path)) return;
+        this.pending.add(path);
+        bundle.load(path, type, (error: Error, asset: cc.Asset) => {
+            this.pending.delete(path);
+            if (this.dead) return;
+            if (error) { this.failed.add(path); cc.warn("Reference art unavailable:", path, error.message); return; }
+            asset.addRef();
+            this.loaded.set(path, asset);
+        });
+    }
+
+    private spriteNode(name: string, texture: cc.Texture2D): cc.Node {
+        const node = new cc.Node(name);
+        const sprite = node.addComponent(cc.Sprite);
+        sprite.spriteFrame = new cc.SpriteFrame(texture);
+        sprite.sizeMode = cc.Sprite.SizeMode.CUSTOM;
+        return node;
+    }
+
+    private createActor(actor: ActorSnapshot, binding: ArtBinding, asset: cc.Asset): ActorView {
+        const node = new cc.Node(`Art_${actor.id}`);
+        const art = new cc.Node("Visual");
+        node.addChild(art);
+        this.actors.addChild(node);
+        const barsNode = new cc.Node("Health");
+        barsNode.zIndex = 1;
+        node.addChild(barsNode);
+        const view: ActorView = { node, binding, bars: barsNode.addComponent(cc.Graphics), action: "", age: 0, lastX: actor.x, facing: 1 };
+        if (binding.kind === "spine") {
+            view.skeleton = art.addComponent(sp.Skeleton);
+            view.skeleton.skeletonData = asset as sp.SkeletonData;
+            view.skeleton.premultipliedAlpha = false;
+            art.setScale(binding.scale * this.config.scale);
+        } else {
+            view.sprite = art.addComponent(cc.Sprite);
+            art.anchorY = 0;
+            art.setScale(binding.scale * this.config.scale);
+        }
+        return view;
+    }
+
+    private animate(view: ActorView, actor: ActorSnapshot, snapshot: DemoSnapshot, delta: number): void {
+        const moving = Math.abs(actor.x - view.lastX) > 0.1 || ["moving", "chasing", "returning"].includes(actor.state);
+        const cast = snapshot.casts.find((cast) => cast.sourceId === actor.id);
+        let action = actor.hp <= 0 ? "dead" : cast ? "attack" : moving ? "move" : "idle";
+        if (cast) action = view.binding.skillAnimations && view.binding.skillAnimations[cast.skillId] || "attack";
+        const target = snapshot.actors.find((target) => target.id === actor.targetId);
+        const dx = target ? target.x - actor.x : actor.x - view.lastX;
+        if (Math.abs(dx) > 0.2) view.facing = Math.sign(dx);
+        view.lastX = actor.x;
+        const visual = view.skeleton ? view.skeleton.node : view.sprite.node;
+        visual.scaleX = Math.abs(visual.scaleX) * view.facing * (view.binding.flip ? -1 : 1);
+        if (view.skeleton) {
+            const available = view.skeleton.skeletonData.getRuntimeData().animations;
+            if (!available.some((entry) => entry.name === action)) action = action === "dead" ? "die" : "attack";
+            if (!available.some((entry) => entry.name === action)) action = "idle";
+            const track = view.skeleton.getCurrent(0);
+            if (action === "idle" && view.action !== "idle" && view.action !== "move" && track && !track.isComplete()) action = view.action;
+            if (view.action !== action || (cast && view.castId !== cast.id)) view.skeleton.setAnimation(0, action, action === "idle" || action === "move");
+            view.skeleton.paused = snapshot.runState !== "running";
+        } else {
+            const key = `${view.binding.path}:${action}`;
+            let frames = this.frames.get(key);
+            if (!frames) {
+                const atlas = this.loaded.get(view.binding.path) as cc.SpriteAtlas;
+                frames = atlas.getSpriteFrames().filter((frame) => new RegExp(`(?:^|[_-])${action}(?:[_-]|\\d|$)`, "i").test(frame.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+                if (!frames.length) frames = atlas.getSpriteFrames().slice(0, 1);
+                this.frames.set(key, frames);
+            }
+            if (view.action !== action) view.age = 0;
+            if (snapshot.runState === "running") view.age += delta;
+            if (frames.length) view.sprite.spriteFrame = frames[actor.hp <= 0 ? Math.min(frames.length - 1, Math.floor(view.age * view.binding.fps)) : Math.floor(view.age * view.binding.fps) % frames.length];
+        }
+        view.action = action;
+        view.castId = cast && cast.id;
+        const g = view.bars;
+        g.clear();
+        if (actor.hp <= 0) return;
+        const height = view.binding.height * this.config.scale;
+        const width = actor.kind === "boss" ? 110 : 48;
+        g.fillColor = cc.color(15, 18, 18, 220); g.rect(-width / 2, height, width, 7); g.fill();
+        g.fillColor = actor.team === "player" ? cc.color(72, 208, 118) : cc.color(226, 73, 70);
+        g.rect(-width / 2 + 1, height + 1, (width - 2) * actor.hp / actor.maxHp, 5); g.fill();
+    }
+}

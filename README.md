@@ -19,7 +19,7 @@ Minimal Cocos Creator 2.4.15 frontend prototype for a portrait 2.5D squad explor
 - explicit actor, navigation, combat, and boss state machines
 - deterministic core tests independent of Cocos
 
-All visuals and tuning values are original placeholders. No third-party game assets or extracted code are included.
+The tracked project uses original placeholder visuals and tuning. A separate localhost mode can stage an explicitly authorized resource cache for temporary visual comparison; cached content and generated profiles remain untracked. See [local reference preview](docs/local-reference-preview.md).
 
 See [world rules](docs/world-rules.md) for region conditions, geometry conventions and the current verification boundary.
 The latest scoped results are in [combat validation](docs/validation-combat.md).
