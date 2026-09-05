@@ -1,0 +1,46 @@
+{
+  "start-scene": "4f4a64ba-b67f-4aa1-a7f2-a8d908ff0075",
+  "group-list": [
+    "default"
+  ],
+  "collision-matrix": [
+    [
+      true
+    ]
+  ],
+  "excluded-modules": [
+    "DragonBones",
+    "Physics",
+    "TiledMap",
+    "3D",
+    "3D Primitive",
+    "3D Physics/cannon.js",
+    "3D Physics/Builtin",
+    "3D Particle",
+    "VideoPlayer",
+    "WebView"
+  ],
+  "preview-port": 7468,
+  "design-resolution-width": 720,
+  "design-resolution-height": 1280,
+  "fit-width": true,
+  "fit-height": false,
+  "use-project-simulator-setting": false,
+  "simulator-orientation": false,
+  "use-customize-simulator": true,
+  "simulator-resolution": {
+    "width": 720,
+    "height": 1280
+  },
+  "clear-simulator-cache": true,
+  "facebook": {
+    "enable": false,
+    "appID": "",
+    "live": {
+      "enable": false
+    },
+    "audience": {
+      "enable": false
+    }
+  }
+}

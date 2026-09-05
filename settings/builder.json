@@ -1,0 +1,35 @@
+{
+  "title": "Exploration Demo",
+  "packageName": "com.prototype.autoexplore",
+  "startScene": "4f4a64ba-b67f-4aa1-a7f2-a8d908ff0075",
+  "excludeScenes": [],
+  "orientation": {
+    "landscapeRight": false,
+    "landscapeLeft": false,
+    "portrait": true,
+    "upsideDown": false
+  },
+  "webOrientation": "portrait",
+  "inlineSpriteFrames": true,
+  "inlineSpriteFrames_native": true,
+  "mainCompressionType": "default",
+  "mainIsRemote": false,
+  "optimizeHotUpdate": false,
+  "md5Cache": true,
+  "nativeMd5Cache": true,
+  "encryptJs": false,
+  "zipCompressJs": false,
+  "fb-instant-games": {},
+  "android": {
+    "packageName": "com.prototype.autoexplore",
+    "REMOTE_SERVER_ROOT": ""
+  },
+  "ios": {
+    "packageName": "com.prototype.autoexplore",
+    "REMOTE_SERVER_ROOT": "",
+    "ios_enable_jit": true
+  },
+  "appBundle": false,
+  "agreements": {}
+}
+

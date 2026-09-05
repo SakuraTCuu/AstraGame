@@ -1,0 +1,14 @@
+{
+  "name": "zhenxie-exploration-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal Cocos Creator 2.4.15 exploration and combat prototype",
+  "scripts": {
+    "test": "node --no-warnings --loader ./tests/ts-loader.mjs --test tests/*.test.ts",
+    "check": "node --no-warnings --loader ./tests/ts-loader.mjs --test tests/*.test.ts",
+    "smoke:web": "node tools/cdp-smoke.mjs http://127.0.0.1:4173"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

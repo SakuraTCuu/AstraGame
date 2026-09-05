@@ -1,0 +1,289 @@
+{
+  "meta": {
+    "id": "auto_explore_demo_v1",
+    "schemaVersion": 1,
+    "contentStatus": "ORIGINAL_PLACEHOLDER",
+    "notice": "All names, geometry and numeric values are original adjustable placeholders for engineering validation. They were not extracted from Zhen Xie Ren or any other game.",
+    "designResolution": {
+      "width": 720,
+      "height": 1280
+    },
+    "units": "cocos_design_units",
+    "coordinateSystem": "world_x_right_y_up"
+  },
+  "seed": 20260904,
+  "world": {
+    "id": "mist_valley_demo",
+    "name": "Mist Valley Demo",
+    "width": 4800,
+    "height": 7200,
+    "cellSize": 80,
+    "blocked": [
+      { "x": 11, "y": 15 },
+      { "x": 12, "y": 15 },
+      { "x": 28, "y": 26 },
+      { "x": 29, "y": 26 },
+      { "x": 46, "y": 21 },
+      { "x": 10, "y": 51 },
+      { "x": 44, "y": 55 }
+    ],
+    "start": { "x": 520, "y": 520 },
+    "bossArena": { "x": 4000, "y": 6240, "radius": 520 },
+    "camera": {
+      "projection": "orthographic_2_5d",
+      "followSmoothing": 0.12,
+      "lookAhead": 120,
+      "zoom": 1.0,
+      "ySortEnabled": true,
+      "ySortFootOffset": 0
+    },
+    "navigation": {
+      "cellSize": 80,
+      "allowDiagonal": true,
+      "diagonalCost": 1.4142,
+      "repathInterval": 0.35,
+      "arrivalRadius": 42,
+      "manualResumeDelay": 0.65,
+      "stuckTimeout": 1.4
+    },
+    "obstacles": [
+      { "id": "rock_west", "shape": "rect", "x": 900, "y": 1180, "width": 500, "height": 320 },
+      { "id": "ruin_center", "shape": "rect", "x": 2200, "y": 2100, "width": 720, "height": 560 },
+      { "id": "pond_east", "shape": "circle", "x": 3700, "y": 1680, "radius": 410 },
+      { "id": "grove_northwest", "shape": "rect", "x": 780, "y": 4080, "width": 900, "height": 620 },
+      { "id": "cliff_northeast", "shape": "rect", "x": 3520, "y": 4380, "width": 820, "height": 480 }
+    ],
+    "pointsOfInterest": [
+      { "id": "camp_start", "type": "safe_zone", "x": 520, "y": 520, "discoverRadius": 280 },
+      { "id": "shrine_west", "type": "heal", "x": 720, "y": 2920, "discoverRadius": 240 },
+      { "id": "cache_east", "type": "reward", "x": 3900, "y": 3200, "discoverRadius": 220 },
+      { "id": "gate_north", "type": "checkpoint", "x": 2420, "y": 5100, "discoverRadius": 320 },
+      { "id": "boss_altar", "type": "boss", "x": 4000, "y": 6240, "discoverRadius": 420 }
+    ]
+  },
+  "fog": {
+    "enabled": true,
+    "cellSize": 96,
+    "gridCellSize": 96,
+    "hiddenAlpha": 0.96,
+    "exploredAlpha": 0.5,
+    "visibleAlpha": 0.0,
+    "revealRadius": 440,
+    "revealFalloff": 130,
+    "updateInterval": 0.1,
+    "persistExploredCells": true,
+    "sharedBySquad": true,
+    "unlockZones": [
+      { "id": "south", "rect": { "x": 0, "y": 0, "width": 2400, "height": 2600 }, "unlock": "initial" },
+      { "id": "east", "rect": { "x": 2400, "y": 0, "width": 2400, "height": 4000 }, "unlock": "discover:cache_east" },
+      { "id": "north", "rect": { "x": 0, "y": 2600, "width": 4800, "height": 2600 }, "unlock": "discover:shrine_west" },
+      { "id": "boss", "rect": { "x": 0, "y": 5200, "width": 4800, "height": 2000 }, "unlock": "clear:gate_guard" }
+    ]
+  },
+  "flashlight": {
+    "enabled": true,
+    "owner": "leader",
+    "range": 620,
+    "innerAngleDeg": 34,
+    "outerAngleDeg": 58,
+    "softEdge": 0.32,
+    "ambientRadius": 150,
+    "turnSmoothing": 0.16,
+    "aimMode": "movement_then_target"
+  },
+  "combat": {
+    "tickRate": 20,
+    "targetRefreshInterval": 0.2,
+    "combatExitDelay": 1.0,
+    "supportHealThreshold": 0.7,
+    "damageVariance": 0.0,
+    "criticalMultiplier": 1.5,
+    "minimumDamage": 1,
+    "formula": "max(minimumDamage, floor(attack * coefficient - defense))",
+    "friendlyCollision": false,
+    "enemyCollision": true
+  },
+  "squad": {
+    "leaderId": "hero_guard",
+    "formationRotationMode": "movement_direction",
+    "teleportCatchupDistance": 720,
+    "formationOffsets": [
+      { "x": 0, "y": 0 },
+      { "x": -105, "y": -120 },
+      { "x": 105, "y": -135 },
+      { "x": 0, "y": -230 }
+    ],
+    "actors": [
+      {
+        "id": "hero_guard",
+        "name": "Lantern Guard",
+        "kind": "hero",
+        "team": "player",
+        "role": "tank",
+        "x": 520,
+        "y": 520,
+        "formation": { "x": 0, "y": 0 },
+        "hp": 1500,
+        "maxHp": 1500,
+        "attack": 92,
+        "defense": 26,
+        "moveSpeed": 250,
+        "attackRange": 105,
+        "aggroRange": 420,
+        "skillIds": ["guard_strike", "iron_bell"]
+      },
+      {
+        "id": "hero_blade",
+        "name": "Paper Blade",
+        "kind": "hero",
+        "team": "player",
+        "role": "melee",
+        "x": 415,
+        "y": 400,
+        "formation": { "x": -105, "y": -120 },
+        "hp": 1050,
+        "maxHp": 1050,
+        "attack": 128,
+        "defense": 15,
+        "moveSpeed": 270,
+        "attackRange": 115,
+        "aggroRange": 460,
+        "skillIds": ["blade_cut", "crescent_arc"]
+      },
+      {
+        "id": "hero_talisman",
+        "name": "Talisman Adept",
+        "kind": "hero",
+        "team": "player",
+        "role": "ranged",
+        "x": 625,
+        "y": 385,
+        "formation": { "x": 105, "y": -135 },
+        "hp": 820,
+        "maxHp": 820,
+        "attack": 145,
+        "defense": 9,
+        "moveSpeed": 260,
+        "attackRange": 430,
+        "aggroRange": 520,
+        "skillIds": ["paper_dart", "seal_burst"]
+      },
+      {
+        "id": "hero_medic",
+        "name": "Herb Keeper",
+        "kind": "hero",
+        "team": "player",
+        "role": "support",
+        "x": 520,
+        "y": 290,
+        "formation": { "x": 0, "y": -230 },
+        "hp": 900,
+        "maxHp": 900,
+        "attack": 74,
+        "defense": 12,
+        "moveSpeed": 255,
+        "attackRange": 350,
+        "aggroRange": 450,
+        "skillIds": ["herb_shot", "green_mist"]
+      }
+    ]
+  },
+  "enemies": [
+    {
+      "id": "mob_husk",
+      "name": "Wandering Husk",
+      "kind": "normal",
+      "team": "enemy",
+      "x": 1280,
+      "y": 1020,
+      "hp": 520,
+      "maxHp": 520,
+      "attack": 58,
+      "defense": 6,
+      "moveSpeed": 145,
+      "attackRange": 85,
+      "aggroRange": 390,
+      "leashRange": 620,
+      "skillIds": ["husk_claw"],
+      "reward": { "demoXp": 8 }
+    },
+    {
+      "id": "mob_wisp",
+      "name": "Marsh Wisp",
+      "kind": "normal",
+      "team": "enemy",
+      "x": 3350,
+      "y": 1680,
+      "hp": 390,
+      "maxHp": 390,
+      "attack": 72,
+      "defense": 3,
+      "moveSpeed": 125,
+      "attackRange": 330,
+      "aggroRange": 480,
+      "leashRange": 680,
+      "skillIds": ["wisp_bolt"],
+      "reward": { "demoXp": 10 }
+    },
+    {
+      "id": "boss_gate_guard",
+      "name": "Stone Gate Warden",
+      "kind": "boss",
+      "team": "enemy",
+      "x": 4000,
+      "y": 6240,
+      "hp": 12500,
+      "maxHp": 12500,
+      "attack": 135,
+      "defense": 20,
+      "moveSpeed": 105,
+      "attackRange": 145,
+      "aggroRange": 760,
+      "leashRange": 980,
+      "phaseThresholds": [0.66, 0.33],
+      "skillIds": ["warden_slam", "warden_shockwave", "warden_summon"],
+      "reward": { "demoXp": 200 }
+    }
+  ],
+  "skills": {
+    "player": { "id": "guard_strike", "range": 105, "cooldown": 1.25, "power": 1.0, "target": "nearest_enemy" },
+    "enemy": { "id": "husk_claw", "range": 85, "cooldown": 1.8, "power": 1.0, "target": "nearest_hero" },
+    "definitions": [
+    { "id": "guard_strike", "type": "damage", "coefficient": 1.0, "cooldown": 1.25, "range": 105, "target": "nearest_enemy", "maxTargets": 1 },
+    { "id": "iron_bell", "type": "shield", "coefficient": 2.2, "cooldown": 8.0, "range": 0, "target": "self", "maxTargets": 1, "duration": 3.0 },
+    { "id": "blade_cut", "type": "damage", "coefficient": 1.05, "cooldown": 0.9, "range": 115, "target": "nearest_enemy", "maxTargets": 1 },
+    { "id": "crescent_arc", "type": "damage", "coefficient": 1.65, "cooldown": 5.5, "range": 190, "target": "enemy_cluster", "maxTargets": 3 },
+    { "id": "paper_dart", "type": "damage", "coefficient": 1.0, "cooldown": 1.35, "range": 430, "target": "nearest_enemy", "maxTargets": 1 },
+    { "id": "seal_burst", "type": "damage", "coefficient": 1.8, "cooldown": 6.5, "range": 480, "target": "lowest_hp_enemy", "maxTargets": 1 },
+    { "id": "herb_shot", "type": "damage", "coefficient": 0.85, "cooldown": 1.6, "range": 350, "target": "nearest_enemy", "maxTargets": 1 },
+    { "id": "green_mist", "type": "heal", "coefficient": 1.7, "cooldown": 7.0, "range": 360, "target": "lowest_hp_ally", "maxTargets": 2 },
+    { "id": "husk_claw", "type": "damage", "coefficient": 1.0, "cooldown": 1.8, "range": 85, "target": "nearest_hero", "maxTargets": 1 },
+    { "id": "wisp_bolt", "type": "damage", "coefficient": 1.0, "cooldown": 2.2, "range": 330, "target": "nearest_hero", "maxTargets": 1 },
+    { "id": "warden_slam", "type": "damage", "coefficient": 1.35, "cooldown": 2.4, "range": 165, "target": "nearest_hero", "maxTargets": 2 },
+    { "id": "warden_shockwave", "type": "telegraph_damage", "coefficient": 1.8, "cooldown": 7.5, "range": 420, "target": "hero_cluster", "maxTargets": 4, "telegraph": 1.2 },
+      { "id": "warden_summon", "type": "summon", "coefficient": 0, "cooldown": 12.0, "range": 320, "target": "self", "maxTargets": 3, "summonEnemyId": "mob_husk" }
+    ]
+  },
+  "spawns": [
+    { "id": "spawn_south_01", "trigger": "distance", "x": 1280, "y": 1020, "triggerRadius": 520, "enemyId": "mob_husk", "count": 4, "spawnRadius": 210, "respawn": false },
+    { "id": "spawn_pond_01", "trigger": "distance", "x": 3350, "y": 1680, "triggerRadius": 560, "enemyId": "mob_wisp", "count": 4, "spawnRadius": 260, "respawn": false },
+    { "id": "spawn_ruin_01", "trigger": "distance", "x": 2160, "y": 3020, "triggerRadius": 620, "enemyId": "mob_husk", "count": 5, "spawnRadius": 300, "respawn": false },
+    { "id": "spawn_ruin_02", "trigger": "distance", "x": 2640, "y": 3320, "triggerRadius": 620, "enemyId": "mob_wisp", "count": 3, "spawnRadius": 240, "respawn": false },
+    { "id": "spawn_gate_guard", "trigger": "distance", "x": 2420, "y": 4860, "triggerRadius": 700, "enemyId": "mob_husk", "count": 7, "spawnRadius": 380, "respawn": false, "encounterId": "gate_guard" },
+    { "id": "spawn_boss", "trigger": "zone_unlocked", "x": 4000, "y": 6240, "triggerRadius": 760, "enemyId": "boss_gate_guard", "count": 1, "spawnRadius": 0, "respawn": false, "encounterId": "boss_final" }
+  ],
+  "autoPath": {
+    "enabled": true,
+    "defaultTargetPoiId": "boss_altar",
+    "waypoints": [
+      { "x": 520, "y": 520 },
+      { "x": 1500, "y": 920 },
+      { "x": 1900, "y": 1650 },
+      { "x": 1600, "y": 2800 },
+      { "x": 2500, "y": 3700 },
+      { "x": 2420, "y": 5100 },
+      { "x": 3300, "y": 5600 },
+      { "x": 4000, "y": 6240 }
+    ]
+  }
+}

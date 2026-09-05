@@ -1,0 +1,23 @@
+# Cocos Creator generated state
+library/
+local/
+temp/
+build/
+profiles/
+
+# Dependencies and logs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local-only captures and reference material
+reference-private/
+captures/
+

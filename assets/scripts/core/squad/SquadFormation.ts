@@ -1,0 +1,43 @@
+import type { Actor } from "../actor/Actor";
+import { Vector2 } from "../math/Vector2";
+import type { Vec2Like } from "../math/Vector2";
+
+export const DEFAULT_FORMATION_OFFSETS: readonly Vec2Like[] = [
+  { x: 0, y: 0 },
+  { x: -1.25, y: -1 },
+  { x: 1.25, y: -1 },
+  { x: 0, y: -2 },
+];
+
+export class SquadFormation {
+  private readonly members: Actor[];
+  private readonly offsets: readonly Vec2Like[];
+  private readonly followStrength: number;
+
+  constructor(members: readonly Actor[], offsets = DEFAULT_FORMATION_OFFSETS, followStrength = 6) {
+    if (members.length > offsets.length) throw new RangeError("Not enough formation slots");
+    this.members = [...members];
+    this.offsets = offsets;
+    this.followStrength = followStrength;
+  }
+
+  slotPosition(index: number, anchor: Vec2Like, facing: Vec2Like = { x: 0, y: 1 }): Vector2 {
+    const slot = this.offsets[index];
+    if (!slot) throw new RangeError("Formation slot does not exist");
+    const forward = Vector2.from(facing).normalized();
+    const effectiveForward = forward.lengthSquared() === 0 ? new Vector2(0, 1) : forward;
+    const right = new Vector2(effectiveForward.y, -effectiveForward.x);
+    return Vector2.from(anchor).add(right.scale(slot.x)).add(effectiveForward.scale(slot.y));
+  }
+
+  update(anchor: Vec2Like, facing: Vec2Like, deltaSeconds: number): void {
+    for (let index = 0; index < this.members.length; index += 1) {
+      const actor = this.members[index]!;
+      if (!actor.alive || actor.fsm.state === "attacking" || actor.fsm.state === "chasing") continue;
+      const target = this.slotPosition(index, anchor, facing);
+      const blend = Math.min(1, this.followStrength * deltaSeconds);
+      actor.position = actor.position.add(target.subtract(actor.position).scale(blend));
+      actor.fsm.force(actor.position.distanceSquared(target) < 0.0025 ? "idle" : "moving");
+    }
+  }
+}
