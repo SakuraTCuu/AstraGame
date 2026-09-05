@@ -423,6 +423,7 @@ export class DemoRenderer {
             g.fillColor = !alive ? cc.color(63, 65, 66) : boss ? cc.color(163, 55, 51) : player ? cc.color(76, 151, 142) : cc.color(132, 83, 96);
             g.ellipse(p.x, p.y - 13, boss ? 43 : 27, boss ? 18 : 12);
             g.fill();
+            p.y += (actor.elevation || 0) * this.worldScale;
             g.fillColor = !alive ? cc.color(82, 82, 82) : boss ? cc.color(183, 72, 61) : player ? cc.color(195, 203, 166) : cc.color(153, 105, 111);
             g.circle(p.x, p.y + (boss ? 20 : 12), boss ? 37 : 23);
             g.fill();
@@ -452,6 +453,7 @@ export class DemoRenderer {
                 const target = snapshot.actors.find((candidate) => candidate.id === actor.targetId);
                 if (target) {
                     const tp = this.project(target);
+                    tp.y += (target.elevation || 0) * this.worldScale;
                     g.strokeColor = cc.color(242, 190, 92, 95);
                     g.lineWidth = 1;
                     g.moveTo(p.x, p.y + 12);
@@ -603,6 +605,7 @@ export class DemoRenderer {
             }
             const p = this.project(actor);
             let label = this.actorLabels.get(actor.id);
+            p.y += (actor.elevation || 0) * this.worldScale;
             if (!label) {
                 label = this.createLabel(`State_${actor.id}`, 16, cc.color(225, 226, 211), cc.Vec2.ZERO, cc.Label.HorizontalAlign.CENTER);
                 label.node.setContentSize(150, 28);

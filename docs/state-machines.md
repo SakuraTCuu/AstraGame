@@ -105,11 +105,19 @@ READY -> WINDUP -> HIT -> RECOVERY -> COOLDOWN -> READY
 ### Timed Control States
 
 - A status can create several states, each with its own duration. State duration `-1` is indefinite. States can expire before their Buff or continue after its modifiers expire. Reapplying the same Buff group refreshes its states; other groups retain their independent clocks.
-- Stun, freeze and airborne control block movement and casting. Root blocks movement and movement skills while allowing stationary attacks. Silence blocks tactical and ultimate skills while allowing normal attacks and movement. Explicit `uncontrolled` skill conditions reject all supported controls.
+- Stun, freeze, airborne and fear control block voluntary movement and casting. Root blocks movement and movement skills while allowing stationary attacks. Silence blocks tactical and ultimate skills while allowing normal attacks and movement. Explicit `uncontrolled` skill conditions reject all supported controls.
 - Incoming control checks per-kind immunity, source state exclusions and the optional Boss exclusion. Interruption immunity protects a pending cast separately from control immunity. It does not enable new casts while controlled.
 - Unsupported movement is suppressed in joystick, path, AI and formation updates. Hard control enters `controlled` after any interruptible cast is cancelled and returns to `idle` on expiry or cleanse. Freeze pauses the reference animation; root prevents a false walking animation.
 - Cleansing can remove a remaining control after its owner Buff expires. NPC-only and protected-effect rules retain their original ownership. Death and recovery clear both Buffs and states, and configured return cleanup applies to both.
-- Immunity currently blocks new controls without purging existing ones. Airborne height/trajectory, fear movement and other specialized states remain separate adaptation work; source state options and unknown behaviors remain in the local audit.
+- Immunity currently blocks new controls without purging existing ones. Specialized state behavior and live parameter comparisons remain in the local audit.
+
+### Control Motion
+
+- Airborne states have a height, rise time and fall time, with any remaining duration held at the peak. Reapplying a lift preserves current height. Overlapping lifts use the highest elevation; expiry, cleansing and death ground the actor. Navigation and hit testing retain ground coordinates while both renderers lift the body and health bar.
+- Fear selects seeded random headings at the configured interval and moves at its configured speed. Each segment uses collision separately, including when a single update spans several turns. Stun, freeze, root, airborne control and knockback suppress fear movement. Its timer continues while blocked.
+- Fear replaces voluntary movement until its expiry or cleanse. The world retains route invalidation across control cleanup and replans from the displaced position before resuming automatic travel.
+- The source adapter currently interprets optional fear operands as speed and milliseconds between direction changes. Missing values use 350 units/second and one second based on the cached skill description. The interval operand still requires live comparison.
+- Explicit rise/fall/height values are supported for `upUp`. Other supported airborne actions use the local 160-unit jump-height default and a symmetric curve. Source heights, easing and remaining flight options are still unverified; `windFly` still needs its directional scene behavior.
 
 ## Fog and Discovery
 

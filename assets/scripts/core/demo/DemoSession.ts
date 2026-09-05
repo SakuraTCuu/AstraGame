@@ -184,6 +184,7 @@ export interface ActorSnapshot {
   readonly maxEnergy?: number;
   readonly statuses?: readonly { readonly id: string; readonly remaining: number }[];
   readonly controls?: ReturnType<Actor["controlSnapshots"]>;
+  readonly elevation?: number;
 }
 
 export interface DemoSnapshot {
@@ -715,6 +716,7 @@ export class DemoSession {
       maxEnergy: entry.stats.maxEnergy ?? 0,
       statuses: entry.statusSnapshots(),
       controls: entry.controlSnapshots(),
+      elevation: entry.controlElevation,
     }));
     const leader = this.world.leader;
     const bossPhases: Record<string, BossPhase> = {};
@@ -846,11 +848,14 @@ export class DemoSession {
         if (!status.id || !Number.isFinite(status.duration) || (!status.permanent && status.duration <= 0) || Object.values(status.modifiers ?? {}).some((value) => !Number.isFinite(value))) throw new Error(`Invalid status for ${config.id}`);
         if (!Number.isSafeInteger(status.maxStacks ?? 1) || (status.maxStacks ?? 1) < 1) throw new Error(`Invalid status stack limit for ${config.id}`);
         if (Object.entries(status.targetCountBonuses ?? {}).some(([id, count]) => !id || !Number.isSafeInteger(count))) throw new Error(`Invalid target count bonus for ${config.id}`);
-        const controls = ["stun", "freeze", "root", "silence", "airborne"];
+        const controls = ["stun", "freeze", "root", "silence", "airborne", "fear"];
         if (status.blockedByStates?.some((state) => !state || typeof state !== "string")) throw new Error(`Invalid state exclusion for ${config.id}`);
         for (const state of status.states ?? []) {
           if (!state.id || !Number.isFinite(state.duration) || (state.duration <= 0 && state.duration !== -1) || (state.control && !controls.includes(state.control)) ||
               state.controlImmunity?.some((kind) => !controls.includes(kind))) throw new Error(`Invalid status state for ${config.id}`);
+          if (state.lift && (state.control !== "airborne" || ![state.lift.height, state.lift.rise, state.lift.fall].every((value) => Number.isFinite(value) && value > 0) ||
+              state.duration < state.lift.rise + state.lift.fall - 1e-9)) throw new Error(`Invalid airborne motion for ${config.id}`);
+          if (state.wander && (state.control !== "fear" || ![state.wander.speed, state.wander.turnInterval].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid fear motion for ${config.id}`);
         }
         const periodic = status.periodicDamage;
         if (periodic && (![periodic.interval, periodic.power, periodic.intervalPerStack ?? 0].every(Number.isFinite) || periodic.interval <= 0 || periodic.power < 0 ||

@@ -42,6 +42,7 @@ export class GameWorld {
   manualControlActive = false;
   private readonly playerAI = new PlayerAI();
   private previousLeaderId?: string;
+  private displacedPathLeader?: string;
   private readonly enemyAIs = new Map<string, EnemyAI>();
   private facing = new Vector2(0, 1);
   private readonly revealRadius: number;
@@ -107,6 +108,7 @@ export class GameWorld {
   get facingDirection(): Vector2 { return this.facing; }
 
   clearTravel(): void {
+    this.displacedPathLeader = undefined;
     this.path.clear();
     this.actorPaths.clear();
     this.leaderTravelActive = this.autoTravelPaused = this.manualControlActive = false;
@@ -135,19 +137,22 @@ export class GameWorld {
   update(deltaSeconds: number): void {
     if (deltaSeconds <= 0) return;
     this.elapsedSeconds += deltaSeconds;
-    const previousLeader = this.leader;
-    const wasDisplaced = previousLeader && this.combat.isDisplaced(previousLeader);
     this.combat.update(deltaSeconds, this.allActors, (actor, destination, kind) => {
       actor.position = kind === "jump" ? Vector2.from(destination) :
         this.options.navigation.moveWithCollision(actor.position, Vector2.from(destination).subtract(actor.position));
+      if (actor === this.leader && (kind === "fear" || kind === "knockback")) this.displacedPathLeader = actor.id;
     });
     const leader = this.leader;
-    if (leader && leader === previousLeader && wasDisplaced && !this.combat.isDisplaced(leader) && !this.path.complete) {
-      const points = this.path.remainingWaypoints();
-      if (!this.navigateTo(points[points.length - 1])) this.path.clear();
+    if (leader && this.displacedPathLeader === leader.id && !this.combat.isDisplaced(leader) && !leader.hasControl("fear")) {
+      if (!this.path.complete) {
+        const points = this.path.remainingWaypoints();
+        if (!this.navigateTo(points[points.length - 1])) this.path.clear();
+      }
+      this.displacedPathLeader = undefined;
     }
     if (leader?.id !== this.previousLeaderId) {
       this.path.clear();
+      this.displacedPathLeader = undefined;
       this.previousLeaderId = leader?.id;
     }
     if (leader?.alive) {

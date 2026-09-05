@@ -8,7 +8,7 @@ export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" 
 
 export interface ShieldLayer { readonly key: string; amount: number; remaining: number; }
 interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; source: Actor; skillId: string; fromPlayer: boolean; }
-interface AppliedState { readonly definition: StatusState; readonly owner: AppliedStatus; remaining: number; }
+interface AppliedState { readonly definition: StatusState; readonly owner: AppliedStatus; readonly initialElevation: number; remaining: number; elapsed: number; direction?: Vector2; nextTurn?: number; }
 export interface PeriodicDamageTick { readonly source: Actor; readonly skillId: string; readonly statusId: string; readonly power: number; readonly damageType: DamageType; }
 
 const TRANSITIONS: Record<ActorState, readonly ActorState[]> = {
@@ -133,7 +133,7 @@ export class Actor {
   hasStatus(state: string): boolean { return this.states.some((entry) => entry.definition.id === state) || this.statuses.some((entry) => entry.definition.id === state || entry.definition.group === state); }
   hasControl(kind: ControlKind): boolean { return this.states.some((entry) => entry.definition.control === kind); }
   get controlled(): boolean { return this.states.some((entry) => Boolean(entry.definition.control)); }
-  get hardControlled(): boolean { return this.hasControl("stun") || this.hasControl("freeze") || this.hasControl("airborne"); }
+  get hardControlled(): boolean { return this.hasControl("stun") || this.hasControl("freeze") || this.hasControl("airborne") || this.hasControl("fear"); }
   get canMove(): boolean { return this.alive && this.fsm.state !== "displaced" && !this.hardControlled && !this.hasControl("root"); }
   blocksCasting(category = "skill"): boolean { return this.hardControlled || (category !== "normal" && this.hasControl("silence")); }
   get interruptionImmune(): boolean { return this.states.some((entry) => entry.definition.interruptionImmunity) || this.hasStatus("ignoreBreakSkill"); }
@@ -143,6 +143,32 @@ export class Actor {
   }
   controlSnapshots(): Array<{ kind: ControlKind; remaining: number }> { return this.states.filter((entry) => entry.definition.control).map((entry) => ({ kind: entry.definition.control!, remaining: entry.remaining })); }
   stateSnapshots(): Array<{ id: string; remaining: number }> { return this.states.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining })); }
+  get controlElevation(): number {
+    return this.states.reduce((height, state) => {
+      const lift = state.definition.lift;
+      if (!lift) return height;
+      const peak = Math.max(lift.height, state.initialElevation);
+      const elevation = state.elapsed < lift.rise ? state.initialElevation + (peak - state.initialElevation) * (1 - Math.pow(1 - state.elapsed / lift.rise, 2)) :
+        state.remaining < lift.fall ? peak * (1 - Math.pow(1 - Math.max(0, state.remaining) / lift.fall, 2)) : peak;
+      return Math.max(height, Math.max(0, elevation));
+    }, 0);
+  }
+  advanceControlMovement(deltaSeconds: number, random: () => number, move: (destination: Vec2Like) => void): void {
+    if (!this.alive || this.fsm.state === "displaced" || ["stun", "freeze", "airborne", "root"].some((kind) => this.hasControl(kind as ControlKind))) return;
+    const state = this.states.find((entry) => entry.definition.control === "fear" && entry.definition.wander);
+    if (!state) return;
+    const wander = state.definition.wander!;
+    let age = state.elapsed, remaining = Math.min(deltaSeconds, state.remaining === -1 ? deltaSeconds : state.remaining);
+    while (remaining > 1e-9) {
+      if (!state.direction || age + 1e-9 >= state.nextTurn!) {
+        const angle = random() * Math.PI * 2;
+        state.direction = new Vector2(Math.cos(angle), Math.sin(angle)); state.nextTurn = age + wander.turnInterval;
+      }
+      const duration = Math.min(remaining, state.nextTurn! - age);
+      move(this.position.add(state.direction.scale(wander.speed * duration)));
+      age += duration; remaining -= duration;
+    }
+  }
   targetCountBonus(group: string): number { return this.statuses.reduce((total, entry) => total + (entry.definition.targetCountBonuses?.[group] ?? 0) * entry.stacks, 0); }
   statusSnapshots(): Array<{ id: string; remaining: number; stacks: number }> { return this.statuses.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining, stacks: entry.stacks })); }
   addStatus(definition: StatusDefinition, source: Actor = this, skillId = definition.id, fromPlayer = source.faction === "player" || source.kind === "hero"): boolean {
@@ -159,8 +185,9 @@ export class Actor {
     }
     const owner = existing ?? { definition, remaining, stacks: 1, elapsed: 0, source, skillId, fromPlayer };
     if (!existing) this.statuses.push(owner);
+    const initialElevation = this.controlElevation;
     for (let index = this.states.length - 1; index >= 0; index--) if ((this.states[index].owner.definition.group ?? this.states[index].owner.definition.id) === (definition.group ?? definition.id)) this.states.splice(index, 1);
-    for (const state of states) this.states.push({ definition: state, owner, remaining: state.duration });
+    for (const state of states) this.states.push({ definition: state, owner, remaining: state.duration, elapsed: 0, initialElevation });
     this.refreshHealthModifier();
     return true;
   }
@@ -226,6 +253,7 @@ export class Actor {
     const ticks: PeriodicDamageTick[] = [];
     this.gainEnergy((this.stats.energyPerSecond ?? 0) * deltaSeconds);
     for (let index = this.states.length - 1; index >= 0; index--) {
+      this.states[index].elapsed += Math.min(deltaSeconds, this.states[index].remaining === -1 ? deltaSeconds : this.states[index].remaining);
       if (this.states[index].remaining === -1) continue;
       this.states[index].remaining -= deltaSeconds;
       if (this.states[index].remaining <= 1e-9) this.states.splice(index, 1);

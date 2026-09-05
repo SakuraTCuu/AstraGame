@@ -88,7 +88,7 @@ interface Cast {
 
 interface Projectile { readonly cast: Cast; readonly expiresAt: number; position: Vector2; lastUpdate: number; impactAt?: number; impactCast?: Cast; actionIndex: number; }
 interface Displacement { readonly actor: Actor; readonly direction: Vector2; readonly distance: number; readonly duration: number; readonly startedAt: number; progress: number; }
-type CombatMovement = SkillMotion["kind"] | "knockback";
+type CombatMovement = SkillMotion["kind"] | "knockback" | "fear";
 export interface SummonRequest { readonly sourceId: string; readonly enemyId: string; readonly count: number; readonly limit: number; readonly radius: number; readonly position: Vec2Like; }
 export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; }
 export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number; }
@@ -161,6 +161,9 @@ export class CombatSystem {
     for (const id of this.combatTimes.keys()) if (!byId.has(id)) this.combatTimes.delete(id);
     for (const actor of actors) {
       this.synchronizeControl(actor);
+      actor.advanceControlMovement(deltaSeconds, this.random, (destination) => {
+        if (this.move) this.move(actor, destination, "fear"); else actor.position = Vector2.from(destination);
+      });
       for (const tick of actor.updateEffects(deltaSeconds)) this.applyDamage(tick.source, actor, tick.skillId, tick.power, tick.damageType, false, tick.statusId);
       this.synchronizeControl(actor);
       const target = actor.targetId && byId.get(actor.targetId);
@@ -178,7 +181,7 @@ export class CombatSystem {
     }
     for (const [id, cast] of this.casts) {
       if (!cast.source.alive || cast.source.fsm.state === "returning") { this.cancelCaster(id); continue; }
-      if (cast.skill.motion && this.time >= cast.hitAt && !this.isDisplaced(cast.source)) this.updateMotion(cast);
+      if (cast.skill.motion && this.time >= cast.hitAt && cast.source.canMove) this.updateMotion(cast);
       if (!cast.resolved && this.time + 1e-9 >= cast.hitAt) this.launch(cast);
       if (this.casts.get(id) !== cast) continue;
       if (cast.resolved && cast.skill.actions && !cast.skill.projectileSpeed) this.advanceActions(cast);

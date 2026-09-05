@@ -43,9 +43,9 @@ const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", 
   craftDmgBonus: "magicBonus", craftDmgReduction: "magicReduction", maxhpRate: "maxHealthRate", pveFinalDmgRecution: "pveDamageReduction", ultraEnegyRate: "energyGainRate" };
 const list = (source) => source ? splitSkillExpression(source, "|").map(skillTuple) : [];
 const skillId = (id) => `reference_skill_${id}`;
-const controlKinds = ["stun", "freeze", "root", "silence", "airborne"];
+const controlKinds = ["stun", "freeze", "root", "silence", "airborne", "fear"];
 const stateControls = { stun: "stun", stunned: "stun", stunNotBoss: "stun", stunAnim1: "stun", stunAnim2: "stun",
-  frozen: "freeze", traditionFreeze: "freeze", twine: "root", immobilized: "root", silent: "silence", silence: "silence", knockUp: "airborne", flyUp: "airborne" };
+  frozen: "freeze", traditionFreeze: "freeze", twine: "root", immobilized: "root", silent: "silence", silence: "silence", knockUp: "airborne", flyUp: "airborne", upUp: "airborne", fear: "fear" };
 
 export function heroSkillAtStar(source, star = 0) {
   if (!Number.isSafeInteger(star) || star < 0) throw new Error("Invalid hero star");
@@ -113,7 +113,15 @@ export function createReferenceSkillCompiler(lookup) {
         else if (stateId === "unForzen") state.controlImmunity = ["freeze"];
         else if (stateId === "unFlyUp") state.controlImmunity = ["airborne"];
         else report(id, "state_behavior", stateId);
-        if (action.length > 3) report(id, "state_options", action);
+        if (state.control === "fear") {
+          state.wander = { speed: action[3] ?? 350, turnInterval: (action[4] ?? 1000) / 1000 };
+          report(id, "fear_motion_parity", { source: action, interpretation: "random heading at each configured interval; speed and default heading loop follow the source description; interval operand requires live comparison" });
+        } else if (state.control === "airborne" && state.duration > 0) {
+          const rising = stateId === "upUp" && action.length === 6;
+          state.lift = rising ? { height: action[5], rise: action[3] / 1000, fall: action[4] / 1000 } :
+            { height: 160, rise: state.duration / 2, fall: state.duration / 2 };
+          report(id, "airborne_motion_parity", { source: action, interpretation: rising ? "configured rise/fall durations and height; easing requires live comparison" : "local jump-height default and symmetric arc; source height/options require live comparison" });
+        } else if (action.length > 3) report(id, "state_options", action);
         definition.states ||= []; definition.states.push(state);
       }
       else if (action[0] === "healAction") immediate.push({ type: "heal", power: Number(action[2] ?? action[1]) / 10000 });

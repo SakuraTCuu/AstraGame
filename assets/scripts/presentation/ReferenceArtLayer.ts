@@ -198,15 +198,16 @@ export class ReferenceArtLayer {
         const moving = Math.abs(actor.x - view.lastX) > 0.1 || ["moving", "chasing", "returning"].includes(actor.state);
         const cast = snapshot.casts.find((cast) => cast.sourceId === actor.id);
         const frozen = actor.controls?.some((control) => control.kind === "freeze");
+        const fleeing = actor.controls?.some((control) => control.kind === "fear") && !actor.controls.some((control) => ["freeze", "stun", "airborne", "root"].includes(control.kind));
         const restrained = actor.controls?.some((control) => control.kind !== "silence");
-        let action = actor.hp <= 0 ? "dead" : actor.state === "displaced" || actor.state === "controlled" ? "hurt" : cast ? "attack" : moving && !restrained ? "move" : "idle";
+        let action = actor.hp <= 0 ? "dead" : fleeing ? "move" : actor.state === "displaced" || actor.state === "controlled" ? "hurt" : cast ? "attack" : moving && !restrained ? "move" : "idle";
         if (cast) action = view.binding.skillAnimations && view.binding.skillAnimations[cast.skillId] || "attack";
         const target = snapshot.actors.find((target) => target.id === actor.targetId);
-        const dx = target ? target.x - actor.x : actor.x - view.lastX;
+        const dx = target && !fleeing ? target.x - actor.x : actor.x - view.lastX;
         if (Math.abs(dx) > 0.2) view.facing = Math.sign(dx);
         view.lastX = actor.x;
         const visual = view.skeleton ? view.skeleton.node : view.sprite.node;
-        visual.y = (cast?.elevation || 0) * this.config.scale;
+        visual.y = Math.max(cast?.elevation || 0, actor.elevation || 0) * this.config.scale;
         view.bars.node.y = visual.y;
         visual.scaleX = Math.abs(visual.scaleX) * view.facing * (view.binding.flip ? -1 : 1);
         if (view.skeleton) {

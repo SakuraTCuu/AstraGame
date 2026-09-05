@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { Actor, CombatSystem } from "../assets/scripts/core/index.ts";
+import { Actor, CombatSystem, Vector2 } from "../assets/scripts/core/index.ts";
 import { tableRow } from "./reference-cache.mjs";
 import { createReferenceSkillCompiler } from "./reference-skills.mjs";
 
@@ -33,6 +33,7 @@ assert.equal(launch.duration, 1); assert.equal(launch.states[0].duration, 2);
 apply(launch); advance(1.05);
 assert.equal(target.hasStatus(launch.id), false); assert.equal(target.hasControl("airborne"), true);
 reports.push({ phase: "source_airborne", buffExpired: true, remainingState: target.controlSnapshots()[0].remaining });
+assert.ok(target.controlElevation > 150 && target.controlElevation <= 160);
 assert.deepEqual(target.cleanse(1, true, () => 0), [launch.id]); combat.update(0, actors);
 assert.equal(target.canMove, true); assert.equal(target.fsm.state, "idle");
 target.addStatus(compileBuff(1702), target);
@@ -45,4 +46,12 @@ combat.use(source, target, { id: "push", target: "enemy", range: 50, cooldown: 0
 advance(0.5); assert.deepEqual(target.position, before);
 reports.push({ phase: "source_immunity", states: target.stateSnapshots().map((state) => state.id), controls: target.controlSnapshots(), moved: false });
 target.recoverAt(target.position); assert.deepEqual(target.stateSnapshots(), []);
+const fear = compileBuff(510501);
+assert.deepEqual(fear.states[0].wander, { speed: 350, turnInterval: 0.5 });
+target.addStatus(fear, source);
+let directions = 0; const segments = [], fearCombat = new CombatSystem(() => [0, 0.25, 0.5][directions++]);
+fearCombat.update(1.5, [target], (actor, point) => { segments.push(actor.position.distance(point)); actor.position = Vector2.from(point); });
+assert.equal(directions, 3); assert.ok(segments.every((distance) => Math.abs(distance - 175) < 1e-6));
+assert.equal(target.controlled, false); assert.equal(target.canMove, true);
+reports.push({ phase: "source_fear", directionChanges: directions, segmentDistances: segments, totalDistance: segments.reduce((sum, distance) => sum + distance, 0), resumed: target.canMove });
 console.log(JSON.stringify({ setup: "Actual cached Buff rows and staged source hero-37 control against stationary fixture actors; source animation trajectories and live immunity interactions remain unmeasured", reports }, null, 2));

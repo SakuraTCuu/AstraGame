@@ -578,6 +578,49 @@ try {
     return result;
   });
   assert.equal(control.resumed.movable, true); assert.equal(control.resumed.paused, false); assert.deepEqual(control.resumed.controls, []);
+  control.airborne = await evaluate(() => {
+    const boot = window.__referenceBoot, world = boot.session.world, actor = boot.session.roster.actor("reference_hero_10"); boot.enabled = false;
+    const statuses = Object.values(world.options.skillDefinitions).flatMap((skill) => (skill.actions || []).map((action) => action.status).filter(Boolean));
+    const lift = statuses.find((status) => status.id === "reference_buff_103705"), fear = statuses.find((status) => status.id === "reference_buff_510501");
+    if (!lift || !fear) throw new Error("Missing source control motion definitions");
+    const combat = new world.combat.constructor(() => 0);
+    boot.motionProbe = { actor, position: actor.position, combat, fear };
+    actor.addStatus(lift); combat.update(1, [actor]); boot.renderer.update(boot.session.getSnapshot(), 0.1);
+    const view = boot.renderer.referenceArt.views.get(actor.id);
+    return { height: actor.controlElevation, offset: view.skeleton.node.y, expectedOffset: actor.controlElevation * boot.renderer.referenceArt.config.scale,
+      groundMoved: actor.position.distance(boot.motionProbe.position), controls: actor.controlSnapshots() };
+  });
+  assert.equal(control.airborne.height, 160); assert.equal(control.airborne.groundMoved, 0);
+  assert.ok(Math.abs(control.airborne.offset - control.airborne.expectedOffset) < 1e-6);
+  await capture("control-airborne");
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-control-airborne`);
+  }
+  control.fear = await evaluate(() => {
+    const boot = window.__referenceBoot, { actor, position, combat, fear } = boot.motionProbe, navigation = boot.session.world.options.navigation;
+    combat.update(1, [actor]); if (actor.controlElevation !== 0) throw new Error("Airborne actor did not land");
+    const distance = fear.states[0].wander.speed * 0.25;
+    let heading = -1;
+    for (let index = 0; index < 8; index++) if (navigation.isSegmentWalkable(actor.position, actor.position.add({ x: Math.cos(index * Math.PI / 4) * distance, y: Math.sin(index * Math.PI / 4) * distance }))) { heading = index / 8; break; }
+    if (heading < 0) throw new Error("No walkable heading for the fear fixture");
+    const motion = new boot.session.world.combat.constructor(() => heading); actor.addStatus(fear);
+    const move = (unit, point) => { unit.position = navigation.moveWithCollision(unit.position, unit.position.constructor.from(point).subtract(unit.position)); };
+    motion.update(0.25, [actor], move); boot.motionProbe.combat = motion; boot.motionProbe.move = move;
+    boot.renderer.update(boot.session.getSnapshot(), 0.1);
+    const view = boot.renderer.referenceArt.views.get(actor.id);
+    return { distance: actor.position.distance(position), expected: distance, action: view.action, movable: actor.canMove, walkable: navigation.isWorldWalkable(actor.position), height: actor.controlElevation };
+  });
+  assert.ok(Math.abs(control.fear.distance - control.fear.expected) < 1e-6); assert.equal(control.fear.action, "move");
+  assert.equal(control.fear.movable, false); assert.equal(control.fear.walkable, true); assert.equal(control.fear.height, 0);
+  await capture("control-fear");
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-control-fear`);
+  }
+  await evaluate(() => {
+    const boot = window.__referenceBoot, { actor, position, combat, move } = boot.motionProbe;
+    combat.update(1.25, [actor], move); if (actor.controlled || !actor.canMove) throw new Error("Fear did not release movement");
+    combat.resetEngagement(); actor.position = position; delete boot.motionProbe; boot.enabled = true; boot.renderer.update(boot.session.getSnapshot(), 0.1);
+  });
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });

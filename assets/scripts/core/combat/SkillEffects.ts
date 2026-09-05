@@ -1,5 +1,5 @@
 export type DamageType = "physical" | "magic" | "soul" | "holy" | "punishment" | "skill";
-export type ControlKind = "stun" | "freeze" | "root" | "silence" | "airborne";
+export type ControlKind = "stun" | "freeze" | "root" | "silence" | "airborne" | "fear";
 
 export interface StatusState {
   readonly id: string;
@@ -9,6 +9,8 @@ export interface StatusState {
   readonly controlImmunity?: readonly ControlKind[];
   readonly displacementImmunity?: boolean;
   readonly interruptionImmunity?: boolean;
+  readonly lift?: { readonly height: number; readonly rise: number; readonly fall: number };
+  readonly wander?: { readonly speed: number; readonly turnInterval: number };
 }
 
 export interface StatModifiers {
