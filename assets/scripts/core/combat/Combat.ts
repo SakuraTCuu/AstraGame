@@ -115,10 +115,11 @@ export class CombatSystem {
   private readonly publicCooldowns = new Map<string, number>();
   private readonly combatTimes = new Map<string, number>();
   private readonly random: () => number;
+  private readonly mode: "pve" | "pvp";
   private move: ((actor: Actor, destination: Vec2Like, kind: SkillMotion["kind"]) => void) | undefined;
   readonly events: CombatEvent[] = [];
 
-  constructor(random?: () => number) { const fallback = new SeededRandom(1); this.random = random ?? (() => fallback.next()); }
+  constructor(random?: () => number, mode: "pve" | "pvp" = "pve") { const fallback = new SeededRandom(1); this.random = random ?? (() => fallback.next()); this.mode = mode; }
 
   updateCooldowns(deltaSeconds: number): void {
     for (const [key, remaining] of this.cooldowns) {
@@ -313,11 +314,12 @@ export class CombatSystem {
   private applyDamage(source: Actor, target: Actor, skillId: string, power: number, type: DamageType, critical = false, statusId?: string): number {
     if (!target.alive) return 0;
     const periodic = statusId !== undefined;
+    const elementBonus = type === "soul" ? source.modifier("soulBonus") : type === "magic" ? source.modifier("magicBonus") : type === "physical" ? source.modifier("physicalBonus") : 0;
     const multiplier = (1 + source.modifier("damageBonus")) * (1 + source.modifier("finalDamageBonus")) *
-      (1 + (type === "soul" ? 0 : source.modifier(type === "magic" ? "magicBonus" : "physicalBonus"))) *
+      (1 + elementBonus) *
       (periodic ? Math.max(0, 1 + source.modifier("dotDamageBonus")) : 1) * (critical ? source.stats.criticalMultiplier ?? 1.5 : 1);
     const previousShield = target.shield;
-    const damage = target.receiveDamage(source.attackPower * power * multiplier, type, periodic);
+    const damage = target.receiveDamage(source.attackPower * power * multiplier, type, periodic, this.mode === "pve");
     const absorbed = previousShield - target.shield;
     if (absorbed > 0) this.events.push({ type: "absorb", sourceId: source.id, targetId: target.id, value: absorbed, skillId });
     this.events.push({ type: "damage", sourceId: source.id, targetId: target.id, value: damage, skillId, critical, damageType: type, ...(periodic ? { periodic, statusId } : {}) });

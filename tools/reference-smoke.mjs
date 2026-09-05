@@ -471,7 +471,7 @@ try {
   const roster = { reordered: true, toggled: true, five, setup: "rank-four and owned-card fixture after ordinary recruitment" };
   const periodicHeroes = await evaluate(() => {
     const boot = window.__referenceBoot, session = boot.session;
-    const results = [2, 26].map((sourceId, index) => {
+    const results = [2, 26, 10].map((sourceId, index) => {
       const id = `reference_hero_${sourceId}`, hero = session.roster.config.heroes.find((hero) => hero.id === id);
       session.map.grantResources({ [hero.cardResource]: 1, "item:3": 1000 }); session.roster.syncOwnership();
       while (session.development.levelOf(id) < 10) { if (session.upgradeHero(id) !== "completed") throw new Error(`Cannot grow ${id}`); }
@@ -488,9 +488,13 @@ try {
   await send("Page.reload", { ignoreCache: true }); assert.ok(await waitReady());
   const periodicArt = await evaluate((heroes) => heroes.map(({ id }) => {
     const boot = window.__referenceBoot, view = boot.renderer.referenceArt.views.get(id), actor = boot.session.roster.actor(id);
-    return { id, spine: Boolean(view?.skeleton?.skeletonData), action: view?.action, level: boot.session.development.levelOf(id), maxEnergy: actor.stats.maxEnergy, energy: actor.energy };
+    return { id, spine: Boolean(view?.skeleton?.skeletonData), action: view?.action, level: boot.session.development.levelOf(id), maxEnergy: actor.stats.maxEnergy, energy: actor.energy,
+      dotDamageBonus: actor.modifier("dotDamageBonus"), pveDamageReduction: actor.modifier("pveDamageReduction") };
   }), periodicHeroes);
   assert.ok(periodicArt.every((hero) => hero.spine && hero.action && hero.level === 10 && hero.maxEnergy === 10000 && hero.energy > 0));
+  assert.equal(periodicArt.find((hero) => hero.id === "reference_hero_26").dotDamageBonus, 0.1);
+  assert.equal(periodicArt.find((hero) => hero.id === "reference_hero_10").pveDamageReduction, 0.2);
+  assert.equal(periodicArt.find((hero) => hero.id === "reference_hero_2").dotDamageBonus, 0);
   await capture("periodic-heroes");
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {

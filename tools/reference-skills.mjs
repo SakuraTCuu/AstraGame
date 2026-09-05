@@ -39,7 +39,8 @@ const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", 
   movespeed: "movementBonus", damageBonus: "damageBonus", finalDmgBonus: "finalDamageBonus", damageReduction: "damageReduction",
   finalDmgReduction: "finalDamageReduction", ultraDmgBonus: "physicalBonus", magicDmgBonus: "magicBonus",
   ultraDmgReduction: "physicalReduction", magicDmgReduction: "magicReduction", skillCriticalRate: "criticalChance", healReduction: "healReduction",
-  dotDmgBonus: "dotDamageBonus", dotDmgReduction: "dotDamageReduction" };
+  dotDmgBonus: "dotDamageBonus", dotDmgReduction: "dotDamageReduction", normalDmgBonus: "soulBonus", normalDmgReduction: "soulReduction",
+  craftDmgBonus: "magicBonus", craftDmgReduction: "magicReduction", maxhpRate: "maxHealthRate", pveFinalDmgRecution: "pveDamageReduction" };
 const list = (source) => source ? splitSkillExpression(source, "|").map(skillTuple) : [];
 const skillId = (id) => `reference_skill_${id}`;
 
@@ -61,12 +62,22 @@ export function heroSkillAtStar(source, star = 0) {
 export function createReferenceSkillCompiler(lookup) {
   const definitions = new Map(), statuses = new Map(), issues = [];
   const report = (id, kind, value) => issues.push({ id: String(id), kind, value });
+  const passiveActionsFor = (source, id) => {
+    try { return list(source); } catch (error) {
+      const extra = [...source].reduce((count, character) => count + (character === "]" ? 1 : character === "[" ? -1 : 0), 0);
+      if (extra <= 0 || !source.endsWith("]".repeat(extra + 1))) throw error;
+      const actions = list(source.slice(0, -extra));
+      report(id, "source_expression_padding", { removedClosingBrackets: extra });
+      return actions;
+    }
+  };
   const damageType = (value, id) => {
-    const type = { 1: "soul", 2: "magic", 3: "physical" }[value];
+    const type = { 0: "skill", 1: "soul", 2: "magic", 3: "physical", 9: "holy", 20: "punishment" }[value];
     if (!type && value !== undefined) report(id, "damage_type", value);
     return type || "physical";
   };
   const changeModifier = (modifiers, action, id) => {
+    if (action[1] === "RevertDmgTypeBonus1" && Number.isFinite(action[2])) { modifiers.soulReduction = (modifiers.soulReduction || 0) - action[2] / 10000; return; }
     const key = modifierNames[action[1]];
     if (!key || !Number.isFinite(action[2])) { report(id, "modifier", action); return; }
     modifiers[key] = (modifiers[key] || 0) + action[2] / (action[1] === "movespeed" ? 1 : 10000);
@@ -182,7 +193,7 @@ export function createReferenceSkillCompiler(lookup) {
       const passive = lookup("Skill", id);
       if (!passive) continue;
       if (passive.skillType !== 3) { ids.push(id); continue; }
-      for (const action of list(passive.triggerActions)) {
+      for (const action of passiveActionsFor(passive.triggerActions, id)) {
         if (action[0] === "changeAttrAction") changeModifier(modifiers, action, id);
         else passiveActions.push(action);
       }
@@ -211,6 +222,12 @@ export function createReferenceSkillCompiler(lookup) {
           parent.coefficient = child.coefficient;
           report(parent.sourceId, "sword_fan_timing", { tick, interpretation: "one projectile per selected target; projectile speed pending live comparison" });
         }
+      } else if (action[0] === "enterFightAddBuff") {
+        const entry = /^(\d+)_1$/.exec(String(action[4]));
+        if (action[1] !== 10000 || action[2] !== null || action[3] !== 2 || !entry) { report(hero.id, "passive", action); continue; }
+        const buff = status(Number(entry[1]));
+        if (!buff.definition.permanent || buff.definition.state || buff.definition.periodicDamage || buff.immediate.length) { report(hero.id, "passive", action); continue; }
+        for (const [key, value] of Object.entries(buff.definition.modifiers)) modifiers[key] = (modifiers[key] || 0) + value;
       } else if (action[0] === "hurtCalcBuffAction") {
         const settlement = /^4_(\d+)_(\d+)$/.exec(String(action[4]));
         if (!settlement || action[2] !== 10000 || action[3] !== `1_${settlement[1]}`) { report(hero.id, "passive", action); continue; }

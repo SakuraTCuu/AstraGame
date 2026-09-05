@@ -1,4 +1,5 @@
 import type { Actor, ActorStats } from "../actor/Actor";
+import { applyMaxHealthModifier } from "../actor/Actor";
 import type { ProgressCondition } from "./ProgressConditions";
 import { validateCondition } from "./ProgressConditions";
 import type { WorldMap } from "./WorldMap";
@@ -41,7 +42,7 @@ export class PartyDevelopment {
   constructor(actors: readonly Actor[], map: WorldMap, config: DevelopmentConfig, random: () => number) {
     this.actors = actors; this.map = map; this.config = config; this.random = random;
     this.activeRoster = actors.map((actor) => actor.id);
-    for (const actor of actors) this.baseStats.set(actor.id, actor.stats);
+    for (const actor of actors) this.baseStats.set(actor.id, actor.baseStats);
     this.state = { levels: {}, items: [], equipped: {}, nextItemId: 1 };
     const levelTables = new Map<readonly HeroLevelDefinition[], ReadonlyMap<number, HeroLevelDefinition>>();
     for (const hero of config.heroes) {
@@ -137,6 +138,10 @@ export class PartyDevelopment {
   }
 
   statsFor(actorId: string, state: DevelopmentSave = this.state, rank = this.map.rank, lineup = this.activeRoster): ActorStats {
+    return applyMaxHealthModifier(this.baseStatsFor(actorId, state, rank, lineup));
+  }
+
+  private baseStatsFor(actorId: string, state: DevelopmentSave = this.state, rank = this.map.rank, lineup = this.activeRoster): ActorStats {
     const base = this.baseStats.get(actorId)!;
     const attributes = { ...this.levels.get(actorId)!.get(state.levels[actorId])!.attributes };
     const rankStats = this.config.ranks?.find((entry) => entry.rank === rank)?.attributes;
@@ -202,7 +207,7 @@ export class PartyDevelopment {
     const key = JSON.stringify([this.map.rank, this.state.levels, this.state.equipped, this.activeRoster]);
     if (key === this.statsKey) return;
     this.statsKey = key;
-    for (const actor of this.actors) actor.updateStats(this.statsFor(actor.id));
+    for (const actor of this.actors) actor.updateStats(this.baseStatsFor(actor.id));
     this.map.setPartyLevels(this.activeRoster.filter((id): id is string => Boolean(id)).map((id) => this.state.levels[id]));
     this.map.setCounter("equipped", Object.keys(this.state.equipped).length);
   }

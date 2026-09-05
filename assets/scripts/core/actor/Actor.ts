@@ -54,10 +54,15 @@ export interface ActorOptions {
   readonly initialEnergy?: number;
 }
 
+export function applyMaxHealthModifier(stats: ActorStats, rate = stats.modifiers?.maxHealthRate ?? 0): ActorStats {
+  return rate === 0 ? stats : { ...stats, maxHealth: Math.max(1, Math.floor(stats.maxHealth * Math.max(0, 1 + rate))) };
+}
+
 export class Actor {
   readonly id: string;
   readonly faction: Faction;
   private currentStats: ActorStats;
+  private modifiedStats: ActorStats;
   readonly tags: ReadonlySet<string>;
   readonly skillIds: readonly string[];
   readonly fsm: StateMachine<ActorState, Actor>;
@@ -84,9 +89,10 @@ export class Actor {
     this.displayName = options.name ?? options.id;
     this.healthBars = Math.max(1, Math.floor(options.healthBars ?? 1));
     this.currentStats = options.stats;
+    this.modifiedStats = applyMaxHealthModifier(options.stats);
     this.tags = new Set(options.tags ?? []);
     this.skillIds = [...(options.skillIds ?? [])];
-    this.health = Math.max(0, Math.min(options.stats.maxHealth, options.initialHealth ?? options.stats.maxHealth));
+    this.health = Math.max(0, Math.min(this.stats.maxHealth, options.initialHealth ?? this.stats.maxHealth));
     this.energy = Math.max(0, Math.min(options.stats.maxEnergy ?? 0, options.initialEnergy ?? 0));
     this.fsm = new StateMachine<ActorState, Actor>(this.health > 0 ? "idle" : "dead");
     for (const from of Object.keys(TRANSITIONS) as ActorState[]) {
@@ -98,20 +104,25 @@ export class Actor {
     return this.health > 0;
   }
 
-  get stats(): ActorStats { return this.currentStats; }
+  get stats(): ActorStats { return this.modifiedStats; }
+  get baseStats(): ActorStats { return this.currentStats; }
+  get persistentHealth(): number {
+    return this.alive ? Math.max(1, Math.round(this.health / this.stats.maxHealth * applyMaxHealthModifier(this.currentStats).maxHealth)) : 0;
+  }
   updateStats(stats: ActorStats): void {
     if (![stats.maxHealth, stats.attack, stats.defense, stats.moveSpeed, stats.attackRange, stats.aggroRange].every(Number.isFinite) ||
         stats.maxHealth <= 0 || Math.min(stats.attack, stats.defense, stats.moveSpeed, stats.attackRange, stats.aggroRange) < 0) throw new Error("Invalid actor growth stats");
     const ratio = this.health / this.stats.maxHealth;
     this.currentStats = stats;
-    this.health = this.alive ? Math.min(stats.maxHealth, Math.max(1, Math.round(ratio * stats.maxHealth))) : 0;
+    this.modifiedStats = applyMaxHealthModifier(stats, this.modifier("maxHealthRate"));
+    this.health = this.alive ? Math.min(this.stats.maxHealth, Math.max(1, Math.round(ratio * this.stats.maxHealth))) : 0;
     this.energy = Math.min(this.energy, stats.maxEnergy ?? 0);
   }
 
   get shield(): number { return this.shields.reduce((sum, layer) => sum + layer.amount, 0); }
   get attackPower(): number { return Math.max(0, this.stats.attack * (1 + this.modifier("attackRate"))); }
   get movementSpeed(): number { return Math.max(0, this.stats.moveSpeed + this.modifier("movementBonus")); }
-  modifier(key: keyof StatModifiers): number { return (this.stats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0) * status.stacks, 0); }
+  modifier(key: keyof StatModifiers): number { return (this.currentStats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0) * status.stacks, 0); }
   hasStatus(state: string): boolean { return this.statuses.some((entry) => entry.definition.state === state || entry.definition.id === state); }
   statusSnapshots(): Array<{ id: string; remaining: number; stacks: number }> { return this.statuses.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining, stacks: entry.stacks })); }
   addStatus(definition: StatusDefinition, source: Actor = this, skillId = definition.id): void {
@@ -122,6 +133,7 @@ export class Actor {
       existing.stacks = Math.min(definition.maxStacks ?? 1, existing.stacks + 1);
       existing.definition = definition; existing.remaining = remaining; existing.source = source; existing.skillId = skillId;
     } else this.statuses.push({ definition, remaining, stacks: 1, elapsed: 0, source, skillId });
+    this.refreshHealthModifier();
   }
 
   settlePeriodicStatus(group: string, seconds: number): PeriodicDamageTick[] {
@@ -138,18 +150,22 @@ export class Actor {
   recoverAt(position: Vec2Like): void {
     if (![position.x, position.y].every(Number.isFinite)) throw new Error("Invalid recovery position");
     this.position = Vector2.from(position);
-    this.health = this.stats.maxHealth;
     this.energy = 0;
     this.targetId = undefined;
     this.shields.splice(0);
     this.statuses.splice(0);
+    this.modifiedStats = applyMaxHealthModifier(this.currentStats);
+    this.health = this.stats.maxHealth;
     this.setState("idle");
   }
 
   setState(state: ActorState): void {
     if (this.fsm.state === state) return;
     if (!this.fsm.transition(state, this)) throw new Error(`Invalid actor transition ${this.id}: ${this.fsm.state} -> ${state}`);
-    if (state === "returning") for (let index = this.statuses.length - 1; index >= 0; index--) if (this.statuses[index].definition.clearOnReturn) this.statuses.splice(index, 1);
+    if (state === "returning") {
+      for (let index = this.statuses.length - 1; index >= 0; index--) if (this.statuses[index].definition.clearOnReturn) this.statuses.splice(index, 1);
+      this.refreshHealthModifier();
+    }
   }
 
   addShield(key: string, amount: number, duration: number): number {
@@ -179,7 +195,15 @@ export class Actor {
       this.shields[index].remaining -= deltaSeconds;
       if (this.shields[index].remaining <= 1e-9 || this.shields[index].amount <= 0) this.shields.splice(index, 1);
     }
+    this.refreshHealthModifier();
     return ticks;
+  }
+
+  private refreshHealthModifier(): void {
+    const next = applyMaxHealthModifier(this.currentStats, this.modifier("maxHealthRate"));
+    if (next.maxHealth === this.stats.maxHealth) return;
+    this.health = this.alive ? Math.max(1, Math.min(next.maxHealth, Math.round(this.health / this.stats.maxHealth * next.maxHealth))) : 0;
+    this.modifiedStats = next;
   }
 
   private statusInterval(status: AppliedStatus): number { return Math.max(0.001, status.definition.periodicDamage!.interval + (status.definition.periodicDamage!.intervalPerStack ?? 0) * status.stacks); }
@@ -194,13 +218,15 @@ export class Actor {
     this.position = this.position.moveTowards(target, this.movementSpeed * deltaSeconds);
   }
 
-  receiveDamage(rawDamage: number, type: DamageType = "physical", periodic = false): number {
+  receiveDamage(rawDamage: number, type: DamageType = "physical", periodic = false, pve = true): number {
     if (!this.alive || rawDamage <= 0) return 0;
+    const elementReduction = type === "soul" ? this.modifier("soulReduction") : type === "magic" ? this.modifier("magicReduction") : type === "physical" ? this.modifier("physicalReduction") : 0;
     const reduction = (1 - this.modifier("damageReduction")) * (1 - this.modifier("finalDamageReduction")) *
-      (1 - (type === "soul" ? 0 : this.modifier(type === "magic" ? "magicReduction" : "physicalReduction"))) *
+      (1 - elementReduction) *
+      (pve ? Math.max(0, 1 - this.modifier("pveDamageReduction")) : 1) *
       (periodic ? Math.max(0, 1 - this.modifier("dotDamageReduction")) : 1);
     if (reduction <= 0) return 0;
-    let actualDamage = Math.max(1, Math.floor((rawDamage - this.stats.defense) * Math.max(0, reduction)));
+    let actualDamage = Math.max(1, Math.floor((rawDamage - this.stats.defense) * Math.max(0, reduction) + 1e-9));
     for (const layer of this.shields) {
       const absorbed = Math.min(layer.amount, actualDamage);
       layer.amount -= absorbed;
@@ -213,6 +239,7 @@ export class Actor {
       this.setState("dead");
       this.shields.splice(0);
       this.statuses.splice(0);
+      this.refreshHealthModifier();
       this.targetId = undefined;
     }
     return actualDamage;

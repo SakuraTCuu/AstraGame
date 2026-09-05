@@ -24,6 +24,7 @@ export interface WorldOptions {
   readonly revealRadius?: number;
   readonly formationOffsets?: readonly Vec2Like[];
   readonly followLeashDistance?: number;
+  readonly combatMode?: "pve" | "pvp";
 }
 
 export class GameWorld {
@@ -50,7 +51,7 @@ export class GameWorld {
   constructor(options: WorldOptions) {
     this.options = options;
     this.random = new SeededRandom(options.seed);
-    this.combat = new CombatSystem(() => this.random.next());
+    this.combat = new CombatSystem(() => this.random.next(), options.combatMode);
     this.players = [...options.players];
     this.enemies = [...options.enemies].sort((a, b) => a.id.localeCompare(b.id));
     this.formation = new SquadFormation(this.players, options.formationOffsets);

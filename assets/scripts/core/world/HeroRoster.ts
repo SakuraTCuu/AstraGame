@@ -80,7 +80,7 @@ export class HeroRoster {
 
   save(): RosterSave {
     return { owned: [...this.owned], lineup: [...this.lineup], reserves: [...this.owned].filter((id) => !this.lineup.includes(id)).map((id) => {
-      const actor = this.actors.get(id)!; return { id, hp: actor.health, energy: actor.energy };
+      const actor = this.actors.get(id)!; return { id, hp: actor.persistentHealth, energy: actor.energy };
     }) };
   }
 

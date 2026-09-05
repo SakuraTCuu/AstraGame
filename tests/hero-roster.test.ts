@@ -103,3 +103,21 @@ test("saved ownership cannot bypass a hero deployment condition", () => {
   assert.throws(() => target.restoreExploration(source.saveExploration()), /roster assignment/);
   assert.deepEqual(target.saveExploration(), before);
 });
+
+test("active and reserve saves discard temporary health bonuses while retaining personal traits", () => {
+  const data = config();
+  const profile = { ...data, roster: { ...data.roster!, actors: data.roster!.actors.map((actor) => actor.id === "hero0" ? { ...actor, modifiers: { maxHealthRate: 0.1 } } : actor) } };
+  const session = new DemoSession(profile), hero = session.roster!.actor("hero0")!;
+  assert.equal(hero.stats.maxHealth, 110); assert.equal(hero.health, 110);
+  hero.health = 55; hero.addStatus({ id: "temporary_health", duration: 30, modifiers: { maxHealthRate: 0.5 } });
+  assert.equal(hero.health, 80);
+  const activeSave = session.saveExploration(), restoredActive = new DemoSession(profile);
+  restoredActive.restoreExploration(activeSave);
+  assert.equal(restoredActive.roster!.actor("hero0")!.stats.maxHealth, 110);
+  assert.equal(restoredActive.roster!.actor("hero0")!.health, 55);
+  session.map.grantResources({ fifth: 1 }); session.roster!.syncOwnership(); session.setLineup(0, "hero4");
+  const reserveSave = session.saveExploration(), restoredReserve = new DemoSession(profile); restoredReserve.restoreExploration(reserveSave);
+  assert.equal(reserveSave.roster!.reserves.find((hero) => hero.id === "hero0")!.hp, 55);
+  assert.equal(restoredReserve.roster!.actor("hero0")!.health, 55);
+  restoredReserve.setLineup(0, "hero0"); assert.equal(restoredReserve.world.players[0].health, 55);
+});

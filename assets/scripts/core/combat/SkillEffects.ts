@@ -1,4 +1,4 @@
-export type DamageType = "physical" | "magic" | "soul";
+export type DamageType = "physical" | "magic" | "soul" | "holy" | "punishment" | "skill";
 
 export interface StatModifiers {
   readonly attackRate?: number;
@@ -17,6 +17,10 @@ export interface StatModifiers {
   readonly healReduction?: number;
   readonly dotDamageBonus?: number;
   readonly dotDamageReduction?: number;
+  readonly soulBonus?: number;
+  readonly soulReduction?: number;
+  readonly maxHealthRate?: number;
+  readonly pveDamageReduction?: number;
 }
 
 export interface StatusDefinition {

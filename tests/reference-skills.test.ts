@@ -91,3 +91,34 @@ test("configured buff settlement attaches only to the matching damage skill grou
   assert.deepEqual(compiler.definitions.get(2).actions[0].settleStatus, { group: "9", seconds: 6 });
   assert.equal(compiler.definitions.get(2).actions[0].damageType, "physical");
 });
+
+test("unconditional permanent personal traits compile once per hero", () => {
+  const rows = { Skill: { 1: { skillType: 1, frameKey: "[key:0_action:[damageAction,10000]]" },
+    2: { skillType: 3, triggerActions: "[enterFightAddBuff,10000,null,2,9_1]" } },
+    Buff: { 9: { duration: -1, effects: "[changeAttrAction,dotDmgBonus,1000]|[changeAttrAction,maxhpRate,500]|[changeAttrAction,normalDmgBonus,1000]" } } };
+  const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  const hero = { id: 8, attack: "1_0", skill5: "2_0" };
+  const expected = { dotDamageBonus: 0.1, maxHealthRate: 0.05, soulBonus: 0.1 };
+  assert.deepEqual(compiler.heroSkills(hero, 12).modifiers, expected);
+  assert.deepEqual(compiler.heroSkills(hero, 12).modifiers, expected);
+  assert.deepEqual(compiler.heroSkills({ id: 7, attack: "1_0" }, 12).modifiers, {});
+  assert.deepEqual(compiler.issues, []);
+});
+
+test("redundant trailing passive brackets are audited but truncated expressions still fail", () => {
+  const compiler = createReferenceSkillCompiler(() => ({ skillType: 3,
+    triggerActions: "[changeAttrAction,finalDmgReduction,3000]|[changeAttrAction,pveFinalDmgRecution,2000]]" }));
+  assert.deepEqual(compiler.heroSkills({ id: 8, skill5: "1_0" }, 12).modifiers, { finalDamageReduction: 0.3, pveDamageReduction: 0.2 });
+  assert.equal(compiler.issues[0].kind, "source_expression_padding");
+  const invalid = createReferenceSkillCompiler(() => ({ skillType: 3, triggerActions: "[changeAttrAction,atkRate,1000" }));
+  assert.throws(() => invalid.heroSkills({ id: 8, skill5: "1_0" }, 12), /Unbalanced/);
+});
+
+test("source special damage kinds retain their independent identities", () => {
+  const compiler = createReferenceSkillCompiler((family, id) => family === "Skill" ? { skillType: 2,
+    frameKey: `[key:0_action:[damageAction,10000]_dmgType:[${id}]]` } : undefined);
+  assert.equal(compiler.compile(0).actions[0].damageType, "skill");
+  assert.equal(compiler.compile(9).actions[0].damageType, "holy");
+  assert.equal(compiler.compile(20).actions[0].damageType, "punishment");
+  assert.deepEqual(compiler.issues, []);
+});

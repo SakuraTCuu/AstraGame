@@ -1,4 +1,4 @@
-import { Actor } from "../actor/Actor";
+import { Actor, applyMaxHealthModifier } from "../actor/Actor";
 import type { ActorOptions, ActorStats, Faction } from "../actor/Actor";
 import type { BossPhase } from "../ai/BossAI";
 import type { CastSnapshot, CombatEvent, ProjectileSnapshot, SkillArea, SkillDefinition } from "../combat/Combat";
@@ -85,6 +85,7 @@ export interface DemoConfig {
   readonly world: {
     readonly width: number;
     readonly height: number;
+    readonly combatMode?: "pve" | "pvp";
     readonly cellSize?: number;
     readonly blocked?: readonly GridPoint[];
     readonly obstacles?: readonly WorldObstacle[];
@@ -328,6 +329,7 @@ export class DemoSession {
       for (const id of actor.skillIds ?? []) if (!skillDefinitions[id]) throw new Error(`Actor ${actor.id} references missing skill ${id}`);
     }
     this.world = new GameWorld({
+      combatMode: config.world.combatMode,
       seed: config.seed,
       navigation,
       fog: this.fog,
@@ -504,7 +506,7 @@ export class DemoSession {
   saveExploration(): ExplorationSave {
     return { schema: 1, configId: this.config.meta?.id ?? "default", configVersion: this.config.meta?.schemaVersion ?? 1,
       map: this.map.saveProgress(), exploredCells: this.fog.exploredIndices(),
-      party: this.world.players.map((actor) => ({ id: actor.id, x: actor.position.x, y: actor.position.y, hp: actor.health, energy: actor.energy })),
+      party: this.world.players.map((actor) => ({ id: actor.id, x: actor.position.x, y: actor.position.y, hp: actor.persistentHealth, energy: actor.energy })),
       elapsedSeconds: this.world.elapsedSeconds, randomState: this.world.random.snapshot(), clearedSpawns: this.spawns.clearedPermanentIds(), respawns: this.spawns.respawnProgress(), development: this.development?.save(),
       recoveryPosition: this.recoveryPosition ?? undefined, roster: this.roster?.save() };
   }
@@ -775,7 +777,7 @@ export class DemoSession {
       stats,
       tags: config.kind === "boss" ? [...(config.tags ?? []), "boss"] : config.tags,
       skillIds: config.skillIds,
-      initialHealth: config.hp,
+      initialHealth: config.hp / stats.maxHealth * applyMaxHealthModifier(stats).maxHealth,
       summonerId: config.summonerId,
       kind: config.kind,
       name: config.name,

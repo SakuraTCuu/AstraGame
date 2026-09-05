@@ -89,3 +89,43 @@ test("periodic defeats grant one exploration reward and pause freezes their cloc
   for (let index = 0; index < 80; index++) session.update(0.05);
   assert.equal(session.map.resourceBalance("coin"), 2);
 });
+
+test("personal soul bonuses and soul vulnerability leave physical damage unchanged", () => {
+  const source = actor("source", { modifiers: { soulBonus: 0.2 } });
+  const target = actor("target", { modifiers: { soulReduction: -0.2 } });
+  const combat = new CombatSystem();
+  for (const type of ["soul", "physical"] as const) {
+    combat.use(source, target, { id: type, target: "enemy", range: 5, cooldown: 0, power: 1, damageType: type }, [source, target]);
+  }
+  assert.deepEqual(combat.drainEvents().filter((event) => event.type === "damage").map((event) => event.value), [144, 100]);
+});
+
+test("PvE-only reduction does not affect PvP combat", () => {
+  for (const [mode, damage] of [["pve", 56], ["pvp", 70]] as const) {
+    const source = actor("source"), target = actor("target", { modifiers: { finalDamageReduction: 0.3, pveDamageReduction: 0.2 } });
+    const combat = new CombatSystem(undefined, mode);
+    combat.use(source, target, { id: "hit", target: "enemy", range: 5, cooldown: 0, power: 1 }, [source, target]);
+    assert.equal(target.stats.maxHealth - target.health, damage);
+  }
+});
+
+test("holy, punishment and untyped skill damage do not inherit physical modifiers", () => {
+  const source = actor("source", { modifiers: { physicalBonus: 2 } });
+  const target = actor("target", { modifiers: { physicalReduction: 1 } });
+  const combat = new CombatSystem();
+  for (const type of ["holy", "punishment", "skill"] as const)
+    assert.equal(combat.use(source, target, { id: type, target: "enemy", range: 5, cooldown: 0, power: 1, damageType: type }, [source, target]), true);
+  assert.deepEqual(combat.drainEvents().filter((event) => event.type === "damage").map((event) => event.value), [100, 100, 100]);
+});
+
+test("health modifiers preserve wounds through application, expiry, growth and recovery", () => {
+  const target = actor("target", { maxHealth: 200, modifiers: { maxHealthRate: 0.1 } });
+  assert.equal(target.stats.maxHealth, 220); target.health = 110;
+  target.addStatus({ id: "health", duration: 2, modifiers: { maxHealthRate: 0.5 } });
+  assert.equal(target.stats.maxHealth, 320); assert.equal(target.health, 160); assert.equal(target.persistentHealth, 110);
+  target.updateEffects(2); assert.equal(target.stats.maxHealth, 220); assert.equal(target.health, 110);
+  target.updateStats({ ...target.baseStats, maxHealth: 400 }); assert.equal(target.stats.maxHealth, 440); assert.equal(target.health, 220);
+  target.addStatus({ id: "health", duration: 2, modifiers: { maxHealthRate: 0.5 } });
+  target.receiveDamage(100000); assert.equal(target.stats.maxHealth, 440); assert.equal(target.health, 0);
+  target.recoverAt({ x: 2, y: 2 }); assert.equal(target.stats.maxHealth, 440); assert.equal(target.health, 440);
+});
