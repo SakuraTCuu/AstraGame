@@ -730,6 +730,7 @@ export class DemoRenderer {
 
     private drawProjectiles(g: cc.Graphics, snapshot: DemoSnapshot): void {
         snapshot.projectiles.forEach((projectile) => {
+            if (this.referenceArt?.hasProjectile(projectile.id)) return;
             const point = this.project(projectile);
             if (!this.isVisible(point, 30)) return;
             const source = snapshot.actors.find((actor) => actor.id === projectile.sourceId);

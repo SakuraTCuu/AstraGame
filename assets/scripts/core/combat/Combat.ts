@@ -28,6 +28,7 @@ export interface SkillDefinition {
   readonly projectileSpeed?: number;
   readonly projectileLifetime?: number;
   readonly projectileHoming?: boolean;
+  readonly directionalProjectile?: { readonly radius: number; readonly maxHits: number; readonly repeatInterval?: number };
   readonly summonEnemyId?: string;
   readonly summonRadius?: number;
   readonly summonLimit?: number;
@@ -86,12 +87,25 @@ interface Cast {
   readonly fromPlayer: boolean;
 }
 
-interface Projectile { readonly cast: Cast; readonly expiresAt: number; position: Vector2; lastUpdate: number; impactAt?: number; impactCast?: Cast; actionIndex: number; }
+interface Projectile { readonly cast: Cast; readonly expiresAt: number; position: Vector2; lastUpdate: number; impactAt?: number; impactCast?: Cast; actionIndex: number;
+  directional?: { readonly direction: Vector2; readonly hits: Map<string, number>; remaining: number }; }
+interface ProjectileImpact { readonly cast: Cast; readonly target: Actor; readonly at: number; actionIndex: number; }
 interface Displacement { readonly actor: Actor; readonly direction: Vector2; readonly distance: number; readonly duration: number; readonly startedAt: number; progress: number; }
 type CombatMovement = SkillMotion["kind"] | "knockback" | "fear";
 export interface SummonRequest { readonly sourceId: string; readonly enemyId: string; readonly count: number; readonly limit: number; readonly radius: number; readonly position: Vec2Like; }
 export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; }
-export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number; }
+export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number;
+  readonly age: number; readonly directionX: number; readonly directionY: number; readonly radius?: number; }
+
+function circleContactInterval(from: Vector2, to: Vector2, center: Vector2, radius: number): [number, number] | undefined {
+  const delta = to.subtract(from), offset = from.subtract(center), a = delta.lengthSquared();
+  const c = offset.lengthSquared() - radius * radius;
+  if (a < 1e-12) return c <= 1e-9 ? [0, 1] : undefined;
+  const b = 2 * (offset.x * delta.x + offset.y * delta.y), discriminant = b * b - 4 * a * c;
+  if (discriminant < -1e-9 * Math.max(1, b * b, Math.abs(4 * a * c))) return undefined;
+  const root = Math.sqrt(Math.max(0, discriminant)), enter = Math.max(0, (-b - root) / (2 * a)), leave = Math.min(1, (-b + root) / (2 * a));
+  return enter <= leave + 1e-9 ? [Math.min(1, enter), Math.max(0, leave)] : undefined;
+}
 
 export function selectNearestTarget(source: Actor, candidates: readonly Actor[], range: number): Actor | undefined {
   return candidates.filter((actor) => actor.alive && actor.id !== source.id && source.position.distance(actor.position) <= range)
@@ -122,6 +136,7 @@ export class CombatSystem {
   private readonly casts = new Map<string, Cast>();
   private readonly triggeredCasts = new Map<number, Cast>();
   private readonly projectiles = new Map<number, Projectile>();
+  private readonly projectileImpacts: ProjectileImpact[] = [];
   private readonly displacements = new Map<string, Displacement>();
   private readonly summons: SummonRequest[] = [];
   private actors: readonly Actor[] = [];
@@ -200,6 +215,7 @@ export class CombatSystem {
       if (this.time + 1e-9 >= cast.readyAt) this.triggeredCasts.delete(id);
     }
     for (const [id, projectile] of this.projectiles) {
+      if (projectile.directional) { this.advanceDirectionalProjectile(id, projectile); continue; }
       const target = actors.find((actor) => actor.id === projectile.cast.targetId && actor.alive);
       if (projectile.impactAt === undefined) {
         if ((!target && (!projectile.cast.skill.area || projectile.cast.skill.projectileHoming)) || this.time >= projectile.expiresAt) { this.projectiles.delete(id); continue; }
@@ -215,6 +231,11 @@ export class CombatSystem {
       if (!actions) { this.resolveHit(projectile.impactCast!, true); this.projectiles.delete(id); continue; }
       while (projectile.actionIndex < actions.length && projectile.impactAt! + actions[projectile.actionIndex].at / projectile.cast.speed <= this.time + 1e-9) this.resolveHit(projectile.impactCast!, true, actions[projectile.actionIndex++]);
       if (projectile.actionIndex >= actions.length) this.projectiles.delete(id);
+    }
+    for (let index = this.projectileImpacts.length - 1; index >= 0; index--) {
+      const impact = this.projectileImpacts[index];
+      this.advanceProjectileImpact(impact);
+      if (!impact.target.alive || !this.actors.includes(impact.target) || impact.actionIndex >= (impact.cast.skill.actions?.length ?? 1)) this.projectileImpacts.splice(index, 1);
     }
   }
 
@@ -277,16 +298,19 @@ export class CombatSystem {
       phase: !cast.resolved ? "windup" : cast.actionIndex < (cast.skill.actions?.length ?? 0) && !cast.skill.projectileSpeed ? "active" : "recovery",
       remaining: Math.max(0, (cast.resolved ? cast.readyAt : cast.hitAt) - this.time),
       duration: cast.resolved ? cast.readyAt - cast.hitAt : cast.hitAt - cast.startedAt,
-      origin: cast.origin, point: cast.point, area: cast.skill.area,
+      origin: !cast.resolved && cast.skill.directionalProjectile ? cast.source.position : cast.origin,
+      point: !cast.resolved && cast.skill.directionalProjectile ? this.actors.find((actor) => actor.id === cast.targetId && actor.alive)?.position ?? cast.point : cast.point, area: cast.skill.area,
       playbackRate: cast.speed,
       elevation: cast.skill.motion?.kind === "jump" ? Math.sin(Math.PI * Math.max(0, Math.min(1, (this.time - cast.hitAt) * cast.speed / cast.skill.motion.duration))) * (cast.skill.motion.height ?? 160) : 0,
     }));
   }
 
   projectileSnapshots(): ProjectileSnapshot[] {
-    return [...this.projectiles.values()].filter((projectile) => projectile.impactAt === undefined).map(({ cast, position }) => ({
-      id: cast.id, sourceId: cast.source.id, targetId: cast.targetId, skillId: cast.skill.id, x: position.x, y: position.y,
-    }));
+    return [...this.projectiles].filter(([, projectile]) => projectile.impactAt === undefined).map(([id, { cast, position, directional }]) => {
+      const direction = directional?.direction ?? cast.point.subtract(cast.origin).normalized();
+      return { id, sourceId: cast.source.id, targetId: cast.targetId, skillId: cast.skill.id, x: position.x, y: position.y,
+        age: Math.max(0, this.time - cast.hitAt), directionX: direction.x, directionY: direction.y, radius: cast.skill.directionalProjectile?.radius };
+    });
   }
 
   drainEvents(): CombatEvent[] { return this.events.splice(0); }
@@ -294,7 +318,7 @@ export class CombatSystem {
 
   resetEngagement(): void {
     for (const id of this.displacements.keys()) this.cancelDisplacement(id);
-    this.casts.clear(); this.triggeredCasts.clear(); this.projectiles.clear(); this.summons.splice(0);
+    this.casts.clear(); this.triggeredCasts.clear(); this.projectiles.clear(); this.projectileImpacts.splice(0); this.summons.splice(0);
     this.cooldowns.clear(); this.publicCooldowns.clear(); this.combatTimes.clear(); this.events.splice(0);
     this.actors = []; this.move = undefined;
   }
@@ -356,12 +380,20 @@ export class CombatSystem {
   private launch(cast: Cast): void {
     cast.resolved = true;
     if (cast.skill.projectileSpeed && cast.skill.projectileSpeed > 0) {
-      for (const id of cast.primaryIds) {
+      const expiresAt = cast.hitAt + (cast.skill.projectileLifetime ?? Math.max(1, cast.skill.range / cast.skill.projectileSpeed * 3));
+      if (cast.skill.directionalProjectile) {
+        const target = this.actors.find((actor) => actor.id === cast.targetId && actor.alive);
+        const origin = cast.source.position, point = target?.position ?? cast.point;
+        const heading = point.subtract(origin).normalized(), direction = heading.lengthSquared() > 0 ? heading : new Vector2(0, 1);
+        this.projectiles.set(this.nextProjectileId++, { cast: { ...cast, origin, point }, position: origin, lastUpdate: cast.hitAt, actionIndex: 0,
+          expiresAt, directional: { direction, hits: new Map(), remaining: cast.skill.directionalProjectile.maxHits } });
+        this.events.push({ type: "projectile", sourceId: cast.source.id, targetId: cast.targetId, skillId: cast.skill.id });
+      } else for (const id of cast.primaryIds) {
         const target = this.actors.find((actor) => actor.id === id);
         if (!target) continue;
         const projectileCast = { ...cast, targetId: id, primaryIds: [id], point: target.position };
         this.projectiles.set(this.nextProjectileId++, { cast: projectileCast, position: cast.origin, lastUpdate: cast.hitAt, actionIndex: 0,
-          expiresAt: cast.hitAt + (cast.skill.projectileLifetime ?? Math.max(1, cast.skill.range / cast.skill.projectileSpeed * 3)) });
+          expiresAt });
         this.events.push({ type: "projectile", sourceId: cast.source.id, targetId: id, skillId: cast.skill.id });
       }
     } else if (cast.skill.actions) this.advanceActions(cast);
@@ -371,7 +403,7 @@ export class CombatSystem {
     if (active && cast.source.alive) this.releaseTriggers(cast);
   }
 
-  private resolveHit(cast: Cast, projectile: boolean, action?: SkillAction): void {
+  private resolveHit(cast: Cast, projectile: boolean, action?: SkillAction, contacts?: readonly Actor[]): void {
     const { source, skill } = cast;
     if (skill.type === "summon") {
       if (!source.alive || !skill.summonEnemyId) return;
@@ -385,7 +417,7 @@ export class CombatSystem {
       this.actors.filter((actor) => actor.alive && actor.faction !== source.faction && (action.globalTargets || source.position.distance(actor.position) <= skill.range))
         .sort((a, b) => source.position.distanceSquared(a.position) - source.position.distanceSquared(b.position) || a.id.localeCompare(b.id)).slice(0, action.targetCount ?? skill.targetCount ?? 1) : action?.recipient === "allies" ?
       this.actors.filter((actor) => actor.alive && actor.faction === source.faction && (action.globalTargets || source.position.distance(actor.position) <= skill.range))
-        .sort((a, b) => a.health / a.stats.maxHealth - b.health / b.stats.maxHealth || a.id.localeCompare(b.id)).slice(0, action.targetCount ?? 1) : this.hitTargets(cast, projectile);
+        .sort((a, b) => a.health / a.stats.maxHealth - b.health / b.stats.maxHealth || a.id.localeCompare(b.id)).slice(0, action.targetCount ?? 1) : contacts ?? this.hitTargets(cast, projectile);
     if (targets.length === 0) this.events.push({ type: "miss", sourceId: source.id, targetId: cast.targetId, skillId: skill.id });
     for (const target of targets) {
       if (!target.alive) continue;
@@ -433,6 +465,46 @@ export class CombatSystem {
     if (cast.energyAward.awarded) return;
     cast.energyAward.awarded = true;
     if (cast.source.alive && this.actors.includes(cast.source)) cast.source.gainEnergy(cast.energyAward.amount);
+  }
+
+  private advanceDirectionalProjectile(id: number, projectile: Projectile): void {
+    const state = projectile.directional!, definition = projectile.cast.skill.directionalProjectile!;
+    const start = projectile.lastUpdate, end = Math.min(this.time, projectile.expiresAt), span = Math.max(0, end - start);
+    const origin = projectile.position, destination = origin.add(state.direction.scale(projectile.cast.skill.projectileSpeed! * span));
+    const contacts: Array<{ target: Actor; at: number }> = [];
+    for (const target of this.actors) {
+      if (!target.alive || (projectile.cast.skill.target === "enemy" ? target.faction === projectile.cast.source.faction : target.faction !== projectile.cast.source.faction)) continue;
+      const last = state.hits.get(target.id);
+      if (last !== undefined && definition.repeatInterval === undefined) continue;
+      const interval = circleContactInterval(origin, destination, target.position, definition.radius + (target.stats.collisionRadius ?? 0));
+      if (!interval) continue;
+      let at = Math.max(start + interval[0] * span, last === undefined ? -Infinity : last + definition.repeatInterval!);
+      for (let count = 0; count < state.remaining && at <= start + interval[1] * span + 1e-9 && at < projectile.expiresAt - 1e-9; count++) {
+        contacts.push({ target, at });
+        if (definition.repeatInterval === undefined) break;
+        at += definition.repeatInterval;
+      }
+    }
+    contacts.sort((left, right) => left.at - right.at || left.target.id.localeCompare(right.target.id));
+    for (const contact of contacts) {
+      if (state.remaining <= 0) break;
+      if (!contact.target.alive) continue;
+      state.hits.set(contact.target.id, contact.at); state.remaining--;
+      const impact = { cast: projectile.cast, target: contact.target, at: contact.at, actionIndex: 0 };
+      this.advanceProjectileImpact(impact);
+      if (impact.target.alive && impact.actionIndex < (impact.cast.skill.actions?.length ?? 1)) this.projectileImpacts.push(impact);
+    }
+    projectile.position = destination; projectile.lastUpdate = end;
+    if (state.remaining <= 0 || this.time >= projectile.expiresAt - 1e-9) this.projectiles.delete(id);
+  }
+
+  private advanceProjectileImpact(impact: ProjectileImpact): void {
+    if (!impact.target.alive || !this.actors.includes(impact.target)) return;
+    const actions = impact.cast.skill.actions;
+    if (!actions) { if (!impact.actionIndex) this.resolveHit(impact.cast, true, undefined, [impact.target]); impact.actionIndex = 1; return; }
+    while (impact.actionIndex < actions.length && impact.at + actions[impact.actionIndex].at / impact.cast.speed <= this.time + 1e-9) {
+      this.resolveHit(impact.cast, true, actions[impact.actionIndex++], [impact.target]);
+    }
   }
 
   private applyDamage(source: Actor, target: Actor, skillId: string, power: number, type: DamageType, critical = false, statusId?: string): number {

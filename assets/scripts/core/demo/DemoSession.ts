@@ -821,6 +821,9 @@ export class DemoSession {
     for (const value of [config.projectileSpeed, config.projectileLifetime]) {
       if (value !== undefined && (!Number.isFinite(value) || value <= 0)) throw new Error(`Invalid projectile for ${config.id}`);
     }
+    if (config.directionalProjectile && (!(config.projectileSpeed > 0) || !(config.projectileLifetime > 0) || config.projectileHoming ||
+        !Number.isFinite(config.directionalProjectile.radius) || config.directionalProjectile.radius < 0 || !Number.isSafeInteger(config.directionalProjectile.maxHits) || config.directionalProjectile.maxHits < 1 ||
+        (config.directionalProjectile.repeatInterval !== undefined && (!Number.isFinite(config.directionalProjectile.repeatInterval) || config.directionalProjectile.repeatInterval <= 0)))) throw new Error(`Invalid directional projectile for ${config.id}`);
     if (config.type === "shield" && !(config.duration > 0)) throw new Error(`Shield ${config.id} requires a duration`);
     if (config.type === "summon" && !this.enemyTemplates.has(config.summonEnemyId)) throw new Error(`Summon ${config.id} references a missing template`);
     if (config.area && (!Number.isFinite(config.area.radius) || config.area.radius <= 0 || !["circle", "cone", "line"].includes(config.area.shape))) throw new Error(`Invalid skill area ${config.id}`);

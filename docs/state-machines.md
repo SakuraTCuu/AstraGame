@@ -119,6 +119,15 @@ READY -> WINDUP -> HIT -> RECOVERY -> COOLDOWN -> READY
 - The source adapter currently interprets optional fear operands as speed and milliseconds between direction changes. Missing values use 350 units/second and one second based on the cached skill description. The interval operand still requires live comparison.
 - Explicit rise/fall/height values are supported for `upUp`. Other supported airborne actions use the local 160-unit jump-height default and a symmetric curve. Source heights, easing and remaining flight options are still unverified; `windFly` still needs its directional scene behavior.
 
+### Directional Projectiles
+
+- A directional skill emits one straight shot, independent of its primary target count. Its aim follows the living target during windup and locks on release. The released shot continues after the caster or original target dies.
+- Swept circular contact prevents fast shots from skipping narrow targets. Contacts consume the configured total hit budget in travel order, with stable actor-ID ties. Each target is hit once unless a repeat interval is configured; leaving and reentering does not reset that interval.
+- Travel is clipped to the lifetime boundary, and contact at or after expiry cannot add another periodic hit. Floating-point endpoint tolerance preserves the first eligible fixed-step hit.
+- Contact actions retain their own timeline and can finish after the projectile visual expires. Target removal and encounter reset discard pending contact actions. All contacts from a cast share one energy award.
+- Projectile snapshots use distinct projectile IDs and simulation age. Reference atlas frames follow that age and are released when the shot disappears or the view is destroyed.
+- Circular hitbox interpretation, terrain collision, target replacement during windup, special projectile check modes, offsets, multi-shot patterns and complete effect orientation still require source/live comparison. Collision currently samples actor positions at each simulation step.
+
 ## Fog and Discovery
 
 Each fog cell is one of:

@@ -18,7 +18,7 @@ function readJsonAsset(data) {
 export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   const families = new Map();
   for (const [name, table] of Object.entries(tables)) {
-    const family = name.match(/^(Avatar|Hero|HeroPlace|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item|PlayerLevel|Quest|BossFirstKill|Equip|EquipType|RecruitmentPool|RecruitmentWeight|RecruitmentWeightExtra)(?:_(?:\d+|Xs))?$/)?.[1];
+    const family = name.match(/^(Avatar|UiEffect|Hero|HeroPlace|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item|PlayerLevel|Quest|BossFirstKill|Equip|EquipType|RecruitmentPool|RecruitmentWeight|RecruitmentWeightExtra)(?:_(?:\d+|Xs))?$/)?.[1];
     if (!family) continue;
     if (!families.has(family)) families.set(family, new Map());
     for (const id of Object.keys(table)) if (id !== "__KEY_MAP__") families.get(family).set(id, table);
@@ -209,6 +209,16 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   config.roster = buildReferenceRoster(row, (family) => [...(families.get(family)?.keys() ?? [])], config, skillCompiler, art, binding, assets, rewardCompiler, progressionIssues);
   config.development = buildReferenceDevelopment(row, (family) => [...(families.get(family)?.keys() ?? [])], config, rewardCompiler, progressionIssues);
   config.skills.definitions = [...config.skills.definitions.filter((skill) => !skill.summonEnemyId), ...skillCompiler.definitions.values()];
+  art.projectiles = {};
+  for (const skill of skillCompiler.definitions.values()) if (skill.projectileSpeed && skill.projectileEffectIds?.length) {
+    const effect = row("UiEffect", skill.projectileEffectIds[0]);
+    const path = effect?.atlasName && `uires/${effect.spriteAtlasPath}/${effect.atlasName}`;
+    const asset = assets.find((entry) => entry.path === path && entry.type === "cc.SpriteAtlas");
+    if (asset) art.projectiles[skill.id] = { path, fps: effect.frame || 12, scale: effect.scale || 1, loop: effect.bLoop === 1, offsetY: effect.dy || 0,
+      directional: Boolean(skill.directionalProjectile) };
+    else skillCompiler.issues.push({ id: String(skill.sourceId), kind: "projectile_art", value: path || skill.projectileEffectIds });
+    if (skill.projectileEffectIds.length > 1) skillCompiler.issues.push({ id: String(skill.sourceId), kind: "projectile_art_layers", value: skill.projectileEffectIds });
+  }
   for (const id of families.get("WorldMap").keys()) {
     const region = row("WorldMap", id);
     if (region.mapId !== 100001) continue;

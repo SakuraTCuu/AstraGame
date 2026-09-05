@@ -2,7 +2,8 @@ import { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
 import { ForegroundRenderer } from "./ForegroundRenderer";
 
 interface ArtBinding { path: string; kind: "spine" | "atlas"; scale: number; height: number; fps: number; flip: boolean; skillAnimations?: Record<string, string>; skillPhases?: Record<string, { prepare?: string; hold?: string; release: string }>; }
-interface ArtConfig { bundle: string; mapBundle: string; mapName: string; tileSize: number; mapWidth: number; mapHeight: number; depth: number; scale: number; tiles: string[]; bindings: Record<string, ArtBinding>; occlusionPolygons?: Array<Array<{ x: number; y: number }>>; }
+interface ProjectileBinding { path: string; fps: number; scale: number; loop: boolean; offsetY: number; directional: boolean; }
+interface ArtConfig { bundle: string; mapBundle: string; mapName: string; tileSize: number; mapWidth: number; mapHeight: number; depth: number; scale: number; tiles: string[]; bindings: Record<string, ArtBinding>; projectiles?: Record<string, ProjectileBinding>; occlusionPolygons?: Array<Array<{ x: number; y: number }>>; }
 interface ActorView { node: cc.Node; skeleton?: sp.Skeleton; sprite?: cc.Sprite; bars: cc.Graphics; binding: ArtBinding; action: string; age: number; lastX: number; facing: number; castId?: number; }
 
 export class ReferenceArtLayer {
@@ -13,6 +14,7 @@ export class ReferenceArtLayer {
     private readonly mapBundle: cc.AssetManager.Bundle;
     private readonly tiles = new Map<string, cc.Node>();
     private readonly views = new Map<string, ActorView>();
+    private readonly projectileViews = new Map<number, cc.Sprite>();
     private readonly loaded = new Map<string, cc.Asset>();
     private readonly pending = new Set<string>();
     private readonly failed = new Set<string>();
@@ -43,6 +45,7 @@ export class ReferenceArtLayer {
     }
 
     hasActor(id: string): boolean { return this.views.has(id); }
+    hasProjectile(id: number): boolean { return this.projectileViews.has(id); }
     overviewTexture(): cc.Texture2D { return this.loaded.get(`${this.config.mapName}/thumb`) as cc.Texture2D; }
 
     update(snapshot: DemoSnapshot, camera: cc.Vec2, delta: number): void {
@@ -132,6 +135,31 @@ export class ReferenceArtLayer {
             if (!existing.has(id) || !present.has(id)) { view.node.destroy(); this.views.delete(id); }
             else view.node.active = present.has(id);
         });
+        const presentProjectiles = new Set<number>();
+        for (const projectile of snapshot.projectiles) {
+            const binding = this.config.projectiles?.[projectile.skillId];
+            if (!binding) continue;
+            const point = project(projectile.x, projectile.y);
+            if (Math.abs(point.x) > 800 || Math.abs(point.y) > 1200) continue;
+            const atlas = this.loaded.get(binding.path) as cc.SpriteAtlas;
+            if (!atlas) { this.load(this.bundle, binding.path, cc.SpriteAtlas); continue; }
+            const key = `${binding.path}:projectile`;
+            let frames = this.frames.get(key);
+            if (!frames) { frames = atlas.getSpriteFrames().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })); this.frames.set(key, frames); }
+            if (!frames.length) continue;
+            let sprite = this.projectileViews.get(projectile.id);
+            if (!sprite) {
+                const node = new cc.Node(`Projectile_${projectile.id}`); sprite = node.addComponent(cc.Sprite); this.actors.addChild(node); this.projectileViews.set(projectile.id, sprite);
+            }
+            presentProjectiles.add(projectile.id);
+            const frame = Math.floor(projectile.age * binding.fps);
+            sprite.spriteFrame = frames[binding.loop ? frame % frames.length : Math.min(frames.length - 1, frame)];
+            sprite.node.setPosition(point.x, point.y + binding.offsetY * scale);
+            sprite.node.setScale(binding.scale * scale * (projectile.directionX < 0 ? -1 : 1), binding.scale * scale);
+            sprite.node.angle = binding.directional ? Math.atan2(projectile.directionY * depth, Math.abs(projectile.directionX)) * 180 / Math.PI * (projectile.directionX < 0 ? -1 : 1) : 0;
+            sprite.node.zIndex = Math.round(100000 - projectile.y) + 1;
+        }
+        this.projectileViews.forEach((sprite, id) => { if (!presentProjectiles.has(id)) { sprite.node.destroy(); this.projectileViews.delete(id); } });
         if (this.foreground) this.foreground.update(this.ground, snapshot, camera, scale, depth);
     }
 
@@ -150,6 +178,7 @@ export class ReferenceArtLayer {
         this.loaded.forEach((asset) => asset.decRef());
         this.loaded.clear();
         this.views.clear();
+        this.projectileViews.clear();
     }
 
     private load(bundle: cc.AssetManager.Bundle, path: string, type: typeof cc.Asset): void {

@@ -177,6 +177,7 @@ export function createReferenceSkillCompiler(lookup) {
     if (warnings.length > 1) report(id, "multiple_warnings", warnings);
     const windup = warning ? warning[3] / 1000 : (row.preTime || 0) / 1000;
     const lockProjectile = tags.find((tag) => tag[0] === "lockProTag");
+    const directional = tags.find((tag) => tag[0] === "dirProTag");
     const target = row.targetCamp === 1 ? "self" : row.targetCamp === 2 ? (row.targetSelectType === 1 ? "lowest_hp_ally" : "ally") : "enemy";
     const definition = { id: skillId(id), sourceId: id, group: String(row.skillgroup || id), name: row.name, coefficient: 0, type: "damage", range: row.firstSelector?.[0] || 50,
       cooldown: (row.cd || 0) / 1000, windup, castDuration: Math.max(windup, (row.postTime || 1000) / 1000),
@@ -189,6 +190,18 @@ export function createReferenceSkillCompiler(lookup) {
     if (cost) definition.energyCost = cost[2];
     definition.linkedCooldowns = tags.filter((tag) => tag[0] === "castCdTag").map((tag) => ({ id: skillId(tag[2]), duration: (lookup("Skill", tag[2])?.cd || 0) / 1000 }));
     if (lockProjectile && row.projectEffect) { definition.projectileSpeed = lockProjectile[1]; definition.projectileLifetime = lockProjectile[2] / 1000; definition.projectileHoming = true; }
+    if (directional && row.projectEffect && !lockProjectile) {
+      const repeat = tags.find((tag) => tag[0] === "proClearDmgTag");
+      definition.projectileSpeed = directional[1]; definition.projectileLifetime = directional[2] / 1000;
+      definition.directionalProjectile = { radius: area?.shape === "circle" ? area.radius : (area?.width || 20) / 2,
+        maxHits: directional[3] || 1, repeatInterval: repeat ? repeat[1] / 1000 : undefined };
+      report(id, "directional_projectile_parity", "one shot; circular contact radius from source circle or half box width; hitbox, orientation, walls and special tags require live comparison");
+      for (const tag of tags.filter((tag) => ["mulProTag", "proOffsetTag", "proCheckTypeTag"].includes(tag[0]))) report(id, "projectile_option", tag);
+    }
+    if (row.projectEffect) {
+      try { definition.projectileEffectIds = skillTuple(row.projectEffect); }
+      catch { report(id, "projectile_effect", row.projectEffect); }
+    }
     const frames = skillFrames(row.projectKey || row.frameKey);
     const motion = frames.flatMap((frame) => frame.actions).find((action) => action[0] === "chargeAction" || action[0] === "jumpAction");
     if (motion) {

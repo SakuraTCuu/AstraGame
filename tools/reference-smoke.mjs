@@ -621,6 +621,56 @@ try {
     combat.update(1.25, [actor], move); if (actor.controlled || !actor.canMove) throw new Error("Fear did not release movement");
     combat.resetEngagement(); actor.position = position; delete boot.motionProbe; boot.enabled = true; boot.renderer.update(boot.session.getSnapshot(), 0.1);
   });
+  await evaluate(() => {
+    const boot = window.__referenceBoot, source = boot.session.roster.actor("reference_hero_10"); boot.enabled = false;
+    const target = new source.constructor({ id: "projectile_probe", faction: "enemy", position: source.position.add({ x: 260, y: 0 }),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 0, aggroRange: 0 } });
+    const combat = new boot.session.world.combat.constructor(() => 0.5);
+    if (!combat.use(source, target, boot.session.world.options.skillDefinitions.reference_skill_5000503, [source, target])) throw new Error("Source projectile probe did not cast");
+    combat.update(3.1, [source, target]); boot.projectileProbe = { source, target, combat };
+    boot.renderer.update({ ...boot.session.getSnapshot(), projectiles: combat.projectileSnapshots() }, 0.1);
+  });
+  let projectileReady = false;
+  for (let index = 0; index < 50 && !projectileReady; index++) {
+    projectileReady = await evaluate(() => {
+      const boot = window.__referenceBoot, shots = boot.projectileProbe.combat.projectileSnapshots();
+      boot.renderer.update({ ...boot.session.getSnapshot(), projectiles: shots }, 0.05);
+      return shots.length === 1 && boot.renderer.referenceArt.projectileViews.has(shots[0].id);
+    });
+    if (!projectileReady) await delay(100);
+  }
+  assert.equal(projectileReady, true, "Source projectile atlas did not render");
+  const projectileArt = await evaluate(() => {
+    const boot = window.__referenceBoot, shot = boot.projectileProbe.combat.projectileSnapshots()[0], sprite = boot.renderer.referenceArt.projectileViews.get(shot.id);
+    return { id: shot.id, x: shot.x, frame: sprite.spriteFrame.name, width: sprite.node.width, height: sprite.node.height };
+  });
+  const advancedProjectileArt = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.projectileProbe; combat.update(0.25, [source, target]);
+    boot.renderer.update({ ...boot.session.getSnapshot(), projectiles: combat.projectileSnapshots() }, 0.25);
+    const shot = combat.projectileSnapshots()[0], sprite = boot.renderer.referenceArt.projectileViews.get(shot.id);
+    return { x: shot.x, frame: sprite.spriteFrame.name };
+  });
+  assert.ok(projectileArt.width > 0 && projectileArt.height > 0); assert.ok(advancedProjectileArt.x > projectileArt.x);
+  assert.notEqual(advancedProjectileArt.frame, projectileArt.frame);
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-projectile`);
+  }
+  const projectileRotation = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.projectileProbe; combat.resetEngagement();
+    target.position = source.position.add({ x: 0, y: 260 });
+    if (!combat.use(source, target, boot.session.world.options.skillDefinitions.reference_skill_5000503, [source, target])) throw new Error("Vertical projectile did not cast");
+    combat.update(3.35, [source, target]);
+    boot.renderer.update({ ...boot.session.getSnapshot(), projectiles: combat.projectileSnapshots() }, 0.1);
+    const shot = combat.projectileSnapshots()[0], sprite = boot.renderer.referenceArt.projectileViews.get(shot.id);
+    return { angle: sprite.node.angle, directionX: shot.directionX, directionY: shot.directionY };
+  });
+  assert.equal(projectileRotation.angle, 90); assert.equal(projectileRotation.directionX, 0); assert.equal(projectileRotation.directionY, 1);
+  await capture("vertical-projectile");
+  assert.equal(await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.projectileProbe; combat.update(3, [source, target]); combat.resetEngagement();
+    boot.renderer.update(boot.session.getSnapshot(), 0.1); delete boot.projectileProbe; boot.enabled = true;
+    return boot.renderer.referenceArt.projectileViews.size;
+  }), 0);
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -650,7 +700,8 @@ try {
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
-    periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control, resetCounts, viewports, errors, failures };
+    periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
+    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {
