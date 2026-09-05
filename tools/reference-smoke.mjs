@@ -41,6 +41,17 @@ const screenPoint = (x, y) => evaluate((x, y) => {
     y: rect.bottom - (viewport.y + world.y * cc.view.getScaleY()) * rect.height / cc.game.canvas.height };
 }, x, y);
 const clickDesign = async (x, y) => { const point = await screenPoint(x, y); await mouse("mousePressed", point.x, point.y, 1); await mouse("mouseReleased", point.x, point.y); await delay(100); };
+const waitRosterArt = async () => {
+  for (let index = 0; index < 50; index++) {
+    const ready = await evaluate(() => {
+      const roster = window.__referenceBoot.renderer.roster;
+      return roster.rows.every((hero, index) => !hero.icon || (roster.portraits[index].node.active && roster.portraits[index].spriteFrame));
+    });
+    if (ready) return;
+    await delay(100);
+  }
+  throw new Error("Roster portraits did not finish loading");
+};
 const waitReady = async () => {
   for (let index = 0; index < 150; index++) {
     const ready = await evaluate(() => {
@@ -463,7 +474,7 @@ try {
   const five = await evaluate(() => ({ lineup: [...window.__referenceBoot.session.roster.slots()], party: window.__referenceBoot.session.getSnapshot().partyIds,
     development: window.__referenceBoot.session.development.save() }));
   assert.equal(five.party.length, 5); assert.equal(five.lineup[4], fifthHero);
-  await capture("lineup-five");
+  await waitRosterArt(); await capture("lineup-five");
   await evaluate(async () => { await window.__referenceBoot.runtime.flushProgress(); });
   await send("Page.reload", { ignoreCache: true }); assert.ok(await waitReady());
   assert.deepEqual(await evaluate(() => [...window.__referenceBoot.session.roster.slots()]), five.lineup);
@@ -471,7 +482,7 @@ try {
   const roster = { reordered: true, toggled: true, five, setup: "rank-four and owned-card fixture after ordinary recruitment" };
   const periodicHeroes = await evaluate(() => {
     const boot = window.__referenceBoot, session = boot.session;
-    const results = [2, 26, 10].map((sourceId, index) => {
+    const results = [2, 26, 10, 16].map((sourceId, index) => {
       const id = `reference_hero_${sourceId}`, hero = session.roster.config.heroes.find((hero) => hero.id === id);
       session.map.grantResources({ [hero.cardResource]: 1, "item:3": 1000 }); session.roster.syncOwnership();
       while (session.development.levelOf(id) < 10) { if (session.upgradeHero(id) !== "completed") throw new Error(`Cannot grow ${id}`); }
@@ -489,12 +500,14 @@ try {
   const periodicArt = await evaluate((heroes) => heroes.map(({ id }) => {
     const boot = window.__referenceBoot, view = boot.renderer.referenceArt.views.get(id), actor = boot.session.roster.actor(id);
     return { id, spine: Boolean(view?.skeleton?.skeletonData), action: view?.action, level: boot.session.development.levelOf(id), maxEnergy: actor.stats.maxEnergy, energy: actor.energy,
-      dotDamageBonus: actor.modifier("dotDamageBonus"), pveDamageReduction: actor.modifier("pveDamageReduction") };
+      dotDamageBonus: actor.modifier("dotDamageBonus"), pveDamageReduction: actor.modifier("pveDamageReduction"),
+      triggeredHealing: actor.skillIds.reduce((count, id) => count + (boot.session.world.options.skillDefinitions[id]?.onRelease?.filter((trigger) => trigger.skillId === "reference_skill_10160701").length || 0), 0) };
   }), periodicHeroes);
   assert.ok(periodicArt.every((hero) => hero.spine && hero.action && hero.level === 10 && hero.maxEnergy === 10000 && hero.energy > 0));
   assert.equal(periodicArt.find((hero) => hero.id === "reference_hero_26").dotDamageBonus, 0.1);
   assert.equal(periodicArt.find((hero) => hero.id === "reference_hero_10").pveDamageReduction, 0.2);
   assert.equal(periodicArt.find((hero) => hero.id === "reference_hero_2").dotDamageBonus, 0);
+  assert.equal(periodicArt.find((hero) => hero.id === "reference_hero_16").triggeredHealing, 1);
   await capture("periodic-heroes");
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
@@ -508,7 +521,7 @@ try {
     await clickDesign(-310, 300);
     await capture(`${name}-journal`);
     await clickDesign(306, 557);
-    await clickDesign(-166, 300); await capture(`${name}-roster`); await clickDesign(306, 557);
+    await clickDesign(-166, 300); await waitRosterArt(); await capture(`${name}-roster`); await clickDesign(306, 557);
     await clickDesign(-238, 300);
     await capture(`${name}-development`);
     await clickDesign(306, 557);

@@ -122,3 +122,36 @@ test("source special damage kinds retain their independent identities", () => {
   assert.equal(compiler.compile(20).actions[0].damageType, "punishment");
   assert.deepEqual(compiler.issues, []);
 });
+
+test("source healing power, target buffs, extra casts and cleansing compile without inventing buff IDs", () => {
+  const rows = { Skill: {
+    1: { skillType: 1, skillgroup: 10, targetCamp: 2, firstSelector: [300, 1], frameKey: "[key:0_action:[healAction,7000,1]]" },
+    2: { skillType: 2, skillgroup: 20, targetCamp: 1, frameKey: "[key:0_action:[addBuffAction,9,1]]" },
+    3: { skillType: 8, skillgroup: 30, targetCamp: 2, frameKey: "[key:1_action:[healAction,31500,5]]" },
+    4: { skillType: 3, triggerActions: "[skillHealBonusAction,10,1,10000,3_9_1_0,1_10000]|[skillCastSkillAction,20,1,10000,null,6]" },
+    5: { skillType: 3, triggerActions: "[skillRemoveBuffAction,30,1,10000,null,2_99_1]" },
+    6: { skillType: 1, targetCamp: 2, firstSelector: [300, 3], frameKey: "[key:0_action:[healAction,14000,3]]", skillTagActions: "[blockUltraEnegyTag]" },
+  }, Buff: { 9: { id: 9, group: 9, duration: 3000, effects: "[addTargetAction,10,2]" } } };
+  const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  const hero = { id: 7, attack: "1_0", skill1: "2_0", skill2: "3_0", skill5: "4_0;5_0" };
+  const result = compiler.heroSkills(hero, 12);
+  assert.deepEqual(compiler.definitions.get(1).actions[0].healingBonuses[0], { conditions: { requiredState: "9" }, chance: 1, powerBonus: 1 });
+  assert.deepEqual(compiler.definitions.get(2).actions[0].status.targetCountBonuses, { "10": 2 });
+  assert.equal(compiler.definitions.get(2).onRelease[0].skillId, "reference_skill_6");
+  assert.equal(result.ids.includes("reference_skill_6"), false);
+  assert.equal(compiler.definitions.get(3).actions[0].cleanse.npcOnly, true);
+  const before = JSON.stringify([...compiler.definitions.values()]); compiler.heroSkills(hero, 12);
+  assert.equal(JSON.stringify([...compiler.definitions.values()]), before);
+});
+
+test("source bonus choice modes and absent-status conditions retain their meaning", () => {
+  const rows = { Skill: { 1: { skillType: 2, skillgroup: 10, targetCamp: 2, frameKey: "[key:0_action:[healAction,10000]]" },
+    2: { skillType: 3, triggerActions: "[skillHealBonusAction,10,2,10000,3_9_2_0,3_7_1_8_3]|[skillHealBonusAction,10,2,10000,3_9_1_0,2_7_1_8_1]" } },
+    Buff: { 7: { duration: 1000, effects: "[changeAttrAction,atkRate,1000]" }, 8: { duration: 1000, effects: "[changeAttrAction,atkRate,-1000]", dispel: -1 } } };
+  const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  compiler.heroSkills({ id: 5, skill1: "1_0", skill5: "2_0" }, 12);
+  const bonuses = compiler.definitions.get(1).actions[0].healingBonuses;
+  assert.deepEqual(bonuses[0].conditions, { excludedState: "9" }); assert.equal(bonuses[0].selection, "weighted");
+  assert.equal(bonuses[0].statuses[1].weight, 3); assert.equal(bonuses[1].selection, "all");
+  assert.equal(bonuses[0].statuses[1].status.harmful, true); assert.equal(bonuses[0].statuses[1].status.dispellable, false);
+});

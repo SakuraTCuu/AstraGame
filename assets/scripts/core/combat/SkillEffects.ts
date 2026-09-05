@@ -33,6 +33,9 @@ export interface StatusDefinition {
   readonly modifiers?: StatModifiers;
   readonly clearOnReturn?: boolean;
   readonly maxStacks?: number;
+  readonly targetCountBonuses?: Readonly<Record<string, number>>;
+  readonly harmful?: boolean;
+  readonly dispellable?: boolean;
   readonly periodicDamage?: {
     readonly interval: number;
     readonly power: number;
@@ -42,18 +45,31 @@ export interface StatusDefinition {
   };
 }
 
+export interface HealingBonus {
+  readonly conditions?: SkillConditions;
+  readonly chance?: number;
+  readonly powerBonus?: number;
+  readonly statuses?: readonly { readonly status: StatusDefinition; readonly weight: number }[];
+  readonly selection?: "weighted" | "all";
+}
+
+export interface SkillTrigger { readonly skillId: string; readonly chance?: number; readonly conditions?: SkillConditions; }
+
 export interface SkillAction {
   readonly at: number;
-  readonly type: "damage" | "heal" | "status";
+  readonly type: "damage" | "heal" | "status" | "cleanse";
   readonly power?: number;
   readonly damageType?: DamageType;
   readonly forceCritical?: boolean;
   readonly recipient?: "targets" | "self" | "allies" | "enemies";
   readonly targetCount?: number;
+  readonly globalTargets?: boolean;
   readonly status?: StatusDefinition;
   readonly randomStatuses?: readonly StatusDefinition[];
   readonly healFromDamage?: number;
   readonly settleStatus?: { readonly group: string; readonly seconds: number };
+  readonly healingBonuses?: readonly HealingBonus[];
+  readonly cleanse?: { readonly count: number; readonly npcOnly?: boolean };
 }
 
 export interface SkillMotion {
@@ -69,4 +85,5 @@ export interface SkillConditions {
   readonly targetHpBelow?: number;
   readonly combatTimeAtLeast?: number;
   readonly requiredState?: string;
+  readonly excludedState?: string;
 }

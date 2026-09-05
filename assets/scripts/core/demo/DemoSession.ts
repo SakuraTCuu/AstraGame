@@ -2,7 +2,7 @@ import { Actor, applyMaxHealthModifier } from "../actor/Actor";
 import type { ActorOptions, ActorStats, Faction } from "../actor/Actor";
 import type { BossPhase } from "../ai/BossAI";
 import type { CastSnapshot, CombatEvent, ProjectileSnapshot, SkillArea, SkillDefinition } from "../combat/Combat";
-import type { StatModifiers } from "../combat/SkillEffects";
+import type { StatModifiers, StatusDefinition } from "../combat/SkillEffects";
 import { FogGrid } from "../fog/FogGrid";
 import type { FogCellState } from "../fog/FogGrid";
 import { Vector2 } from "../math/Vector2";
@@ -328,6 +328,9 @@ export class DemoSession {
     }
     for (const actor of [...playerConfigs, ...enemyConfigs]) {
       for (const id of actor.skillIds ?? []) if (!skillDefinitions[id]) throw new Error(`Actor ${actor.id} references missing skill ${id}`);
+    }
+    for (const skill of Object.values(skillDefinitions)) for (const trigger of skill.onRelease ?? []) {
+      if (!skillDefinitions[trigger.skillId] || skillDefinitions[trigger.skillId].motion) throw new Error(`Invalid triggered skill reference ${trigger.skillId}`);
     }
     this.world = new GameWorld({
       combatMode: config.world.combatMode,
@@ -822,14 +825,22 @@ export class DemoSession {
     for (const value of [config.castDuration, config.publicCooldown, config.energyCost]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new Error(`Invalid cast value for ${config.id}`);
     if (config.targetCount !== undefined && (!Number.isInteger(config.targetCount) || config.targetCount < 1)) throw new Error(`Invalid primary target count for ${config.id}`);
     let previous = -1;
+    for (const trigger of config.onRelease ?? []) if (!trigger.skillId || !Number.isFinite(trigger.chance ?? 1) || (trigger.chance ?? 1) < 0 || (trigger.chance ?? 1) > 1) throw new Error(`Invalid skill trigger for ${config.id}`);
     for (const action of config.actions ?? []) {
-      if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
+      if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
       if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
       if (action.settleStatus && (!action.settleStatus.group || !Number.isFinite(action.settleStatus.seconds) || action.settleStatus.seconds <= 0)) throw new Error(`Invalid periodic settlement for ${config.id}`);
       previous = action.at;
-      for (const status of [...(action.randomStatuses ?? []), ...(action.status ? [action.status] : [])]) {
+      if (action.cleanse && (!Number.isSafeInteger(action.cleanse.count) || action.cleanse.count < 1)) throw new Error(`Invalid cleanse for ${config.id}`);
+      const bonusStatuses: StatusDefinition[] = [];
+      for (const bonus of action.healingBonuses ?? []) {
+        if (!Number.isFinite(bonus.powerBonus ?? 0) || !Number.isFinite(bonus.chance ?? 1) || (bonus.chance ?? 1) < 0 || (bonus.chance ?? 1) > 1) throw new Error(`Invalid healing bonus for ${config.id}`);
+        for (const entry of bonus.statuses ?? []) { if (!Number.isSafeInteger(entry.weight) || entry.weight <= 0) throw new Error(`Invalid healing bonus weight for ${config.id}`); bonusStatuses.push(entry.status); }
+      }
+      for (const status of [...(action.randomStatuses ?? []), ...(action.status ? [action.status] : []), ...bonusStatuses]) {
         if (!status.id || !Number.isFinite(status.duration) || (!status.permanent && status.duration <= 0) || Object.values(status.modifiers ?? {}).some((value) => !Number.isFinite(value))) throw new Error(`Invalid status for ${config.id}`);
         if (!Number.isSafeInteger(status.maxStacks ?? 1) || (status.maxStacks ?? 1) < 1) throw new Error(`Invalid status stack limit for ${config.id}`);
+        if (Object.entries(status.targetCountBonuses ?? {}).some(([id, count]) => !id || !Number.isSafeInteger(count))) throw new Error(`Invalid target count bonus for ${config.id}`);
         const periodic = status.periodicDamage;
         if (periodic && (![periodic.interval, periodic.power, periodic.intervalPerStack ?? 0].every(Number.isFinite) || periodic.interval <= 0 || periodic.power < 0 ||
             periodic.interval + Math.min(0, periodic.intervalPerStack ?? 0) * (status.maxStacks ?? 1) <= 0)) throw new Error(`Invalid periodic damage for ${config.id}`);

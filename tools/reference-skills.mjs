@@ -60,7 +60,7 @@ export function heroSkillAtStar(source, star = 0) {
 }
 
 export function createReferenceSkillCompiler(lookup) {
-  const definitions = new Map(), statuses = new Map(), issues = [];
+  const definitions = new Map(), statuses = new Map(), heroProfiles = new Map(), issues = [];
   const report = (id, kind, value) => issues.push({ id: String(id), kind, value });
   const passiveActionsFor = (source, id) => {
     try { return list(source); } catch (error) {
@@ -82,6 +82,12 @@ export function createReferenceSkillCompiler(lookup) {
     if (!key || !Number.isFinite(action[2])) { report(id, "modifier", action); return; }
     modifiers[key] = (modifiers[key] || 0) + action[2] / (action[1] === "movespeed" ? 1 : 10000);
   };
+  const bonusCondition = (source) => {
+    if (source === null || source === undefined) return undefined;
+    const match = /^3_(\d+)_([12])_0$/.exec(String(source));
+    if (!match) throw new Error("Unsupported healing bonus condition");
+    return match[2] === "1" ? { requiredState: match[1] } : { excludedState: match[1] };
+  };
   const status = (id) => {
     if (statuses.has(id)) return statuses.get(id);
     const row = lookup("Buff", id);
@@ -94,6 +100,10 @@ export function createReferenceSkillCompiler(lookup) {
       if (action[0] === "changeAttrAction") changeModifier(definition.modifiers, action, id);
       else if (action[0] === "addStateAction") definition.state = String(action[1]);
       else if (action[0] === "healAction") immediate.push({ type: "heal", power: Number(action[2] ?? action[1]) / 10000 });
+      else if (action[0] === "addTargetAction" && Number.isSafeInteger(action[2])) {
+        definition.targetCountBonuses ||= {};
+        definition.targetCountBonuses[String(action[1])] = action[2];
+      }
       else if (action[0] === "buffDamageAction" && action[1] > 0 && action[2] === 6 && !definition.periodicDamage) {
         definition.periodicDamage = { interval: action[1] / 1000, power: action[3] / 10000, damageType: damageType(effects.damageType, id),
           scaleWithStacks: action[4] === (row.group || row.id) };
@@ -108,6 +118,9 @@ export function createReferenceSkillCompiler(lookup) {
       else report(id, "buff_tag", tag);
     }
     if (definition.maxStacks > 1 && row.overlieRefreshFirst !== 1) report(id, "stack_expiry", "shared expiry currently refreshes on reapplication");
+    definition.dispellable = row.dispel !== -1;
+    definition.harmful = Boolean(definition.periodicDamage || Object.entries(definition.modifiers).some(([key, value]) => key === "healReduction" ? value > 0 : value < 0) ||
+      Object.values(definition.targetCountBonuses || {}).some((value) => value < 0) || ["frozen", "stun", "stunned", "silence", "traditionFreeze", "immobilized"].includes(definition.state));
     const value = { definition, immediate, row };
     statuses.set(id, value);
     return value;
@@ -138,7 +151,7 @@ export function createReferenceSkillCompiler(lookup) {
     const windup = warning ? warning[3] / 1000 : (row.preTime || 0) / 1000;
     const lockProjectile = tags.find((tag) => tag[0] === "lockProTag");
     const target = row.targetCamp === 1 ? "self" : row.targetCamp === 2 ? (row.targetSelectType === 1 ? "lowest_hp_ally" : "ally") : "enemy";
-    const definition = { id: skillId(id), sourceId: id, name: row.name, coefficient: 0, type: "damage", range: row.firstSelector?.[0] || 50,
+    const definition = { id: skillId(id), sourceId: id, group: String(row.skillgroup || id), name: row.name, coefficient: 0, type: "damage", range: row.firstSelector?.[0] || 50,
       cooldown: (row.cd || 0) / 1000, windup, castDuration: Math.max(windup, (row.postTime || 1000) / 1000),
       target, targetCount: target === "self" ? 1 : Math.max(1, row.firstSelector?.[1] || 1), maxTargets: Math.max(1, row.firstSelector?.[1] || 1),
       priority: row.skillOrder || 1000, category: row.skillType === 8 ? "ultimate" : (row.skillOrder || 1000) < 2000 ? "normal" : "skill",
@@ -181,6 +194,8 @@ export function createReferenceSkillCompiler(lookup) {
     return definition;
   };
   const heroSkills = (hero, fps) => {
+    const profileKey = JSON.stringify([hero.id, hero.attack, hero.skill1, hero.skill2, hero.skill5, fps]);
+    if (heroProfiles.has(profileKey)) return heroProfiles.get(profileKey);
     for (const source of [hero.attack, hero.skill1, hero.skill2, hero.skill5].filter(Boolean)) {
       if (/[|]|\d+_\d+_\d+/.test(source)) report(hero.id, "hero_skill_variant", source);
     }
@@ -202,13 +217,34 @@ export function createReferenceSkillCompiler(lookup) {
     for (const action of passiveActions) {
       if (action[0] === "skillHealBonusAction") {
         const encoded = String(action[action.length - 1]).split("_").map(Number);
-        const choices = [];
-        for (let index = 1; index < encoded.length; index += 2) {
-          if (encoded[index + 1] !== 1) report(hero.id, "weighted_heal_bonus", action);
-          choices.push(status(encoded[index]).definition);
-        }
+        let conditions;
+        try { conditions = bonusCondition(action[4]); } catch { report(hero.id, "healing_bonus_condition", action); continue; }
+        const bonus = { conditions, chance: action[3] / 10000 };
+        if (action[2] === 1 && encoded[0] === 1 && encoded.length === 2) bonus.powerBonus = encoded[1] / 10000;
+        else if (action[2] === 2 && [2, 3].includes(encoded[0]) && encoded.length % 2 === 1) {
+          bonus.selection = encoded[0] === 2 ? "all" : "weighted"; bonus.statuses = [];
+          for (let index = 1; index < encoded.length; index += 2) {
+            const value = status(encoded[index]);
+            if (value.immediate.length) report(hero.id, "healing_bonus_immediate", action);
+            if (encoded[index + 1] > 0) bonus.statuses.push({ status: value.definition, weight: encoded[index + 1] });
+          }
+        } else { report(hero.id, "healing_bonus_kind", action); continue; }
         for (const skill of skills.filter((skill) => lookup("Skill", skill.sourceId).skillgroup === action[1])) {
-          for (const step of skill.actions) if (step.type === "heal") step.randomStatuses = choices;
+          for (const step of skill.actions) if (step.type === "heal") { step.healingBonuses ||= []; step.healingBonuses.push(bonus); }
+        }
+      } else if (action[0] === "skillCastSkillAction") {
+        if (action[2] !== 1 || action[4] !== null) { report(hero.id, "triggered_skill_condition", action); continue; }
+        const child = compile(action[5], fps);
+        if (!child || child.motion || child.energyCost) { report(hero.id, "triggered_skill_kind", action); continue; }
+        for (const parent of skills.filter((skill) => lookup("Skill", skill.sourceId).skillgroup === action[1])) {
+          parent.onRelease ||= []; parent.onRelease.push({ skillId: child.id, chance: action[3] / 10000 });
+        }
+      } else if (action[0] === "skillRemoveBuffAction") {
+        const cleanse = /^2_(\d+)_(\d+)$/.exec(String(action[5]));
+        if (!cleanse || action[2] !== 1 || action[3] !== 10000 || action[4] !== null) { report(hero.id, "cleanse_condition", action); continue; }
+        for (const parent of skills.filter((skill) => lookup("Skill", skill.sourceId).skillgroup === action[1])) {
+          parent.actions.unshift({ at: 0, type: "cleanse", recipient: "allies", globalTargets: true, targetCount: Number(cleanse[1]),
+            cleanse: { count: Number(cleanse[2]), npcOnly: true } });
         }
       } else if (action[0] === "skillAddBuffAction") {
         const buffId = Number(String(action[6]).split("_")[0]);
@@ -226,7 +262,7 @@ export function createReferenceSkillCompiler(lookup) {
         const entry = /^(\d+)_1$/.exec(String(action[4]));
         if (action[1] !== 10000 || action[2] !== null || action[3] !== 2 || !entry) { report(hero.id, "passive", action); continue; }
         const buff = status(Number(entry[1]));
-        if (!buff.definition.permanent || buff.definition.state || buff.definition.periodicDamage || buff.immediate.length) { report(hero.id, "passive", action); continue; }
+        if (!buff.definition.permanent || buff.definition.state || buff.definition.periodicDamage || buff.definition.targetCountBonuses || buff.immediate.length) { report(hero.id, "passive", action); continue; }
         for (const [key, value] of Object.entries(buff.definition.modifiers)) modifiers[key] = (modifiers[key] || 0) + value;
       } else if (action[0] === "hurtCalcBuffAction") {
         const settlement = /^4_(\d+)_(\d+)$/.exec(String(action[4]));
@@ -237,7 +273,8 @@ export function createReferenceSkillCompiler(lookup) {
         report(hero.id, "periodic_settlement_parity", "full periodic ticks over the configured duration without consuming the status; rounding and attack snapshot require live comparison");
       } else report(hero.id, "passive", action);
     }
-    return { ids: skills.map((skill) => skill.id), modifiers };
+    const profile = { ids: skills.map((skill) => skill.id), modifiers };
+    heroProfiles.set(profileKey, profile); return profile;
   };
   return { compile, heroSkills, definitions, issues };
 }

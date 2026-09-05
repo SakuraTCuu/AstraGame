@@ -7,7 +7,7 @@ export type Faction = "player" | "enemy";
 export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "returning" | "dead";
 
 export interface ShieldLayer { readonly key: string; amount: number; remaining: number; }
-interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; source: Actor; skillId: string; }
+interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; source: Actor; skillId: string; fromPlayer: boolean; }
 export interface PeriodicDamageTick { readonly source: Actor; readonly skillId: string; readonly statusId: string; readonly power: number; readonly damageType: DamageType; }
 
 const TRANSITIONS: Record<ActorState, readonly ActorState[]> = {
@@ -124,17 +124,29 @@ export class Actor {
   get attackPower(): number { return Math.max(0, this.stats.attack * (1 + this.modifier("attackRate"))); }
   get movementSpeed(): number { return Math.max(0, this.stats.moveSpeed + this.modifier("movementBonus")); }
   modifier(key: keyof StatModifiers): number { return (this.currentStats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0) * status.stacks, 0); }
-  hasStatus(state: string): boolean { return this.statuses.some((entry) => entry.definition.state === state || entry.definition.id === state); }
+  hasStatus(state: string): boolean { return this.statuses.some((entry) => entry.definition.state === state || entry.definition.id === state || entry.definition.group === state); }
+  targetCountBonus(group: string): number { return this.statuses.reduce((total, entry) => total + (entry.definition.targetCountBonuses?.[group] ?? 0) * entry.stacks, 0); }
   statusSnapshots(): Array<{ id: string; remaining: number; stacks: number }> { return this.statuses.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining, stacks: entry.stacks })); }
-  addStatus(definition: StatusDefinition, source: Actor = this, skillId = definition.id): void {
+  addStatus(definition: StatusDefinition, source: Actor = this, skillId = definition.id, fromPlayer = source.faction === "player" || source.kind === "hero"): void {
     if (!this.alive || (!definition.permanent && definition.duration <= 0)) return;
     const existing = this.statuses.find((entry) => (entry.definition.group ?? entry.definition.id) === (definition.group ?? definition.id));
     const remaining = definition.permanent ? -1 : definition.duration;
     if (existing) {
       existing.stacks = Math.min(definition.maxStacks ?? 1, existing.stacks + 1);
+      existing.fromPlayer = (definition.maxStacks ?? 1) > 1 ? existing.fromPlayer || fromPlayer : fromPlayer;
       existing.definition = definition; existing.remaining = remaining; existing.source = source; existing.skillId = skillId;
-    } else this.statuses.push({ definition, remaining, stacks: 1, elapsed: 0, source, skillId });
+    } else this.statuses.push({ definition, remaining, stacks: 1, elapsed: 0, source, skillId, fromPlayer });
     this.refreshHealthModifier();
+  }
+
+  cleanse(count: number, npcOnly: boolean, random: () => number): string[] {
+    const candidates = this.statuses.filter((entry) => entry.definition.harmful && entry.definition.dispellable !== false && (!npcOnly || !entry.fromPlayer));
+    const removed: string[] = [];
+    while (removed.length < count && candidates.length) {
+      const [entry] = candidates.splice(Math.min(candidates.length - 1, Math.floor(random() * candidates.length)), 1);
+      this.statuses.splice(this.statuses.indexOf(entry), 1); removed.push(entry.definition.id);
+    }
+    this.refreshHealthModifier(); return removed;
   }
 
   settlePeriodicStatus(group: string, seconds: number): PeriodicDamageTick[] {

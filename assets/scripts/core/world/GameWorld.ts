@@ -51,7 +51,7 @@ export class GameWorld {
   constructor(options: WorldOptions) {
     this.options = options;
     this.random = new SeededRandom(options.seed);
-    this.combat = new CombatSystem(() => this.random.next(), options.combatMode);
+    this.combat = new CombatSystem(() => this.random.next(), options.combatMode, options.skillDefinitions);
     this.players = [...options.players];
     this.enemies = [...options.enemies].sort((a, b) => a.id.localeCompare(b.id));
     this.formation = new SquadFormation(this.players, options.formationOffsets);
