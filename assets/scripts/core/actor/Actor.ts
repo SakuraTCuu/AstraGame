@@ -7,7 +7,7 @@ export type Faction = "player" | "enemy";
 export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "displaced" | "controlled" | "returning" | "dead";
 
 export interface ShieldLayer { readonly key: string; amount: number; remaining: number; }
-interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; source: Actor; skillId: string; fromPlayer: boolean; }
+interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; energyElapsed: number; source: Actor; skillId: string; fromPlayer: boolean; }
 interface AppliedState { readonly definition: StatusState; readonly owner: AppliedStatus; readonly initialElevation: number; remaining: number; elapsed: number; direction?: Vector2; nextTurn?: number; }
 export interface PeriodicDamageTick { readonly source: Actor; readonly skillId: string; readonly statusId: string; readonly power: number; readonly damageType: DamageType; }
 
@@ -81,6 +81,7 @@ export class Actor {
   position: Vector2;
   health: number;
   energy: number;
+  skillEnergy = 0;
   targetId?: string;
 
   constructor(options: ActorOptions) {
@@ -185,7 +186,7 @@ export class Actor {
     if (!this.alive || (!definition.permanent && definition.duration <= 0) || definition.blockedByStates?.some((state) => this.hasStatus(state) || this.tags.has(state))) return false;
     const requested = definition.states ?? (definition.state ? [{ id: definition.state, duration: definition.permanent ? -1 : definition.duration }] : []);
     const states = requested.filter((state) => !(state.excludeBoss && (this.kind === "boss" || this.tags.has("boss"))) && (!state.control || !this.controlImmune(state.control)));
-    if (requested.length && !states.length && !Object.keys(definition.modifiers ?? {}).length && !definition.periodicDamage && !definition.targetCountBonuses) return false;
+    if (requested.length && !states.length && !Object.keys(definition.modifiers ?? {}).length && !definition.periodicDamage && !definition.periodicSkillEnergy && !definition.targetCountBonuses) return false;
     const existing = this.statuses.find((entry) => (entry.definition.group ?? entry.definition.id) === (definition.group ?? definition.id));
     const remaining = definition.permanent ? -1 : definition.duration;
     if (existing) {
@@ -193,7 +194,7 @@ export class Actor {
       existing.fromPlayer = (definition.maxStacks ?? 1) > 1 ? existing.fromPlayer || fromPlayer : fromPlayer;
       existing.definition = definition; existing.remaining = remaining; existing.source = source; existing.skillId = skillId;
     }
-    const owner = existing ?? { definition, remaining, stacks: 1, elapsed: 0, source, skillId, fromPlayer };
+    const owner = existing ?? { definition, remaining, stacks: 1, elapsed: 0, energyElapsed: 0, source, skillId, fromPlayer };
     if (!existing) this.statuses.push(owner);
     const initialElevation = this.controlElevation;
     for (let index = this.states.length - 1; index >= 0; index--) if ((this.states[index].owner.definition.group ?? this.states[index].owner.definition.id) === (definition.group ?? definition.id)) this.states.splice(index, 1);
@@ -226,11 +227,24 @@ export class Actor {
   gainEnergy(amount: number): void {
     if (this.alive) this.energy = Math.max(0, Math.min(this.stats.maxEnergy ?? 0, this.energy + (amount > 0 ? amount * Math.max(0, 1 + this.modifier("energyGainRate")) : amount)));
   }
+  gainSkillEnergy(amount: number, cap = Number.MAX_SAFE_INTEGER): number {
+    if (!this.alive) return 0;
+    if (!Number.isSafeInteger(amount) || !Number.isSafeInteger(cap) || cap < 0) throw new Error("Invalid skill-energy change");
+    const previous = this.skillEnergy;
+    this.skillEnergy = Math.max(0, Math.min(amount > 0 ? Math.max(previous, cap) : Number.MAX_SAFE_INTEGER, previous + amount));
+    return this.skillEnergy - previous;
+  }
+  spendHealth(amount: number): number {
+    if (!this.alive) return 0;
+    if (!Number.isFinite(amount) || amount < 0) throw new Error("Invalid health expenditure");
+    const spent = Math.max(0, Math.min(Math.floor(amount), this.health - 1)); this.health -= spent; return spent;
+  }
 
   recoverAt(position: Vec2Like): void {
     if (![position.x, position.y].every(Number.isFinite)) throw new Error("Invalid recovery position");
     this.position = Vector2.from(position);
     this.energy = 0;
+    this.skillEnergy = 0;
     this.targetId = undefined;
     this.shields.splice(0);
     this.statuses.splice(0);
@@ -270,6 +284,12 @@ export class Actor {
     }
     for (let index = this.statuses.length - 1; index >= 0; index--) {
       const status = this.statuses[index];
+      if (status.definition.periodicSkillEnergy) {
+        const gain = status.definition.periodicSkillEnergy;
+        status.energyElapsed += status.definition.permanent ? deltaSeconds : Math.min(deltaSeconds, status.remaining);
+        const ticks = Math.floor((status.energyElapsed + 1e-9) / gain.interval);
+        if (ticks > 0) { this.gainSkillEnergy(Math.min(gain.amount * ticks, gain.cap), gain.cap); status.energyElapsed = Math.max(0, status.energyElapsed - ticks * gain.interval); }
+      }
       if (status.definition.periodicDamage) {
         status.elapsed += status.definition.permanent ? deltaSeconds : Math.min(deltaSeconds, status.remaining);
         const interval = this.statusInterval(status);

@@ -41,6 +41,9 @@ export interface SkillDefinition {
   readonly publicCooldown?: number;
   readonly publicCooldownGroup?: string;
   readonly energyCost?: number;
+  readonly skillEnergyCost?: number;
+  readonly healthCost?: { readonly fraction: number; readonly basis: "maximum" | "current" };
+  readonly disabled?: boolean;
   readonly blockEnergyGain?: boolean;
   readonly conditions?: SkillConditions;
   readonly linkedCooldowns?: readonly { readonly id: string; readonly duration: number }[];
@@ -53,7 +56,7 @@ export interface SkillDefinition {
 }
 
 export interface CombatEvent {
-  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback" | "state_removed";
+  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback" | "state_removed" | "resource_cost" | "skill_energy";
   readonly sourceId: string;
   readonly targetId: string;
   readonly value?: number;
@@ -66,6 +69,7 @@ export interface CombatEvent {
   readonly statusId?: string;
   readonly triggered?: boolean;
   readonly immune?: boolean;
+  readonly resource?: "health" | "energy" | "skill_energy";
 }
 
 interface Cast {
@@ -247,9 +251,11 @@ export class CombatSystem {
   isWindingUp(actor: Actor): boolean { const cast = this.casts.get(actor.id); return Boolean(cast && !cast.resolved); }
   cooldownRemaining(actor: Actor, skill: SkillDefinition): number { return this.cooldowns.get(this.cooldownKey(actor, skill)) ?? 0; }
   canUse(actor: Actor, skill: SkillDefinition): boolean {
-    if (actor.blocksCasting(skill.category) || (skill.motion && !actor.canMove)) return false;
+    if (!Number.isFinite(skill.energyCost ?? 0) || (skill.energyCost ?? 0) < 0 || !Number.isSafeInteger(skill.skillEnergyCost ?? 0) || (skill.skillEnergyCost ?? 0) < 0 ||
+        (skill.healthCost && (!Number.isFinite(skill.healthCost.fraction) || skill.healthCost.fraction <= 0 || skill.healthCost.fraction > 1 || !["maximum", "current"].includes(skill.healthCost.basis)))) return false;
+    if (skill.disabled || actor.blocksCasting(skill.category) || (skill.motion && !actor.canMove)) return false;
     if (skill.type === "summon" && this.actors.filter((candidate) => candidate.alive && candidate.summonerId === actor.id).length >= (skill.summonLimit ?? skill.maxTargets ?? 1)) return false;
-    if ((skill.energyCost ?? 0) > actor.energy || this.publicCooldowns.has(this.publicKey(actor, skill))) return false;
+    if ((skill.energyCost ?? 0) > actor.energy || (skill.skillEnergyCost ?? 0) > actor.skillEnergy || this.publicCooldowns.has(this.publicKey(actor, skill))) return false;
     return actor.alive && actor.fsm.state !== "returning" && this.conditionsMet(actor, undefined, skill.conditions) && !this.isBusy(actor) && this.cooldownRemaining(actor, skill) === 0;
   }
 
@@ -265,6 +271,11 @@ export class CombatSystem {
     if (skill.publicCooldown) this.publicCooldowns.set(this.publicKey(actor, skill), skill.publicCooldown);
     for (const linked of skill.linkedCooldowns ?? []) this.cooldowns.set(`${actor.id}:${linked.id}`, linked.duration);
     actor.gainEnergy(-(skill.energyCost ?? 0));
+    actor.gainSkillEnergy(-(skill.skillEnergyCost ?? 0));
+    const healthCost = skill.healthCost ? actor.spendHealth((skill.healthCost.basis === "maximum" ? actor.stats.maxHealth : actor.health) * skill.healthCost.fraction) : 0;
+    for (const [resource, value] of [["health", healthCost], ["energy", skill.energyCost ?? 0], ["skill_energy", skill.skillEnergyCost ?? 0]] as const) {
+      if (value > 0) this.events.push({ type: "resource_cost", sourceId: actor.id, targetId: actor.id, skillId: skill.id, resource, value });
+    }
     this.casts.set(actor.id, cast);
     this.events.push({ type: "skill", sourceId: actor.id, targetId: target.id, skillId: skill.id });
     if (windup > 0) {
@@ -327,6 +338,8 @@ export class CombatSystem {
   }
 
   private conditionsMet(source: Actor, target: Actor | undefined, condition?: SkillConditions): boolean {
+    if (condition?.skillEnergyAtLeast !== undefined && source.skillEnergy < condition.skillEnergyAtLeast) return false;
+    if (condition?.skillEnergyAtMost !== undefined && source.skillEnergy > condition.skillEnergyAtMost) return false;
     if (condition?.uncontrolled && source.controlled) return false;
     if (condition?.requiredState && !source.hasStatus(condition.requiredState)) return false;
     if (condition?.excludedState && source.hasStatus(condition.excludedState)) return false;
@@ -368,7 +381,7 @@ export class CombatSystem {
     for (const trigger of parent.skill.onRelease ?? []) {
       const child = this.definitions[trigger.skillId];
       if (!child || child.motion) throw new Error(`Invalid triggered skill ${trigger.skillId}`);
-      if (!parent.source.alive || (this.isDisplaced(parent.source) && !parent.source.interruptionImmune) || parent.triggerChain.includes(child.id) || parent.triggerChain.length >= 8) continue;
+      if (child.disabled || child.energyCost || child.skillEnergyCost || child.healthCost || !parent.source.alive || (this.isDisplaced(parent.source) && !parent.source.interruptionImmune) || parent.triggerChain.includes(child.id) || parent.triggerChain.length >= 8) continue;
       if (!this.conditionsMet(parent.source, this.actors.find((actor) => actor.id === parent.targetId), trigger.conditions)) continue;
       if ((trigger.chance ?? 1) < 1 && this.random() >= (trigger.chance ?? 1)) continue;
       const target = selectSkillTarget(parent.source, this.actors, child);
@@ -428,6 +441,11 @@ export class CombatSystem {
       this.awardEnergy(cast);
       if (action?.type === "status") {
         if (action.status) this.applyStatus(cast, target, action.status);
+      } else if (action?.type === "skill_energy") {
+        const gain = action.skillEnergy!;
+        const amount = gain.minimum === gain.maximum ? gain.minimum : gain.minimum + Math.floor(this.random() * (gain.maximum - gain.minimum + 1));
+        const value = target.gainSkillEnergy(amount, gain.cap);
+        if (value) this.events.push({ type: "skill_energy", sourceId: source.id, targetId: target.id, skillId: skill.id, value });
       } else if (action?.type === "remove_state") {
         const removed = target.removeState(action.stateId!); this.synchronizeControl(target);
         if (removed) this.events.push({ type: "state_removed", sourceId: source.id, targetId: target.id, skillId: skill.id, statusId: action.stateId, value: removed });

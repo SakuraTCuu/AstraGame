@@ -136,6 +136,15 @@ READY -> WINDUP -> HIT -> RECOVERY -> COOLDOWN -> READY
 - Explicit state removal clears named states across their owners while retaining other states and Buff modifiers. Source caster-directed `removeStateAction` can remove several names in one frame.
 - Friendly/global-effect treatment of untargetability, exceptional damage types, source percentage limits, shield-break mechanics and exact live expiry ordering remain comparison work. These flags do not establish complete parity for the skills that grant them.
 
+### Skill Resources
+
+- A cast validates its target, conditions, cooldowns, ultimate energy and skill-energy charges before changing resources. Successful casts debit each pool once at cast start. Cancellation retains those expenditures, matching the existing ultimate-energy behavior.
+- Health costs have an explicit maximum/current-health basis. The current runtime rounds down and leaves at least one HP. Expenditure bypasses damage defenses and does not emit damage, death, shield-absorption or damage-triggered energy events.
+- Skill energy is a separate integer counter. Actions can add a seeded inclusive random range; Buff gains can be fixed, capped and immediate or periodic. A lower refill ceiling never reduces an already larger pool. Conditions support lower and upper charge bounds.
+- Recovery clears the counter. Benching retains the actor's counter, but runtime recreation currently does not restore it. Source charge persistence remains unconfirmed alongside other unfinished battle-state restoration.
+- Unimplemented resource types disable the affected skill rather than allowing free casts. Paid or disabled children are excluded from the free additional-skill path.
+- Source HP-cost basis/rounding/nonlethal handling, direct-action gain ranges and Buff gain ceilings still require live comparison. The source adapter preserves these assumptions in explicit audit entries.
+
 ## Fog and Discovery
 
 Each fog cell is one of:

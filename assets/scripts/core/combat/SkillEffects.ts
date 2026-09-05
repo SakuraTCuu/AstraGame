@@ -63,6 +63,7 @@ export interface StatusDefinition {
     readonly scaleWithStacks?: boolean;
     readonly intervalPerStack?: number;
   };
+  readonly periodicSkillEnergy?: { readonly interval: number; readonly amount: number; readonly cap: number };
 }
 
 export interface HealingBonus {
@@ -77,7 +78,7 @@ export interface SkillTrigger { readonly skillId: string; readonly chance?: numb
 
 export interface SkillAction {
   readonly at: number;
-  readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state";
+  readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state" | "skill_energy";
   readonly power?: number;
   readonly damageType?: DamageType;
   readonly forceCritical?: boolean;
@@ -86,6 +87,7 @@ export interface SkillAction {
   readonly globalTargets?: boolean;
   readonly status?: StatusDefinition;
   readonly stateId?: string;
+  readonly skillEnergy?: { readonly minimum: number; readonly maximum: number; readonly cap?: number };
   readonly randomStatuses?: readonly StatusDefinition[];
   readonly healFromDamage?: number;
   readonly healFromDamageRecipient?: "self" | "allies";
@@ -110,4 +112,6 @@ export interface SkillConditions {
   readonly requiredState?: string;
   readonly excludedState?: string;
   readonly uncontrolled?: boolean;
+  readonly skillEnergyAtLeast?: number;
+  readonly skillEnergyAtMost?: number;
 }

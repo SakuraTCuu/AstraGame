@@ -38,7 +38,7 @@ export class PlayerAI {
       if (selected && combat.use(player, selected, skill)) return;
     }
     if (!target) { player.setState("idle"); return; }
-    const attackingSkills = skills.filter((skill) => skill.target === "enemy");
+    const attackingSkills = skills.filter((skill) => !skill.disabled && skill.target === "enemy");
     const preferredRange = Math.min(player.stats.attackRange, ...attackingSkills.map((skill) => skill.range));
     if (attackingSkills.length > 0 && player.position.distance(target.position) > preferredRange && !(player === leader && leaderTravelling)) {
       player.setState("chasing");

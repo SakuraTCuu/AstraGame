@@ -182,6 +182,7 @@ export interface ActorSnapshot {
   readonly targetId?: string;
   readonly energy?: number;
   readonly maxEnergy?: number;
+  readonly skillEnergy?: number;
   readonly statuses?: readonly { readonly id: string; readonly remaining: number }[];
   readonly controls?: ReturnType<Actor["controlSnapshots"]>;
   readonly elevation?: number;
@@ -713,6 +714,7 @@ export class DemoSession {
       state: entry.fsm.state,
       targetId: entry.targetId,
       energy: entry.energy,
+      skillEnergy: entry.skillEnergy,
       maxEnergy: entry.stats.maxEnergy ?? 0,
       statuses: entry.statusSnapshots(),
       controls: entry.controlSnapshots(),
@@ -830,13 +832,20 @@ export class DemoSession {
     if (config.area?.shape === "line" && !(config.area.width > 0)) throw new Error(`Line skill ${config.id} requires width`);
     if (config.area?.shape === "cone" && !(config.area.angleDegrees > 0 && config.area.angleDegrees <= 360)) throw new Error(`Cone skill ${config.id} requires angleDegrees`);
     for (const value of [config.castDuration, config.publicCooldown, config.energyCost]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new Error(`Invalid cast value for ${config.id}`);
+    if (config.skillEnergyCost !== undefined && (!Number.isSafeInteger(config.skillEnergyCost) || config.skillEnergyCost < 0)) throw new Error(`Invalid skill-energy cost for ${config.id}`);
+    if (config.healthCost && (!Number.isFinite(config.healthCost.fraction) || config.healthCost.fraction <= 0 || config.healthCost.fraction > 1 || !["maximum", "current"].includes(config.healthCost.basis))) throw new Error(`Invalid health cost for ${config.id}`);
+    if (config.disabled !== undefined && typeof config.disabled !== "boolean") throw new Error(`Invalid disabled skill for ${config.id}`);
+    if ([config.conditions?.skillEnergyAtLeast, config.conditions?.skillEnergyAtMost].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 0)) ||
+        (config.conditions?.skillEnergyAtLeast ?? 0) > (config.conditions?.skillEnergyAtMost ?? Infinity)) throw new Error(`Invalid skill-energy condition for ${config.id}`);
     if (config.targetCount !== undefined && (!Number.isInteger(config.targetCount) || config.targetCount < 1)) throw new Error(`Invalid primary target count for ${config.id}`);
     let previous = -1;
     for (const trigger of config.onRelease ?? []) if (!trigger.skillId || !Number.isFinite(trigger.chance ?? 1) || (trigger.chance ?? 1) < 0 || (trigger.chance ?? 1) > 1) throw new Error(`Invalid skill trigger for ${config.id}`);
     for (const action of config.actions ?? []) {
-      if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
+      if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state", "skill_energy"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
       if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
       if (action.type === "remove_state" && (typeof action.stateId !== "string" || !action.stateId)) throw new Error(`Invalid state removal for ${config.id}`);
+      if (action.type === "skill_energy" && (!action.skillEnergy || ![action.skillEnergy.minimum, action.skillEnergy.maximum, action.skillEnergy.cap ?? 0].every((value) => Number.isSafeInteger(value) && value >= 0) ||
+          action.skillEnergy.minimum > action.skillEnergy.maximum)) throw new Error(`Invalid skill-energy gain for ${config.id}`);
       if (action.healFromDamage !== undefined && (action.type !== "damage" || !Number.isFinite(action.healFromDamage) || action.healFromDamage < 0)) throw new Error(`Invalid damage healing for ${config.id}`);
       if (action.healFromDamageRecipient !== undefined && !["self", "allies"].includes(action.healFromDamageRecipient)) throw new Error(`Invalid damage healing recipient for ${config.id}`);
       if (action.knockback && (action.type !== "damage" || ![action.knockback.distance, action.knockback.duration].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid knockback for ${config.id}`);
@@ -864,6 +873,8 @@ export class DemoSession {
           if (state.wander && (state.control !== "fear" || ![state.wander.speed, state.wander.turnInterval].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid fear motion for ${config.id}`);
         }
         const periodic = status.periodicDamage;
+        const energy = status.periodicSkillEnergy;
+        if (energy && (!Number.isFinite(energy.interval) || energy.interval <= 0 || ![energy.amount, energy.cap].every((value) => Number.isSafeInteger(value) && value > 0))) throw new Error(`Invalid periodic skill energy for ${config.id}`);
         if (periodic && (![periodic.interval, periodic.power, periodic.intervalPerStack ?? 0].every(Number.isFinite) || periodic.interval <= 0 || periodic.power < 0 ||
             periodic.interval + Math.min(0, periodic.intervalPerStack ?? 0) * (status.maxStacks ?? 1) <= 0)) throw new Error(`Invalid periodic damage for ${config.id}`);
       }

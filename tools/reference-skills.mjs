@@ -130,6 +130,12 @@ export function createReferenceSkillCompiler(lookup) {
         definition.states ||= []; definition.states.push(state);
       }
       else if (action[0] === "healAction") immediate.push({ type: "heal", power: Number(action[2] ?? action[1]) / 10000 });
+      else if (action[0] === "buffAddEnegyAction" && action[2] > 0 && action[3] >= action[2]) {
+        if (action[1] === -1) immediate.push({ type: "skill_energy", skillEnergy: { minimum: action[2], maximum: action[2], cap: action[3] } });
+        else if (action[1] > 0) definition.periodicSkillEnergy = { interval: action[1] / 1000, amount: action[2], cap: action[3] };
+        else { report(id, "buff_action", action); continue; }
+        report(id, "skill_energy_parity", { source: action, interpretation: "fixed gain with a ceiling; instant or periodic from the first operand; live timing and ceiling semantics require comparison" });
+      }
       else if (action[0] === "addTargetAction" && Number.isSafeInteger(action[2])) {
         definition.targetCountBonuses ||= {};
         definition.targetCountBonuses[String(action[1])] = action[2];
@@ -163,6 +169,7 @@ export function createReferenceSkillCompiler(lookup) {
     const row = lookup("Skill", id);
     if (!row || row.skillType === 3) return null;
     const tags = list(row.skillTagActions), conditions = {}, actions = [];
+    let unavailable = false;
     for (const condition of list(row.useCond)) {
       if (condition[0] === "inBattleCond") conditions.inCombat = true;
       else if (condition[0] === "hpRateCond") conditions.targetHpBelow = condition[1] / 10000;
@@ -170,6 +177,13 @@ export function createReferenceSkillCompiler(lookup) {
       else if (condition[0] === "fightingTimeCond" && condition[1] === ">") conditions.combatTimeAtLeast = condition[2] / 1000;
       else if (condition[0] === "castStateCond") conditions.requiredState = String(condition[2]);
       else if (condition[0] === "notControlCond") conditions.uncontrolled = true;
+      else if (condition[0] === "enegyCond") {
+        if (!Number.isSafeInteger(condition[2]) || condition[2] < 0) { report(id, "condition", condition); unavailable = true; continue; }
+        const amount = condition[2];
+        if ([">", ">=", "="].includes(condition[1])) conditions.skillEnergyAtLeast = Math.max(conditions.skillEnergyAtLeast || 0, amount + (condition[1] === ">" ? 1 : 0));
+        if (["<", "<=", "="].includes(condition[1])) conditions.skillEnergyAtMost = Math.min(conditions.skillEnergyAtMost ?? Infinity, amount - (condition[1] === "<" ? 1 : 0));
+        if (![">", ">=", "<", "<=", "="].includes(condition[1]) || conditions.skillEnergyAtMost < 0) { report(id, "condition", condition); unavailable = true; delete conditions.skillEnergyAtMost; }
+      }
       else report(id, "condition", condition);
     }
     const shape = row.selectShape ? skillTuple(row.selectShape) : null;
@@ -191,8 +205,22 @@ export function createReferenceSkillCompiler(lookup) {
       publicCooldown: (row.publicCd || 0) / 1000, publicCooldownGroup: row.publicCdGroup === null || row.publicCdGroup === undefined ? undefined : String(row.publicCdGroup),
       conditions, area, areaAnchor: area?.shape === "cone" ? "caster" : undefined, actions,
       forceCritical: tags.some((tag) => tag[0] === "criticalTag"), blockEnergyGain: tags.some((tag) => tag[0] === "blockUltraEnegyTag") };
-    const cost = tags.find((tag) => tag[0] === "castCostTag" && tag[1] === "ultraEnegy");
-    if (cost) definition.energyCost = cost[2];
+    for (const cost of tags.filter((tag) => tag[0] === "castCostTag")) {
+      if (cost.length % 2 !== 1) { report(id, "invalid_cost", cost); unavailable = true; continue; }
+      for (let index = 1; index < cost.length; index += 2) {
+        const resource = cost[index], amount = cost[index + 1];
+        if (!Number.isSafeInteger(amount) || amount < 0 || (resource === "hp" && amount > 10000)) { report(id, "invalid_cost", cost); unavailable = true; continue; }
+        if (amount === 0) continue;
+        if (resource === "ultraEnegy") definition.energyCost = (definition.energyCost || 0) + amount;
+        else if (resource === "enegy") definition.skillEnergyCost = (definition.skillEnergyCost || 0) + amount;
+        else if (resource === "hp") {
+          definition.healthCost = { fraction: (definition.healthCost?.fraction || 0) + amount / 10000, basis: "maximum" };
+          report(id, "health_cost_parity", "maximum-health basis, rounded down and clamped to leave one HP; basis, rounding and nonlethal behavior require live comparison");
+        } else { report(id, "unsupported_cost", { resource, amount }); unavailable = true; }
+      }
+    }
+    if (definition.healthCost?.fraction > 1) { report(id, "invalid_cost", definition.healthCost); delete definition.healthCost; unavailable = true; }
+    if (unavailable) definition.disabled = true;
     definition.linkedCooldowns = tags.filter((tag) => tag[0] === "castCdTag").map((tag) => ({ id: skillId(tag[2]), duration: (lookup("Skill", tag[2])?.cd || 0) / 1000 }));
     if (lockProjectile && row.projectEffect) { definition.projectileSpeed = lockProjectile[1]; definition.projectileLifetime = lockProjectile[2] / 1000; definition.projectileHoming = true; }
     if (directional && row.projectEffect && !lockProjectile) {
@@ -228,6 +256,9 @@ export function createReferenceSkillCompiler(lookup) {
           damageStep.healFromDamage = action[1] / 10000; damageStep.healFromDamageRecipient = "self";
         } else if (action[0] === "removeStateAction" && action[1] === 1 && action.length >= 3 && action.slice(2).every((id) => typeof id === "string")) {
           for (const stateId of action.slice(2)) actions.push({ at, type: "remove_state", stateId, recipient: "self" });
+        } else if (action[0] === "addSkillEnegyAction" && Number.isSafeInteger(action[1]) && Number.isSafeInteger(action[2]) && action[1] >= 0 && action[2] >= action[1]) {
+          actions.push({ at, type: "skill_energy", recipient: "self", skillEnergy: { minimum: action[1], maximum: action[2] } });
+          report(id, "skill_energy_parity", { source: action, interpretation: "inclusive random gain range; equal bounds give a fixed refill; requires live comparison" });
         }
         else if (action[0] === "addBuffAction") {
           const buff = status(action[1]);
@@ -291,7 +322,7 @@ export function createReferenceSkillCompiler(lookup) {
       } else if (action[0] === "skillCastSkillAction") {
         if (action[2] !== 1 || action[4] !== null) { report(hero.id, "triggered_skill_condition", action); continue; }
         const child = compile(action[5], fps);
-        if (!child || child.motion || child.energyCost) { report(hero.id, "triggered_skill_kind", action); continue; }
+        if (!child || child.motion || child.energyCost || child.skillEnergyCost || child.healthCost || child.disabled) { report(hero.id, "triggered_skill_kind", action); continue; }
         for (const parent of skills.filter((skill) => lookup("Skill", skill.sourceId).skillgroup === action[1])) {
           parent.onRelease ||= []; parent.onRelease.push({ skillId: child.id, chance: action[3] / 10000 });
         }
@@ -318,7 +349,7 @@ export function createReferenceSkillCompiler(lookup) {
         const entry = /^(\d+)_1$/.exec(String(action[4]));
         if (action[1] !== 10000 || action[2] !== null || action[3] !== 2 || !entry) { report(hero.id, "passive", action); continue; }
         const buff = status(Number(entry[1]));
-        if (!buff.definition.permanent || buff.definition.state || buff.definition.states?.length || buff.definition.periodicDamage || buff.definition.targetCountBonuses || buff.immediate.length) { report(hero.id, "passive", action); continue; }
+        if (!buff.definition.permanent || buff.definition.state || buff.definition.states?.length || buff.definition.periodicDamage || buff.definition.periodicSkillEnergy || buff.definition.targetCountBonuses || buff.immediate.length) { report(hero.id, "passive", action); continue; }
         for (const [key, value] of Object.entries(buff.definition.modifiers)) modifiers[key] = (modifiers[key] || 0) + value;
       } else if (action[0] === "hurtCalcBuffAction") {
         const settlement = /^4_(\d+)_(\d+)$/.exec(String(action[4]));

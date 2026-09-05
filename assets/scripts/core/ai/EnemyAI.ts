@@ -40,7 +40,7 @@ export class EnemyAI {
       if (selected && combat.use(enemy, selected, skill)) return;
     }
 
-    const attackRange = Math.min(enemy.stats.attackRange, ...skills.filter((skill) => skill.target === "enemy").map((skill) => skill.range));
+    const attackRange = Math.min(enemy.stats.attackRange, ...skills.filter((skill) => !skill.disabled && skill.target === "enemy").map((skill) => skill.range));
     if (enemy.position.distance(target.position) > attackRange) {
       enemy.setState("chasing");
       if (move) move(enemy, target.position, deltaSeconds);

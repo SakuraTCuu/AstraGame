@@ -699,6 +699,38 @@ try {
     return damage;
   });
   assert.equal(defense.cappedDamage, 1);
+  const costs = await evaluate(() => {
+    const boot = window.__referenceBoot, source = boot.session.roster.actor("reference_hero_10"); boot.enabled = false;
+    const target = new source.constructor({ id: "cost_probe", faction: "enemy", position: source.position.add({ x: 20, y: 0 }),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 0, aggroRange: 0 } });
+    const combat = new boot.session.world.combat.constructor(() => 0.5), skill = boot.session.world.options.skillDefinitions.reference_skill_10370201;
+    boot.costProbe = { source, target, combat, hp: source.health, energy: source.energy, charges: source.skillEnergy };
+    source.energy = 0;
+    const blocked = !combat.use(source, target, skill, [source, target]), unchanged = source.health === boot.costProbe.hp;
+    source.gainEnergy(source.stats.maxEnergy);
+    if (!combat.use(source, target, skill, [source, target])) throw new Error("Source compound cost failed to cast");
+    boot.renderer.update(boot.session.getSnapshot(), 0.1);
+    return { blockedWithoutEnergy: blocked, unchangedOnFailure: unchanged, healthSpent: boot.costProbe.hp - source.health,
+      expectedHealth: Math.min(Math.floor(source.stats.maxHealth * 0.2), boot.costProbe.hp - 1), energy: source.energy };
+  });
+  assert.equal(costs.blockedWithoutEnergy, true); assert.equal(costs.unchangedOnFailure, true);
+  assert.equal(costs.healthSpent, costs.expectedHealth); assert.equal(costs.energy, 0);
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-skill-cost`);
+  }
+  costs.charges = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.costProbe, definitions = boot.session.world.options.skillDefinitions;
+    combat.resetEngagement(); source.setState("idle"); source.skillEnergy = 0;
+    const blocked = !combat.canUse(source, definitions.reference_skill_10470501);
+    if (!combat.use(source, source, definitions.reference_skill_10470201, [source, target])) throw new Error("Source charge fill failed");
+    const filled = source.skillEnergy; combat.update(1.05, [source, target]);
+    if (!combat.use(source, target, definitions.reference_skill_10470501, [source, target])) throw new Error("Source charged skill failed");
+    const remaining = source.skillEnergy;
+    combat.cancelCaster(source.id); combat.resetEngagement(); source.health = boot.costProbe.hp; source.energy = boot.costProbe.energy; source.skillEnergy = boot.costProbe.charges;
+    delete boot.costProbe; boot.enabled = true; boot.renderer.update(boot.session.getSnapshot(), 0.1);
+    return { blocked, filled, remaining };
+  });
+  assert.deepEqual(costs.charges, { blocked: true, filled: 1, remaining: 0 });
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -729,7 +761,7 @@ try {
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
     periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
-    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, resetCounts, viewports, errors, failures };
+    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {
