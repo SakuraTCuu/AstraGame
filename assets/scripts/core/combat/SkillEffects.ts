@@ -1,6 +1,29 @@
 export type DamageType = "physical" | "magic" | "soul" | "holy" | "punishment" | "skill";
 export type ControlKind = "stun" | "freeze" | "root" | "silence" | "airborne" | "fear";
 
+export interface SkillArea {
+  readonly shape: "circle" | "cone" | "line";
+  readonly radius: number;
+  readonly angleDegrees?: number;
+  readonly width?: number;
+}
+
+export interface AreaEffectDefinition {
+  readonly duration: number;
+  readonly interval: number;
+  readonly geometry: SkillArea;
+  readonly effects: readonly SkillAction[];
+  readonly target?: "enemy" | "ally";
+  readonly followCaster?: boolean;
+  readonly turnSpeedDegrees?: number;
+  readonly hitsPerTarget?: number;
+  readonly effectKey?: string;
+  readonly maxTargets?: number;
+  readonly pvpMaxTargets?: number;
+  readonly maxTicks?: number;
+  readonly phases?: readonly { readonly throughTick: number; readonly effects: readonly SkillAction[] }[];
+}
+
 export interface StatusState {
   readonly id: string;
   readonly duration: number;
@@ -23,6 +46,7 @@ export interface StatModifiers {
   readonly attackSpeedRate?: number;
   readonly normalAttackSpeedRate?: number;
   readonly movementBonus?: number;
+  readonly movementSpeedRate?: number;
   readonly damageBonus?: number;
   readonly finalDamageBonus?: number;
   readonly damageReduction?: number;
@@ -78,7 +102,7 @@ export interface SkillTrigger { readonly skillId: string; readonly chance?: numb
 
 export interface SkillAction {
   readonly at: number;
-  readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state" | "skill_energy";
+  readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state" | "skill_energy" | "area";
   readonly power?: number;
   readonly damageType?: DamageType;
   readonly forceCritical?: boolean;
@@ -88,6 +112,8 @@ export interface SkillAction {
   readonly status?: StatusDefinition;
   readonly stateId?: string;
   readonly skillEnergy?: { readonly minimum: number; readonly maximum: number; readonly cap?: number };
+  readonly areaEffect?: AreaEffectDefinition;
+  readonly powerPerStack?: { readonly group: string; readonly amount: number };
   readonly randomStatuses?: readonly StatusDefinition[];
   readonly healFromDamage?: number;
   readonly healFromDamageRecipient?: "self" | "allies";

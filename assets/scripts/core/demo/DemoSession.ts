@@ -1,7 +1,7 @@
 import { Actor, applyMaxHealthModifier } from "../actor/Actor";
 import type { ActorOptions, ActorStats, Faction } from "../actor/Actor";
 import type { BossPhase } from "../ai/BossAI";
-import type { CastSnapshot, CombatEvent, ProjectileSnapshot, SkillArea, SkillDefinition } from "../combat/Combat";
+import type { AreaEffectSnapshot, CastSnapshot, CombatEvent, ProjectileSnapshot, SkillArea, SkillDefinition } from "../combat/Combat";
 import type { StatModifiers, StatusDefinition } from "../combat/SkillEffects";
 import { FogGrid } from "../fog/FogGrid";
 import type { FogCellState } from "../fog/FogGrid";
@@ -212,6 +212,7 @@ export interface DemoSnapshot {
     readonly coneAngleDegrees: number;
   };
   readonly projectiles: readonly ProjectileSnapshot[];
+  readonly areas: readonly AreaEffectSnapshot[];
   readonly casts: readonly CastSnapshot[];
   readonly effects: ReadonlyArray<{ readonly type: string; readonly sourceId: string; readonly targetId: string; readonly value?: number }>;
   readonly events: readonly CombatEvent[];
@@ -333,7 +334,7 @@ export class DemoSession {
       for (const id of actor.skillIds ?? []) if (!skillDefinitions[id]) throw new Error(`Actor ${actor.id} references missing skill ${id}`);
     }
     for (const skill of Object.values(skillDefinitions)) for (const trigger of skill.onRelease ?? []) {
-      if (!skillDefinitions[trigger.skillId] || skillDefinitions[trigger.skillId].motion) throw new Error(`Invalid triggered skill reference ${trigger.skillId}`);
+      if (!skillDefinitions[trigger.skillId] || skillDefinitions[trigger.skillId].motion || skillDefinitions[trigger.skillId].channelMove) throw new Error(`Invalid triggered skill reference ${trigger.skillId}`);
     }
     this.world = new GameWorld({
       combatMode: config.world.combatMode,
@@ -748,6 +749,7 @@ export class DemoSession {
         coneAngleDegrees: this.config.flashlight?.outerAngleDeg ?? 70,
       },
       projectiles: this.world.combat.projectileSnapshots(),
+      areas: this.world.combat.areaSnapshots(),
       casts: this.world.combat.castSnapshots(),
       effects: this.frameEvents.map((event) => ({ type: event.type, sourceId: event.sourceId, targetId: event.targetId, value: event.value })),
       events: [...this.frameEvents],
@@ -828,9 +830,26 @@ export class DemoSession {
         (config.directionalProjectile.repeatInterval !== undefined && (!Number.isFinite(config.directionalProjectile.repeatInterval) || config.directionalProjectile.repeatInterval <= 0)))) throw new Error(`Invalid directional projectile for ${config.id}`);
     if (config.type === "shield" && !(config.duration > 0)) throw new Error(`Shield ${config.id} requires a duration`);
     if (config.type === "summon" && !this.enemyTemplates.has(config.summonEnemyId)) throw new Error(`Summon ${config.id} references a missing template`);
-    if (config.area && (!Number.isFinite(config.area.radius) || config.area.radius <= 0 || !["circle", "cone", "line"].includes(config.area.shape))) throw new Error(`Invalid skill area ${config.id}`);
-    if (config.area?.shape === "line" && !(config.area.width > 0)) throw new Error(`Line skill ${config.id} requires width`);
-    if (config.area?.shape === "cone" && !(config.area.angleDegrees > 0 && config.area.angleDegrees <= 360)) throw new Error(`Cone skill ${config.id} requires angleDegrees`);
+    const areas = (config.actions ?? []).filter((action) => action.type === "area").map((action) => action.areaEffect!);
+    for (const area of areas) {
+      if (!area || !Number.isFinite(area.duration) || area.duration <= 0 || !Number.isFinite(area.interval) || area.interval <= 0 || !area.geometry || !area.effects?.length ||
+          area.effects.some((action) => action.type === "area") || (area.hitsPerTarget !== undefined && (!Number.isSafeInteger(area.hitsPerTarget) || area.hitsPerTarget < 1)) ||
+          (area.turnSpeedDegrees !== undefined && (!Number.isFinite(area.turnSpeedDegrees) || area.turnSpeedDegrees < 0)) ||
+          (area.target !== undefined && !["enemy", "ally"].includes(area.target))) throw new Error(`Invalid persistent area for ${config.id}`);
+      if ([area.maxTargets, area.pvpMaxTargets, area.maxTicks].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 1))) throw new Error(`Invalid persistent area limits for ${config.id}`);
+      let previousPhase = 0;
+      for (const phase of area.phases ?? []) {
+        if (!Number.isSafeInteger(phase.throughTick) || phase.throughTick <= previousPhase || !phase.effects.length || phase.effects.some((effect) => effect.type === "area")) throw new Error(`Invalid persistent area phase for ${config.id}`);
+        previousPhase = phase.throughTick;
+      }
+    }
+    for (const area of [config.area, ...areas.map((area) => area.geometry)]) {
+      if (area && (!Number.isFinite(area.radius) || area.radius <= 0 || !["circle", "cone", "line"].includes(area.shape))) throw new Error(`Invalid skill area ${config.id}`);
+      if (area?.shape === "line" && !(area.width > 0)) throw new Error(`Line skill ${config.id} requires width`);
+      if (area?.shape === "cone" && !(area.angleDegrees > 0 && area.angleDegrees <= 360)) throw new Error(`Cone skill ${config.id} requires angleDegrees`);
+    }
+    if (config.trackTargetFor !== undefined && (!Number.isFinite(config.trackTargetFor) || config.trackTargetFor < 0)) throw new Error(`Invalid aim tracking for ${config.id}`);
+    if (config.channelMove && (config.motion || !Number.isFinite(config.channelMove.speed) || config.channelMove.speed <= 0 || !Number.isFinite(config.channelMove.start) || config.channelMove.start < 0)) throw new Error(`Invalid channel movement for ${config.id}`);
     for (const value of [config.castDuration, config.publicCooldown, config.energyCost]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new Error(`Invalid cast value for ${config.id}`);
     if (config.skillEnergyCost !== undefined && (!Number.isSafeInteger(config.skillEnergyCost) || config.skillEnergyCost < 0)) throw new Error(`Invalid skill-energy cost for ${config.id}`);
     if (config.healthCost && (!Number.isFinite(config.healthCost.fraction) || config.healthCost.fraction <= 0 || config.healthCost.fraction > 1 || !["maximum", "current"].includes(config.healthCost.basis))) throw new Error(`Invalid health cost for ${config.id}`);
@@ -838,45 +857,50 @@ export class DemoSession {
     if ([config.conditions?.skillEnergyAtLeast, config.conditions?.skillEnergyAtMost].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 0)) ||
         (config.conditions?.skillEnergyAtLeast ?? 0) > (config.conditions?.skillEnergyAtMost ?? Infinity)) throw new Error(`Invalid skill-energy condition for ${config.id}`);
     if (config.targetCount !== undefined && (!Number.isInteger(config.targetCount) || config.targetCount < 1)) throw new Error(`Invalid primary target count for ${config.id}`);
-    let previous = -1;
     for (const trigger of config.onRelease ?? []) if (!trigger.skillId || !Number.isFinite(trigger.chance ?? 1) || (trigger.chance ?? 1) < 0 || (trigger.chance ?? 1) > 1) throw new Error(`Invalid skill trigger for ${config.id}`);
-    for (const action of config.actions ?? []) {
-      if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state", "skill_energy"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
-      if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
-      if (action.type === "remove_state" && (typeof action.stateId !== "string" || !action.stateId)) throw new Error(`Invalid state removal for ${config.id}`);
-      if (action.type === "skill_energy" && (!action.skillEnergy || ![action.skillEnergy.minimum, action.skillEnergy.maximum, action.skillEnergy.cap ?? 0].every((value) => Number.isSafeInteger(value) && value >= 0) ||
-          action.skillEnergy.minimum > action.skillEnergy.maximum)) throw new Error(`Invalid skill-energy gain for ${config.id}`);
-      if (action.healFromDamage !== undefined && (action.type !== "damage" || !Number.isFinite(action.healFromDamage) || action.healFromDamage < 0)) throw new Error(`Invalid damage healing for ${config.id}`);
-      if (action.healFromDamageRecipient !== undefined && !["self", "allies"].includes(action.healFromDamageRecipient)) throw new Error(`Invalid damage healing recipient for ${config.id}`);
-      if (action.knockback && (action.type !== "damage" || ![action.knockback.distance, action.knockback.duration].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid knockback for ${config.id}`);
-      if (action.settleStatus && (!action.settleStatus.group || !Number.isFinite(action.settleStatus.seconds) || action.settleStatus.seconds <= 0)) throw new Error(`Invalid periodic settlement for ${config.id}`);
-      previous = action.at;
-      if (action.cleanse && (!Number.isSafeInteger(action.cleanse.count) || action.cleanse.count < 1)) throw new Error(`Invalid cleanse for ${config.id}`);
-      const bonusStatuses: StatusDefinition[] = [];
-      for (const bonus of action.healingBonuses ?? []) {
-        if (!Number.isFinite(bonus.powerBonus ?? 0) || !Number.isFinite(bonus.chance ?? 1) || (bonus.chance ?? 1) < 0 || (bonus.chance ?? 1) > 1) throw new Error(`Invalid healing bonus for ${config.id}`);
-        for (const entry of bonus.statuses ?? []) { if (!Number.isSafeInteger(entry.weight) || entry.weight <= 0) throw new Error(`Invalid healing bonus weight for ${config.id}`); bonusStatuses.push(entry.status); }
-      }
-      for (const status of [...(action.randomStatuses ?? []), ...(action.status ? [action.status] : []), ...bonusStatuses]) {
-        if (!status.id || !Number.isFinite(status.duration) || (!status.permanent && status.duration <= 0) || Object.values(status.modifiers ?? {}).some((value) => !Number.isFinite(value))) throw new Error(`Invalid status for ${config.id}`);
-        if (!Number.isSafeInteger(status.maxStacks ?? 1) || (status.maxStacks ?? 1) < 1) throw new Error(`Invalid status stack limit for ${config.id}`);
-        if (Object.entries(status.targetCountBonuses ?? {}).some(([id, count]) => !id || !Number.isSafeInteger(count))) throw new Error(`Invalid target count bonus for ${config.id}`);
-        const controls = ["stun", "freeze", "root", "silence", "airborne", "fear"];
-        if (status.blockedByStates?.some((state) => !state || typeof state !== "string")) throw new Error(`Invalid state exclusion for ${config.id}`);
-        for (const state of status.states ?? []) {
-          if (!state.id || !Number.isFinite(state.duration) || (state.duration <= 0 && state.duration !== -1) || (state.control && !controls.includes(state.control)) ||
-              state.controlImmunity?.some((kind) => !controls.includes(kind))) throw new Error(`Invalid status state for ${config.id}`);
-          if ([state.invulnerable, state.preventDeath, state.untargetable, state.healingBlocked].some((value) => value !== undefined && typeof value !== "boolean") ||
-              (state.damageCap !== undefined && (!Number.isSafeInteger(state.damageCap) || state.damageCap < 0))) throw new Error(`Invalid defensive state for ${config.id}`);
-          if (state.lift && (state.control !== "airborne" || ![state.lift.height, state.lift.rise, state.lift.fall].every((value) => Number.isFinite(value) && value > 0) ||
-              state.duration < state.lift.rise + state.lift.fall - 1e-9)) throw new Error(`Invalid airborne motion for ${config.id}`);
-          if (state.wander && (state.control !== "fear" || ![state.wander.speed, state.wander.turnInterval].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid fear motion for ${config.id}`);
+    const timelines = [config.actions ?? [], ...areas.map((area) => area.effects)];
+    for (const area of areas) for (const phase of area.phases ?? []) timelines.push(phase.effects);
+    for (const timeline of timelines) {
+      let previous = -1;
+      for (const action of timeline) {
+        if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state", "skill_energy", "area"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
+        if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
+        if (action.type === "remove_state" && (typeof action.stateId !== "string" || !action.stateId)) throw new Error(`Invalid state removal for ${config.id}`);
+        if (action.type === "skill_energy" && (!action.skillEnergy || ![action.skillEnergy.minimum, action.skillEnergy.maximum, action.skillEnergy.cap ?? 0].every((value) => Number.isSafeInteger(value) && value >= 0) ||
+            action.skillEnergy.minimum > action.skillEnergy.maximum)) throw new Error(`Invalid skill-energy gain for ${config.id}`);
+        if (action.healFromDamage !== undefined && (action.type !== "damage" || !Number.isFinite(action.healFromDamage) || action.healFromDamage < 0)) throw new Error(`Invalid damage healing for ${config.id}`);
+        if (action.healFromDamageRecipient !== undefined && !["self", "allies"].includes(action.healFromDamageRecipient)) throw new Error(`Invalid damage healing recipient for ${config.id}`);
+        if (action.knockback && (action.type !== "damage" || ![action.knockback.distance, action.knockback.duration].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid knockback for ${config.id}`);
+        if (action.settleStatus && (!action.settleStatus.group || !Number.isFinite(action.settleStatus.seconds) || action.settleStatus.seconds <= 0)) throw new Error(`Invalid periodic settlement for ${config.id}`);
+        if (action.powerPerStack && (!action.powerPerStack.group || !Number.isFinite(action.powerPerStack.amount))) throw new Error(`Invalid stacked damage for ${config.id}`);
+        previous = action.at;
+        if (action.cleanse && (!Number.isSafeInteger(action.cleanse.count) || action.cleanse.count < 1)) throw new Error(`Invalid cleanse for ${config.id}`);
+        const bonusStatuses: StatusDefinition[] = [];
+        for (const bonus of action.healingBonuses ?? []) {
+          if (!Number.isFinite(bonus.powerBonus ?? 0) || !Number.isFinite(bonus.chance ?? 1) || (bonus.chance ?? 1) < 0 || (bonus.chance ?? 1) > 1) throw new Error(`Invalid healing bonus for ${config.id}`);
+          for (const entry of bonus.statuses ?? []) { if (!Number.isSafeInteger(entry.weight) || entry.weight <= 0) throw new Error(`Invalid healing bonus weight for ${config.id}`); bonusStatuses.push(entry.status); }
         }
-        const periodic = status.periodicDamage;
-        const energy = status.periodicSkillEnergy;
-        if (energy && (!Number.isFinite(energy.interval) || energy.interval <= 0 || ![energy.amount, energy.cap].every((value) => Number.isSafeInteger(value) && value > 0))) throw new Error(`Invalid periodic skill energy for ${config.id}`);
-        if (periodic && (![periodic.interval, periodic.power, periodic.intervalPerStack ?? 0].every(Number.isFinite) || periodic.interval <= 0 || periodic.power < 0 ||
-            periodic.interval + Math.min(0, periodic.intervalPerStack ?? 0) * (status.maxStacks ?? 1) <= 0)) throw new Error(`Invalid periodic damage for ${config.id}`);
+        for (const status of [...(action.randomStatuses ?? []), ...(action.status ? [action.status] : []), ...bonusStatuses]) {
+          if (!status.id || !Number.isFinite(status.duration) || (!status.permanent && status.duration <= 0) || Object.values(status.modifiers ?? {}).some((value) => !Number.isFinite(value))) throw new Error(`Invalid status for ${config.id}`);
+          if (!Number.isSafeInteger(status.maxStacks ?? 1) || (status.maxStacks ?? 1) < 1) throw new Error(`Invalid status stack limit for ${config.id}`);
+          if (Object.entries(status.targetCountBonuses ?? {}).some(([id, count]) => !id || !Number.isSafeInteger(count))) throw new Error(`Invalid target count bonus for ${config.id}`);
+          const controls = ["stun", "freeze", "root", "silence", "airborne", "fear"];
+          if (status.blockedByStates?.some((state) => !state || typeof state !== "string")) throw new Error(`Invalid state exclusion for ${config.id}`);
+          for (const state of status.states ?? []) {
+            if (!state.id || !Number.isFinite(state.duration) || (state.duration <= 0 && state.duration !== -1) || (state.control && !controls.includes(state.control)) ||
+                state.controlImmunity?.some((kind) => !controls.includes(kind))) throw new Error(`Invalid status state for ${config.id}`);
+            if ([state.invulnerable, state.preventDeath, state.untargetable, state.healingBlocked].some((value) => value !== undefined && typeof value !== "boolean") ||
+                (state.damageCap !== undefined && (!Number.isSafeInteger(state.damageCap) || state.damageCap < 0))) throw new Error(`Invalid defensive state for ${config.id}`);
+            if (state.lift && (state.control !== "airborne" || ![state.lift.height, state.lift.rise, state.lift.fall].every((value) => Number.isFinite(value) && value > 0) ||
+                state.duration < state.lift.rise + state.lift.fall - 1e-9)) throw new Error(`Invalid airborne motion for ${config.id}`);
+            if (state.wander && (state.control !== "fear" || ![state.wander.speed, state.wander.turnInterval].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid fear motion for ${config.id}`);
+          }
+          const periodic = status.periodicDamage;
+          const energy = status.periodicSkillEnergy;
+          if (energy && (!Number.isFinite(energy.interval) || energy.interval <= 0 || ![energy.amount, energy.cap].every((value) => Number.isSafeInteger(value) && value > 0))) throw new Error(`Invalid periodic skill energy for ${config.id}`);
+          if (periodic && (![periodic.interval, periodic.power, periodic.intervalPerStack ?? 0].every(Number.isFinite) || periodic.interval <= 0 || periodic.power < 0 ||
+              periodic.interval + Math.min(0, periodic.intervalPerStack ?? 0) * (status.maxStacks ?? 1) <= 0)) throw new Error(`Invalid periodic damage for ${config.id}`);
+        }
       }
     }
     if (config.motion && (!(config.motion.duration > 0) || !["charge", "jump"].includes(config.motion.kind))) throw new Error(`Invalid skill motion for ${config.id}`);

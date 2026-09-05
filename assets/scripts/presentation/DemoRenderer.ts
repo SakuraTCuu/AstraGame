@@ -338,6 +338,7 @@ export class DemoRenderer {
             this.drawObstacles(g);
         }
         this.drawPathMarker(g);
+        this.drawActiveAreas(g, snapshot);
         this.drawCastAreas(g, snapshot);
         this.drawActors(g, snapshot);
         this.drawProjectiles(g, snapshot);
@@ -740,6 +741,31 @@ export class DemoRenderer {
             g.circle(point.x, point.y + 14, 6);
             g.fill();
         });
+    }
+
+    private drawActiveAreas(g: cc.Graphics, snapshot: DemoSnapshot): void {
+        for (const area of snapshot.areas || []) {
+            if (this.referenceArt?.hasArea(area.id)) continue;
+            const point = this.project(area), shape = area.geometry;
+            if (!this.isVisible(point, shape.radius * this.worldScale)) continue;
+            const friendly = snapshot.actors.find((actor) => actor.id === area.sourceId)?.team === "player";
+            g.fillColor = friendly ? cc.color(78, 183, 156, 55) : cc.color(205, 64, 101, 65);
+            g.strokeColor = friendly ? cc.color(105, 223, 183, 160) : cc.color(242, 113, 112, 180); g.lineWidth = 2;
+            if (shape.shape === "circle") g.ellipse(point.x, point.y, shape.radius * this.worldScale, shape.radius * this.worldScale * this.depthScale);
+            else {
+                const angle = Math.atan2(area.directionY, area.directionX), points: Array<{ x: number; y: number }> = [];
+                if (shape.shape === "line") {
+                    for (const [along, side] of [[0, -shape.width / 2], [shape.radius, -shape.width / 2], [shape.radius, shape.width / 2], [0, shape.width / 2]]) {
+                        points.push({ x: area.x + Math.cos(angle) * along - Math.sin(angle) * side, y: area.y + Math.sin(angle) * along + Math.cos(angle) * side });
+                    }
+                } else {
+                    points.push(area); const half = (shape.angleDegrees || 90) * Math.PI / 360;
+                    for (let index = 0; index <= 24; index++) { const current = angle - half + 2 * half * index / 24; points.push({ x: area.x + Math.cos(current) * shape.radius, y: area.y + Math.sin(current) * shape.radius }); }
+                }
+                points.forEach((entry, index) => { const point = this.project(entry); if (index === 0) g.moveTo(point.x, point.y); else g.lineTo(point.x, point.y); }); g.close();
+            }
+            g.fill(); g.stroke();
+        }
     }
 
     private drawResultAndControls(snapshot: DemoSnapshot): void {

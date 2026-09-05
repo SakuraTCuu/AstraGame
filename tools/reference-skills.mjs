@@ -36,7 +36,7 @@ export function skillFrames(source) {
 }
 
 const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", normalAtkSpeedRate: "normalAttackSpeedRate",
-  movespeed: "movementBonus", damageBonus: "damageBonus", finalDmgBonus: "finalDamageBonus", damageReduction: "damageReduction",
+  movespeed: "movementBonus", movespeedRate: "movementSpeedRate", damageBonus: "damageBonus", finalDmgBonus: "finalDamageBonus", damageReduction: "damageReduction",
   finalDmgReduction: "finalDamageReduction", ultraDmgBonus: "physicalBonus", magicDmgBonus: "magicBonus",
   ultraDmgReduction: "physicalReduction", magicDmgReduction: "magicReduction", skillCriticalRate: "criticalChance", healReduction: "healReduction",
   dotDmgBonus: "dotDamageBonus", dotDmgReduction: "dotDamageReduction", normalDmgBonus: "soulBonus", normalDmgReduction: "soulReduction",
@@ -236,43 +236,91 @@ export function createReferenceSkillCompiler(lookup) {
       catch { report(id, "projectile_effect", row.projectEffect); }
     }
     const frames = skillFrames(row.projectKey || row.frameKey);
+    const tracking = tags.find((tag) => tag[0] === "warnFollowBreakTag");
+    if (tracking && Number.isFinite(tracking[1]) && tracking[1] >= 0) definition.trackTargetFor = tracking[1] / 1000;
     const motion = frames.flatMap((frame) => frame.actions).find((action) => action[0] === "chargeAction" || action[0] === "jumpAction");
     if (motion) {
       definition.motion = motion[0] === "chargeAction" ? { kind: "charge", distance: motion[1], duration: motion[1] / motion[2] } : { kind: "jump", duration: motion[2] / 1000, height: 160 };
       definition.areaAnchor = undefined;
     }
-    for (const frame of frames) {
-      const at = definition.projectileSpeed ? Math.max(0, frame.frame / fps) : motion ? windup + definition.motion.duration + frame.frame / fps : Math.max(windup, frame.frame / fps);
-      let damageStep;
-      for (const action of frame.actions) {
-        if (action[0] === "damageAction" || action[0] === "healAction") {
+    const channelMove = row.isMove ? skillTuple(row.isMove) : null;
+    if (!motion && channelMove?.[0] === 1 && channelMove[1] > 0 && channelMove[2] >= 0) {
+      definition.channelMove = { speed: channelMove[1], start: channelMove[2] / 1000 };
+      report(id, "channel_movement_parity", { source: channelMove, interpretation: "forward movement beginning at the configured offset; additional operands and exact steering require live comparison" });
+    }
+    const appendFrames = (frames, actions, insideArea = false) => {
+      for (const frame of frames) {
+        const at = insideArea || definition.projectileSpeed ? Math.max(0, frame.frame / fps) : motion ? windup + definition.motion.duration + frame.frame / fps : Math.max(windup, frame.frame / fps);
+        let damageStep;
+        for (const action of frame.actions) {
+          if (action[0] === "damageAction" || action[0] === "healAction") {
           const step = { at, type: action[0] === "damageAction" ? "damage" : "heal", power: action[1] / 10000,
             damageType: damageType(frame.damageType, id), forceCritical: definition.forceCritical };
-          actions.push(step); if (step.type === "damage") damageStep = step;
-        } else if (action[0] === "repelAction" && damageStep && action.length === 3 && action[1] > 0 && action[2] > 0) {
-          damageStep.knockback = { duration: action[1] / 1000, distance: action[2] };
-          report(id, "knockback_parity", { durationMilliseconds: action[1], distance: action[2], interpretation: "linear displacement; timing, immunity and interruption require live comparison" });
-        } else if (action[0] === "healByDmgAction" && damageStep && action.length === 2 && action[1] >= 0) {
-          damageStep.healFromDamage = action[1] / 10000; damageStep.healFromDamageRecipient = "self";
-        } else if (action[0] === "removeStateAction" && action[1] === 1 && action.length >= 3 && action.slice(2).every((id) => typeof id === "string")) {
-          for (const stateId of action.slice(2)) actions.push({ at, type: "remove_state", stateId, recipient: "self" });
-        } else if (action[0] === "addSkillEnegyAction" && Number.isSafeInteger(action[1]) && Number.isSafeInteger(action[2]) && action[1] >= 0 && action[2] >= action[1]) {
-          actions.push({ at, type: "skill_energy", recipient: "self", skillEnergy: { minimum: action[1], maximum: action[2] } });
-          report(id, "skill_energy_parity", { source: action, interpretation: "inclusive random gain range; equal bounds give a fixed refill; requires live comparison" });
-        }
+          if (insideArea && Number.isSafeInteger(action[2]) && action[2] > 0) step.targetCount = action[2];
+            actions.push(step); if (step.type === "damage") damageStep = step;
+          } else if (action[0] === "damageByBuffAction" && Number.isFinite(action[1]) && Number.isFinite(action[3])) {
+            damageStep = { at, type: "damage", power: action[1] / 10000, damageType: damageType(frame.damageType, id), powerPerStack: { group: String(action[2]), amount: action[3] / 10000 } };
+            actions.push(damageStep); report(id, "stacked_damage_parity", "base power plus per-stack power from the victim's current Buff count; requires live comparison");
+        } else if (action[0] === "sceneSpriteAction" && !insideArea && action[1] > 0 && action[2] > 0 && row.sceneSpriteActions) {
+          const unsupportedLayout = tags.filter((tag) => ["warnRandomLineTag", "warnRandomDirTag", "warnRandomBoxPosTag", "sceneSpriteSearchTag"].includes(tag[0]));
+          if (unsupportedLayout.length) { report(id, "area_layout", unsupportedLayout); continue; }
+            const geometry = action[3] === "circle" ? { shape: "circle", radius: action[4] } : action[3] === "box" ?
+              { shape: "line", width: action[4], radius: action[5] } : action[3] === "sector" ? { shape: "cone", radius: action[4], angleDegrees: action[5] } : null;
+            if (!geometry) { report(id, "area_shape", action); continue; }
+            const effects = []; appendFrames(skillFrames(row.sceneSpriteActions), effects, true);
+            if (!effects.length) { report(id, "area_actions", row.sceneSpriteActions); continue; }
+            const effectIndex = action[3] === "circle" ? 5 : 6, effectId = action[effectIndex];
+          const turn = tags.find((tag) => tag[0] === "sceneSpriteFaceTargetTag"), limit = tags.find((tag) => tag[0] === "sceneSpriteDmgTimesTag");
+            const followCaster = action[effectIndex + 2] === 1 || tags.some((tag) => tag[0] === "sceneSpriteFaceDirTag");
+          const areaEffect = { duration: action[1] / 1000, interval: action[2] / 1000, geometry, effects, followCaster,
+              target: target === "self" ? effects.some((effect) => effect.type === "damage") ? "enemy" : "ally" : target === "enemy" ? "enemy" : "ally",
+            turnSpeedDegrees: turn?.[1], hitsPerTarget: limit?.[1], effectKey: effectId > 0 ? `reference_effect_${effectId}` : undefined };
+          const targetLimit = tags.find((tag) => tag[0] === "sceneSpriteTargetNumTag");
+          if (targetLimit) { const values = String(targetLimit[1]).split("_").map(Number); if (values[0] === 1) { areaEffect.pvpMaxTargets = values[1]; areaEffect.maxTargets = values[2]; } else report(id, "area_target_limit", targetLimit); }
+          const tickLimit = tags.find((tag) => tag[0] === "sceneSpriteTriggerLimitTag");
+          if (tickLimit) areaEffect.maxTicks = tickLimit[1];
+          const replacements = tags.find((tag) => tag[0] === "sceneSpriteReplaceBuffByNumTag");
+          if (replacements) {
+            areaEffect.phases = [];
+            for (let index = 1; index + 1 < replacements.length; index += 2) {
+              const replacementFrames = skillFrames(row.sceneSpriteActions).map((frame) => ({ ...frame, actions: frame.actions.map((action) => action[0] === "addBuffAction" ? [action[0], replacements[index + 1], ...action.slice(2)] : action) }));
+              const phaseEffects = []; appendFrames(replacementFrames, phaseEffects, true);
+              areaEffect.phases.push({ throughTick: replacements[index], effects: phaseEffects });
+            }
+          }
+            actions.push({ at, type: "area", areaEffect });
+            if (effectId > 0) { definition.areaEffectIds ||= []; definition.areaEffectIds.push(effectId); }
+            report(id, "persistent_area_parity", { source: action, interpretation: "periodic contacts with an independent lifetime; follow/turn, first tick, extra effects and damage limits require live comparison" });
+            for (const tag of tags.filter((tag) => ["sceneSpriteRangeAttrTag", "sceneSpriteTriggerPassiveTag"].includes(tag[0]))) report(id, "area_option", tag);
+          } else if (action[0] === "repelAction" && damageStep && action.length === 3 && action[1] > 0 && action[2] > 0) {
+            damageStep.knockback = { duration: action[1] / 1000, distance: action[2] };
+            report(id, "knockback_parity", { durationMilliseconds: action[1], distance: action[2], interpretation: "linear displacement; timing, immunity and interruption require live comparison" });
+          } else if (action[0] === "healByDmgAction" && damageStep && action.length === 2 && action[1] >= 0) {
+            damageStep.healFromDamage = action[1] / 10000; damageStep.healFromDamageRecipient = "self";
+          } else if (action[0] === "removeStateAction" && action[1] === 1 && action.length >= 3 && action.slice(2).every((id) => typeof id === "string")) {
+            for (const stateId of action.slice(2)) actions.push({ at, type: "remove_state", stateId, recipient: "self" });
+          } else if (action[0] === "addSkillEnegyAction" && Number.isSafeInteger(action[1]) && Number.isSafeInteger(action[2]) && action[1] >= 0 && action[2] >= action[1]) {
+            actions.push({ at, type: "skill_energy", recipient: "self", skillEnergy: { minimum: action[1], maximum: action[2] } });
+            report(id, "skill_energy_parity", { source: action, interpretation: "inclusive random gain range; equal bounds give a fixed refill; requires live comparison" });
+          }
         else if (action[0] === "addBuffAction") {
           const buff = status(action[1]);
           const recipient = action[2] === 1 ? "self" : action[2] === 2 ? "allies" : "targets";
-          actions.push(...buff.immediate.map((effect) => ({ ...effect, at, recipient, targetCount: action[3] || 1 })));
-          actions.push({ at, type: "status", status: buff.definition, recipient, targetCount: action[3] || 1 });
-        } else if (!['bubbleAction', 'chargeAction', 'jumpAction'].includes(action[0])) report(id, "action", action);
+          const targetCount = action[3] > 0 ? action[3] : recipient === "targets" ? undefined : 1;
+          actions.push(...buff.immediate.map((effect) => ({ ...effect, at, recipient, targetCount })));
+          actions.push({ at, type: "status", status: buff.definition, recipient, targetCount });
+          if (insideArea && action.length > 4) report(id, "area_buff_options", action);
+          } else if (!['bubbleAction', 'chargeAction', 'jumpAction'].includes(action[0])) report(id, "action", action);
+        }
       }
-    }
+    };
+    appendFrames(frames, actions);
     const presentations = row.presentationIds ? skillTuple(row.presentationIds) : [];
     definition.presentation = { release: presentations[presentations.length - 1] || "attack",
       prepare: presentations.length > 2 ? presentations[1] : undefined, hold: presentations.length > 3 ? presentations[2] : undefined };
-    definition.type = actions.some((action) => action.type === "damage") ? "damage" : actions.some((action) => action.type === "heal") ? "heal" : "buff";
-    definition.coefficient = actions.find((action) => action.power !== undefined)?.power || 0;
+    const effectiveActions = actions.flatMap((action) => action.areaEffect?.effects || [action]);
+    definition.type = effectiveActions.some((action) => action.type === "damage") ? "damage" : effectiveActions.some((action) => action.type === "heal") ? "heal" : "buff";
+    definition.coefficient = effectiveActions.find((action) => action.power !== undefined)?.power || 0;
     if (row.damageLimit) report(id, "damage_limit", row.damageLimit);
     if (!actions.length) report(id, "no_direct_actions", row.name || id);
     actions.sort((a, b) => a.at - b.at);
@@ -322,7 +370,7 @@ export function createReferenceSkillCompiler(lookup) {
       } else if (action[0] === "skillCastSkillAction") {
         if (action[2] !== 1 || action[4] !== null) { report(hero.id, "triggered_skill_condition", action); continue; }
         const child = compile(action[5], fps);
-        if (!child || child.motion || child.energyCost || child.skillEnergyCost || child.healthCost || child.disabled) { report(hero.id, "triggered_skill_kind", action); continue; }
+        if (!child || child.motion || child.channelMove || child.energyCost || child.skillEnergyCost || child.healthCost || child.disabled) { report(hero.id, "triggered_skill_kind", action); continue; }
         for (const parent of skills.filter((skill) => lookup("Skill", skill.sourceId).skillgroup === action[1])) {
           parent.onRelease ||= []; parent.onRelease.push({ skillId: child.id, chance: action[3] / 10000 });
         }

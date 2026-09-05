@@ -731,6 +731,47 @@ try {
     return { blocked, filled, remaining };
   });
   assert.deepEqual(costs.charges, { blocked: true, filled: 1, remaining: 0 });
+  await evaluate(() => {
+    const boot = window.__referenceBoot, source = boot.session.roster.actor("reference_hero_10"); boot.enabled = false;
+    const target = new source.constructor({ id: "area_probe", faction: "enemy", position: source.position.add({ x: 180, y: 0 }),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 0, aggroRange: 0 } });
+    const combat = new boot.session.world.combat.constructor(() => 0.5);
+    boot.areaProbe = { source, target, combat, hp: source.health, energy: source.energy };
+    source.health = Math.floor(source.stats.maxHealth * 0.4);
+    if (!combat.use(source, target, boot.session.world.options.skillDefinitions.reference_skill_5000604, [source, target])) throw new Error("Source area failed to cast");
+    combat.update(3.1, [source, target]); boot.renderer.update({ ...boot.session.getSnapshot(), areas: combat.areaSnapshots() }, 0.1);
+  });
+  let areaReady = false;
+  for (let index = 0; index < 50 && !areaReady; index++) {
+    areaReady = await evaluate(() => {
+      const boot = window.__referenceBoot, areas = boot.areaProbe.combat.areaSnapshots();
+      boot.renderer.update({ ...boot.session.getSnapshot(), areas }, 0.05);
+      return areas.length === 1 && boot.renderer.referenceArt.areaViews.has(areas[0].id);
+    });
+    if (!areaReady) await delay(100);
+  }
+  assert.equal(areaReady, true, "Source poison-area atlas did not load");
+  const areaArt = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.areaProbe, initial = combat.areaSnapshots()[0];
+    const firstFrame = boot.renderer.referenceArt.areaViews.get(initial.id).spriteFrame.name;
+    combat.update(0.25, [source, target]); boot.renderer.update({ ...boot.session.getSnapshot(), areas: combat.areaSnapshots() }, 0.25);
+    return { x: initial.x, y: initial.y, firstFrame, nextFrame: boot.renderer.referenceArt.areaViews.get(initial.id).spriteFrame.name,
+      targetHealth: target.health, interval: 0.5, duration: 10 };
+  });
+  assert.notEqual(areaArt.firstFrame, areaArt.nextFrame); assert.ok(areaArt.targetHealth < 10000);
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-area`);
+  }
+  areaArt.cleaned = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.areaProbe;
+    target.position = source.position.add({ x: 700, y: 0 }); const health = target.health;
+    combat.update(11, [source, target]);
+    if (target.health !== health) throw new Error("Area damaged a target after it left");
+    combat.resetEngagement(); source.health = boot.areaProbe.hp; source.energy = boot.areaProbe.energy;
+    boot.renderer.update(boot.session.getSnapshot(), 0.1); delete boot.areaProbe; boot.enabled = true;
+    return boot.renderer.referenceArt.areaViews.size === 0;
+  });
+  assert.equal(areaArt.cleaned, true);
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -761,7 +802,7 @@ try {
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
     periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
-    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, resetCounts, viewports, errors, failures };
+    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

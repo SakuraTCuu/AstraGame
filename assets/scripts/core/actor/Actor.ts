@@ -134,9 +134,10 @@ export class Actor {
   get healingBlocked(): boolean { return this.states.some((state) => state.definition.healingBlocked); }
   get incomingDamageCap(): number { return this.states.reduce((cap, state) => Math.min(cap, state.definition.damageCap ?? Infinity), Infinity); }
   get attackPower(): number { return Math.max(0, this.stats.attack * (1 + this.modifier("attackRate"))); }
-  get movementSpeed(): number { return Math.max(0, this.stats.moveSpeed + this.modifier("movementBonus")); }
+  get movementSpeed(): number { return Math.max(0, (this.stats.moveSpeed + this.modifier("movementBonus")) * Math.max(0, 1 + this.modifier("movementSpeedRate"))); }
   modifier(key: keyof StatModifiers): number { return (this.currentStats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0) * status.stacks, 0); }
   hasStatus(state: string): boolean { return this.states.some((entry) => entry.definition.id === state) || this.statuses.some((entry) => entry.definition.id === state || entry.definition.group === state); }
+  statusStacks(group: string): number { return this.statuses.find((entry) => (entry.definition.group ?? entry.definition.id) === group)?.stacks ?? 0; }
   hasControl(kind: ControlKind): boolean { return this.states.some((entry) => entry.definition.control === kind); }
   get controlled(): boolean { return this.states.some((entry) => Boolean(entry.definition.control)); }
   get hardControlled(): boolean { return this.hasControl("stun") || this.hasControl("freeze") || this.hasControl("airborne") || this.hasControl("fear"); }

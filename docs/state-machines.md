@@ -145,6 +145,15 @@ READY -> WINDUP -> HIT -> RECOVERY -> COOLDOWN -> READY
 - Unimplemented resource types disable the affected skill rather than allowing free casts. Paid or disabled children are excluded from the free additional-skill path.
 - Source HP-cost basis/rounding/nonlethal handling, direct-action gain ranges and Buff gain ceilings still require live comparison. The source adapter preserves these assumptions in explicit audit entries.
 
+### Persistent Areas
+
+- An area has independent geometry, duration, tick interval, targeting, optional caster following and optional turn speed. Creating the area resolves its first tick; later ticks occur strictly before expiry. Every area shares its parent cast's single energy award and damage ownership.
+- Targets are selected inside the area on each tick. Paired actions with the same camp/limit retain the same recipients, preventing a group heal from multiplying per target or redirecting its paired Buff after health changes. Tick phases, PvE/PvP target limits and per-target contact limits are supported.
+- Ground fields retain their locked position. Following fields move with the caster and end when that actor dies or leaves. Returning casters clear their areas and queued area actions; reset clears all areas. Static fields can outlive their caster, while delayed contacts may finish after visual expiry.
+- Source stack-dependent damage uses base power plus the current target Buff count times the per-stack coefficient. Range-based attribute tags and some source modifiers remain separate adaptation work.
+- Aim tracking can stop before windup ends. Channeled forward movement uses collision and starts at its configured offset; following line/cone fields can turn toward an out-of-area target at a bounded angular speed.
+- Randomized multi-warning layouts and moving scene objects are not treated as coincident static areas. Those source tags remain audited until their layouts and movement are implemented. Tick timing, ownership cleanup, extra visuals and conditional area attributes still need live comparison.
+
 ## Fog and Discovery
 
 Each fog cell is one of:

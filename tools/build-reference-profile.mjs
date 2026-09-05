@@ -219,6 +219,15 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     else skillCompiler.issues.push({ id: String(skill.sourceId), kind: "projectile_art", value: path || skill.projectileEffectIds });
     if (skill.projectileEffectIds.length > 1) skillCompiler.issues.push({ id: String(skill.sourceId), kind: "projectile_art_layers", value: skill.projectileEffectIds });
   }
+  art.areas = {};
+  for (const skill of skillCompiler.definitions.values()) for (const id of skill.areaEffectIds || []) {
+    const effect = row("UiEffect", id), path = effect?.atlasName && `uires/${effect.spriteAtlasPath}/${effect.atlasName}`;
+    if (assets.some((asset) => asset.path === path && asset.type === "cc.SpriteAtlas")) {
+      const key = `reference_effect_${id}`, area = skill.actions.find((action) => action.areaEffect?.effectKey === key)?.areaEffect;
+      art.areas[key] = { path, fps: effect.frame || 12, scale: effect.scale || 1, loop: effect.bLoop === 1, offsetY: effect.dy || 0,
+        directional: area?.geometry.shape !== "circle" };
+    } else skillCompiler.issues.push({ id: String(skill.sourceId), kind: "area_art", value: path || id });
+  }
   for (const id of families.get("WorldMap").keys()) {
     const region = row("WorldMap", id);
     if (region.mapId !== 100001) continue;

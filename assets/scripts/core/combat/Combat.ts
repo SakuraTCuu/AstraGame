@@ -2,14 +2,8 @@ import type { Actor } from "../actor/Actor";
 import { Vector2 } from "../math/Vector2";
 import type { Vec2Like } from "../math/Vector2";
 import { SeededRandom } from "../random/SeededRandom";
-import type { DamageType, SkillAction, SkillConditions, SkillMotion, SkillTrigger, StatusDefinition } from "./SkillEffects";
-
-export interface SkillArea {
-  readonly shape: "circle" | "cone" | "line";
-  readonly radius: number;
-  readonly angleDegrees?: number;
-  readonly width?: number;
-}
+import type { AreaEffectDefinition, DamageType, SkillAction, SkillArea, SkillConditions, SkillMotion, SkillTrigger, StatusDefinition } from "./SkillEffects";
+export type { SkillArea } from "./SkillEffects";
 
 export interface SkillDefinition {
   readonly id: string;
@@ -44,6 +38,8 @@ export interface SkillDefinition {
   readonly skillEnergyCost?: number;
   readonly healthCost?: { readonly fraction: number; readonly basis: "maximum" | "current" };
   readonly disabled?: boolean;
+  readonly trackTargetFor?: number;
+  readonly channelMove?: { readonly speed: number; readonly start: number };
   readonly blockEnergyGain?: boolean;
   readonly conditions?: SkillConditions;
   readonly linkedCooldowns?: readonly { readonly id: string; readonly duration: number }[];
@@ -56,7 +52,7 @@ export interface SkillDefinition {
 }
 
 export interface CombatEvent {
-  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback" | "state_removed" | "resource_cost" | "skill_energy";
+  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback" | "state_removed" | "resource_cost" | "skill_energy" | "area_created";
   readonly sourceId: string;
   readonly targetId: string;
   readonly value?: number;
@@ -78,7 +74,7 @@ interface Cast {
   readonly targetId: string;
   readonly skill: SkillDefinition;
   readonly origin: Vector2;
-  readonly point: Vector2;
+  point: Vector2;
   readonly startedAt: number;
   readonly hitAt: number;
   readonly readyAt: number;
@@ -94,13 +90,17 @@ interface Cast {
 
 interface Projectile { readonly cast: Cast; readonly expiresAt: number; position: Vector2; lastUpdate: number; impactAt?: number; impactCast?: Cast; actionIndex: number;
   directional?: { readonly direction: Vector2; readonly hits: Map<string, number>; remaining: number }; }
-interface ProjectileImpact { readonly cast: Cast; readonly target: Actor; readonly at: number; actionIndex: number; }
+interface ProjectileImpact { readonly cast: Cast; readonly target: Actor; readonly at: number; readonly areaId?: number; actionIndex: number; }
+interface AreaEffect { readonly id: number; readonly cast: Cast; readonly definition: AreaEffectDefinition; readonly startedAt: number; readonly expiresAt: number;
+  readonly hits: Map<string, number>; nextTick: number; ticks: number; position: Vector2; direction: Vector2; }
 interface Displacement { readonly actor: Actor; readonly direction: Vector2; readonly distance: number; readonly duration: number; readonly startedAt: number; progress: number; }
-type CombatMovement = SkillMotion["kind"] | "knockback" | "fear";
+type CombatMovement = SkillMotion["kind"] | "knockback" | "fear" | "channel";
 export interface SummonRequest { readonly sourceId: string; readonly enemyId: string; readonly count: number; readonly limit: number; readonly radius: number; readonly position: Vec2Like; }
 export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; }
 export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number;
   readonly age: number; readonly directionX: number; readonly directionY: number; readonly radius?: number; }
+export interface AreaEffectSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly x: number; readonly y: number;
+  readonly age: number; readonly remaining: number; readonly geometry: SkillArea; readonly directionX: number; readonly directionY: number; readonly effectKey?: string; }
 
 function circleContactInterval(from: Vector2, to: Vector2, center: Vector2, radius: number): [number, number] | undefined {
   const delta = to.subtract(from), offset = from.subtract(center), a = delta.lengthSquared();
@@ -144,6 +144,8 @@ export class CombatSystem {
   private readonly triggeredCasts = new Map<number, Cast>();
   private readonly projectiles = new Map<number, Projectile>();
   private readonly projectileImpacts: ProjectileImpact[] = [];
+  private readonly areas = new Map<number, AreaEffect>();
+  private nextAreaId = 1;
   private readonly displacements = new Map<string, Displacement>();
   private readonly summons: SummonRequest[] = [];
   private actors: readonly Actor[] = [];
@@ -203,11 +205,16 @@ export class CombatSystem {
     }
     for (const [id, cast] of this.casts) {
       if (!cast.source.alive || cast.source.fsm.state === "returning") { this.cancelCaster(id); continue; }
+      if (!cast.resolved && cast.skill.trackTargetFor !== undefined && this.time - deltaSeconds < cast.startedAt + cast.skill.trackTargetFor / cast.speed) {
+        const target = actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor));
+        if (target) cast.point = target.position;
+      }
       if (cast.skill.motion && this.time >= cast.hitAt && cast.source.canMove) this.updateMotion(cast);
       if (!cast.resolved && this.time + 1e-9 >= cast.hitAt) this.launch(cast);
       if (this.casts.get(id) !== cast) continue;
       if (cast.resolved && cast.skill.actions && !cast.skill.projectileSpeed) this.advanceActions(cast);
       if (this.casts.get(id) !== cast) continue;
+      if (cast.skill.channelMove && cast.source.canMove) this.updateChannelMovement(cast, deltaSeconds);
       if (this.time + 1e-9 >= cast.readyAt) {
         this.casts.delete(id);
         if (cast.source.alive && !this.isDisplaced(cast.source)) cast.source.setState(cast.source.hardControlled ? "controlled" : "idle");
@@ -239,6 +246,7 @@ export class CombatSystem {
       while (projectile.actionIndex < actions.length && projectile.impactAt! + actions[projectile.actionIndex].at / projectile.cast.speed <= this.time + 1e-9) this.resolveHit(projectile.impactCast!, true, actions[projectile.actionIndex++]);
       if (projectile.actionIndex >= actions.length) this.projectiles.delete(id);
     }
+    this.updateAreas(deltaSeconds);
     for (let index = this.projectileImpacts.length - 1; index >= 0; index--) {
       const impact = this.projectileImpacts[index];
       this.advanceProjectileImpact(impact);
@@ -313,7 +321,7 @@ export class CombatSystem {
       remaining: Math.max(0, (cast.resolved ? cast.readyAt : cast.hitAt) - this.time),
       duration: cast.resolved ? cast.readyAt - cast.hitAt : cast.hitAt - cast.startedAt,
       origin: !cast.resolved && cast.skill.directionalProjectile ? cast.source.position : cast.origin,
-      point: !cast.resolved && cast.skill.directionalProjectile ? this.actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor))?.position ?? cast.point : cast.point, area: cast.skill.area,
+      point: !cast.resolved && cast.skill.directionalProjectile && cast.skill.trackTargetFor === undefined ? this.actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor))?.position ?? cast.point : cast.point, area: cast.skill.area,
       playbackRate: cast.speed,
       elevation: cast.skill.motion?.kind === "jump" ? Math.sin(Math.PI * Math.max(0, Math.min(1, (this.time - cast.hitAt) * cast.speed / cast.skill.motion.duration))) * (cast.skill.motion.height ?? 160) : 0,
     }));
@@ -327,12 +335,18 @@ export class CombatSystem {
     });
   }
 
+  areaSnapshots(): AreaEffectSnapshot[] {
+    return [...this.areas.values()].map((area) => ({ id: area.id, sourceId: area.cast.source.id, skillId: area.cast.skill.id, x: area.position.x, y: area.position.y,
+      age: Math.max(0, this.time - area.startedAt), remaining: Math.max(0, area.expiresAt - this.time), geometry: area.definition.geometry,
+      directionX: area.direction.x, directionY: area.direction.y, effectKey: area.definition.effectKey }));
+  }
+
   drainEvents(): CombatEvent[] { return this.events.splice(0); }
   drainSummons(): SummonRequest[] { return this.summons.splice(0); }
 
   resetEngagement(): void {
     for (const id of this.displacements.keys()) this.cancelDisplacement(id);
-    this.casts.clear(); this.triggeredCasts.clear(); this.projectiles.clear(); this.projectileImpacts.splice(0); this.summons.splice(0);
+    this.casts.clear(); this.triggeredCasts.clear(); this.projectiles.clear(); this.projectileImpacts.splice(0); this.areas.clear(); this.summons.splice(0);
     this.cooldowns.clear(); this.publicCooldowns.clear(); this.combatTimes.clear(); this.events.splice(0);
     this.actors = []; this.move = undefined;
   }
@@ -380,7 +394,7 @@ export class CombatSystem {
   private releaseTriggers(parent: Cast): void {
     for (const trigger of parent.skill.onRelease ?? []) {
       const child = this.definitions[trigger.skillId];
-      if (!child || child.motion) throw new Error(`Invalid triggered skill ${trigger.skillId}`);
+      if (!child || child.motion || child.channelMove) throw new Error(`Invalid triggered skill ${trigger.skillId}`);
       if (child.disabled || child.energyCost || child.skillEnergyCost || child.healthCost || !parent.source.alive || (this.isDisplaced(parent.source) && !parent.source.interruptionImmune) || parent.triggerChain.includes(child.id) || parent.triggerChain.length >= 8) continue;
       if (!this.conditionsMet(parent.source, this.actors.find((actor) => actor.id === parent.targetId), trigger.conditions)) continue;
       if ((trigger.chance ?? 1) < 1 && this.random() >= (trigger.chance ?? 1)) continue;
@@ -400,7 +414,7 @@ export class CombatSystem {
       const expiresAt = cast.hitAt + (cast.skill.projectileLifetime ?? Math.max(1, cast.skill.range / cast.skill.projectileSpeed * 3));
       if (cast.skill.directionalProjectile) {
         const target = this.actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor));
-        const origin = cast.source.position, point = target?.position ?? cast.point;
+        const origin = cast.source.position, point = cast.skill.trackTargetFor === undefined ? target?.position ?? cast.point : cast.point;
         const heading = point.subtract(origin).normalized(), direction = heading.lengthSquared() > 0 ? heading : new Vector2(0, 1);
         this.projectiles.set(this.nextProjectileId++, { cast: { ...cast, origin, point }, position: origin, lastUpdate: cast.hitAt, actionIndex: 0,
           expiresAt, directional: { direction, hits: new Map(), remaining: cast.skill.directionalProjectile.maxHits } });
@@ -422,6 +436,20 @@ export class CombatSystem {
 
   private resolveHit(cast: Cast, projectile: boolean, action?: SkillAction, contacts?: readonly Actor[]): void {
     const { source, skill } = cast;
+    if (action?.type === "area") {
+      const definition = action.areaEffect!;
+      if (!definition || definition.duration <= 0 || definition.interval <= 0 || definition.effects.some((effect) => effect.type === "area")) throw new Error("Invalid area effect");
+      if (definition.followCaster && !source.alive) return;
+      const position = definition.followCaster ? source.position : contacts?.[0]?.position ?? cast.point;
+      const heading = cast.point.subtract(source.position).normalized();
+      const id = this.nextAreaId++;
+      const area = { id, cast, definition, position, direction: heading.lengthSquared() ? heading : new Vector2(0, 1),
+        startedAt: this.time, expiresAt: this.time + definition.duration, nextTick: this.time, ticks: 0, hits: new Map() };
+      this.areas.set(id, area);
+      this.events.push({ type: "area_created", sourceId: source.id, targetId: cast.targetId, skillId: skill.id, x: position.x, y: position.y });
+      this.tickArea(area);
+      return;
+    }
     if (skill.type === "summon") {
       if (!source.alive || !skill.summonEnemyId) return;
       this.awardEnergy(cast);
@@ -474,7 +502,8 @@ export class CombatSystem {
         const type = action?.damageType ?? skill.damageType ?? "physical";
         const chance = Math.max(0, Math.min(1, source.modifier("criticalChance")));
         const critical = Boolean(action?.forceCritical || skill.forceCritical || (chance > 0 && this.random() < chance));
-        const damage = this.applyDamage(source, target, skill.id, action?.power ?? skill.power, type, critical);
+        const power = (action?.power ?? skill.power) + (action?.powerPerStack ? target.statusStacks(action.powerPerStack.group) * action.powerPerStack.amount : 0);
+        const damage = this.applyDamage(source, target, skill.id, power, type, critical);
         if (action?.healFromDamage && damage > 0) {
           const allies = action.healFromDamageRecipient === "self" ? (source.alive ? [source] : []) : this.actors.filter((actor) => validTarget(source, actor) && actor.faction === source.faction);
           for (const ally of allies) { const value = ally.heal(damage * action.healFromDamage / allies.length); this.events.push({ type: "heal", sourceId: source.id, targetId: ally.id, value, skillId: skill.id }); }
@@ -530,6 +559,74 @@ export class CombatSystem {
     while (impact.actionIndex < actions.length && impact.at + actions[impact.actionIndex].at / impact.cast.speed <= this.time + 1e-9) {
       this.resolveHit(impact.cast, true, actions[impact.actionIndex++], [impact.target]);
     }
+  }
+
+  private updateAreas(deltaSeconds: number): void {
+    for (const [id, area] of this.areas) {
+      const source = area.cast.source, definition = area.definition;
+      if (source.fsm.state === "returning" || (definition.followCaster && (!source.alive || !this.actors.includes(source)))) {
+        this.areas.delete(id);
+        for (let index = this.projectileImpacts.length - 1; index >= 0; index--) if (this.projectileImpacts[index].areaId === id) this.projectileImpacts.splice(index, 1);
+        continue;
+      }
+      if (definition.followCaster) area.position = source.position;
+      const target = this.actors.find((actor) => actor.id === area.cast.targetId && validTarget(source, actor));
+      if (target && definition.turnSpeedDegrees && !this.hitTargets(this.areaCast(area), true).includes(target)) {
+        const desired = target.position.subtract(area.position);
+        const angle = Math.atan2(area.direction.y, area.direction.x);
+        let difference = Math.atan2(desired.y, desired.x) - angle;
+        difference = Math.atan2(Math.sin(difference), Math.cos(difference));
+        const limit = definition.turnSpeedDegrees * Math.PI / 180 * Math.min(deltaSeconds, Math.max(0, this.time - area.startedAt));
+        const next = angle + Math.max(-limit, Math.min(limit, difference)); area.direction = new Vector2(Math.cos(next), Math.sin(next));
+      }
+      while (area.nextTick <= this.time + 1e-9 && area.nextTick < area.expiresAt - 1e-9 && area.ticks < (definition.maxTicks ?? Infinity)) this.tickArea(area);
+      if (this.time >= area.expiresAt - 1e-9) this.areas.delete(id);
+    }
+  }
+
+  private tickArea(area: AreaEffect): void {
+    const definition = area.definition;
+    const cast = this.areaCast(area);
+    const effects = definition.phases?.find((phase) => phase.throughTick >= area.ticks + 1)?.effects ?? definition.effects;
+    const touched = new Set<string>();
+    const selections = new Map<string, readonly Actor[]>();
+    for (const effect of effects) {
+      const self = effect.recipient === "self";
+      const targetCamp = effect.recipient === "allies" ? "ally" : effect.recipient === "enemies" ? "enemy" : cast.skill.target;
+      const limit = (this.mode === "pvp" ? definition.pvpMaxTargets : undefined) ?? definition.maxTargets ?? effect.targetCount ?? Number.MAX_SAFE_INTEGER;
+      const selection = { ...cast, skill: { ...cast.skill, target: targetCamp, targetRule: targetCamp === "ally" ? "lowest_hp" as const : cast.skill.targetRule, maxTargets: limit } };
+      const key = self ? "self" : `${targetCamp}:${limit}`;
+      let targets = selections.get(key);
+      if (!targets) { targets = self ? [cast.source] : this.hitTargets(selection, true); selections.set(key, targets); }
+      for (const target of targets) {
+        if (!validTarget(cast.source, target) || (area.hits.get(target.id) ?? 0) >= (definition.hitsPerTarget ?? Infinity)) continue;
+        touched.add(target.id);
+        const impact = { cast: { ...cast, skill: { ...cast.skill, actions: [{ ...effect, recipient: "targets" as const }] } }, target, at: area.nextTick, areaId: area.id, actionIndex: 0 };
+        this.advanceProjectileImpact(impact);
+        if (!impact.actionIndex && target.alive) this.projectileImpacts.push(impact);
+      }
+    }
+    for (const id of touched) area.hits.set(id, (area.hits.get(id) ?? 0) + 1);
+    area.ticks++;
+    area.nextTick += definition.interval;
+  }
+
+  private areaCast(area: AreaEffect): Cast {
+    const definition = area.definition;
+    return { ...area.cast, origin: area.position,
+      point: definition.geometry.shape === "circle" ? area.position : area.position.add(area.direction), speed: 1,
+      skill: { ...area.cast.skill, target: definition.target ?? (area.cast.skill.target === "self" ? "ally" : area.cast.skill.target),
+        area: definition.geometry, areaAnchor: "target", targetCount: undefined, maxTargets: Number.MAX_SAFE_INTEGER, motion: undefined, actions: definition.effects } };
+  }
+
+  private updateChannelMovement(cast: Cast, deltaSeconds: number): void {
+    const movement = cast.skill.channelMove!, start = cast.startedAt + movement.start / cast.speed;
+    const duration = Math.max(0, Math.min(this.time, cast.readyAt) - Math.max(this.time - deltaSeconds, start));
+    if (!duration) return;
+    const active = [...this.areas.values()].find((area) => area.cast.id === cast.id && area.definition.followCaster);
+    const direction = active?.direction ?? cast.point.subtract(cast.origin).normalized();
+    const destination = cast.source.position.add(direction.scale(movement.speed * duration));
+    if (this.move) this.move(cast.source, destination, "channel"); else cast.source.position = destination;
   }
 
   private applyDamage(source: Actor, target: Actor, skillId: string, power: number, type: DamageType, critical = false, statusId?: string): number {
