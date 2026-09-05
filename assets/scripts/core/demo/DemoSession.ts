@@ -13,8 +13,10 @@ import { WorldMap } from "../world/WorldMap";
 import { SpawnDirector } from "../world/SpawnDirector";
 import type { RespawnProgress, SpawnSnapshot } from "../world/SpawnDirector";
 import type { ExplorationEvent, InteractionResult, MapProgress, WorldObstacle, WorldPoi, WorldProgression, WorldZone } from "../world/WorldMap";
+import { ProgressionJournal } from "../world/ProgressionJournal";
+import type { JournalConfig, ProgressReward, ClaimResult } from "../world/ProgressionJournal";
 
-export type DefeatReward = { readonly amount: number; readonly chance?: number } & ({ readonly resource: string } | { readonly experience: true });
+export type DefeatReward = ProgressReward;
 
 export interface DemoActorConfig {
   readonly id: string;
@@ -46,6 +48,7 @@ export interface DemoActorConfig {
   readonly energyOnDamage?: number;
   readonly criticalMultiplier?: number;
   readonly defeatFlag?: string;
+  readonly defeatCounters?: readonly string[];
   readonly defeatRewards?: readonly DefeatReward[];
 }
 
@@ -67,6 +70,7 @@ export interface DemoSpawnConfig {
 export interface DemoConfig {
   readonly meta?: { readonly id: string; readonly schemaVersion: number };
   readonly seed: number;
+  readonly journal?: JournalConfig;
   readonly world: {
     readonly width: number;
     readonly height: number;
@@ -174,6 +178,7 @@ export interface DemoSnapshot {
   readonly discoveredFogCells: ReadonlyArray<{ x: number; y: number }>;
   readonly fog: { readonly width: number; readonly height: number; readonly cellSize: number; readonly states: readonly FogCellState[] };
   readonly exploration: ReturnType<WorldMap["snapshot"]> & { readonly events: readonly ExplorationEvent[] };
+  readonly journal: ReturnType<ProgressionJournal["snapshot"]>;
   readonly flashlight: {
     readonly x: number;
     readonly y: number;
@@ -225,6 +230,7 @@ export class DemoSession {
   readonly world: GameWorld;
   readonly map: WorldMap;
   readonly spawns: SpawnDirector;
+  readonly journal: ProgressionJournal;
   private readonly config: DemoConfig;
   private readonly fog: FogGrid;
   private readonly fixedStep: number;
@@ -234,6 +240,7 @@ export class DemoSession {
   private frameEvents: CombatEvent[] = [];
   private explorationEvents: ExplorationEvent[] = [];
   private autoDestination: Vector2 | null = null;
+  private questDestinationId: string | null = null;
   private resumeRemaining = 0;
   private navigationMode: DemoSnapshot["autoNavigation"]["mode"] = "idle";
   private readonly enemyTemplates = new Map<string, DemoActorConfig>();
@@ -261,11 +268,7 @@ export class DemoSession {
     );
     this.map = new WorldMap(navigation, this.fog, { x: 0, y: 0, width: config.world.width, height: config.world.height },
       config.fog.unlockZones, config.world.pointsOfInterest, config.world.obstacles, config.world.progression, config.world.zoneMode);
-    for (const enemy of enemyConfigs) for (const reward of enemy.defeatRewards ?? []) {
-      if (!Number.isSafeInteger(reward.amount) || reward.amount < 0 || !Number.isFinite(reward.chance ?? 1) ||
-          (reward.chance ?? 1) < 0 || (reward.chance ?? 1) > 1 ||
-          ("resource" in reward ? !config.world.progression?.resources[reward.resource] : !config.world.progression?.experienceLevels?.length)) throw new Error(`Invalid defeat reward for ${enemy.id}`);
-    }
+    for (const enemy of enemyConfigs) for (const reward of enemy.defeatRewards ?? []) this.map.validateReward(reward);
     for (const player of players) {
       if (!navigation.isWorldWalkable(player.position)) throw new Error(`Player ${player.id} starts on blocked ground`);
     }
@@ -310,6 +313,7 @@ export class DemoSession {
     if (ticksPerSecond <= 0) throw new RangeError("ticksPerSecond must be positive");
     this.fixedStep = 1 / ticksPerSecond;
     this.spawns = new SpawnDirector(this.world, this.map, config.spawns ?? [], this.enemyTemplates, (entry) => this.createActor(entry, "enemy"));
+    this.journal = new ProgressionJournal(this.map, config.journal, () => this.world.random.next());
     const leader = this.world.leader;
     if (leader) {
       this.map.discoverAt(leader.position);
@@ -326,7 +330,37 @@ export class DemoSession {
   interactWithPoi(id: string): InteractionResult {
     const leader = this.world.leader;
     if (this.state !== "running" || !leader) return "unavailable";
-    return this.map.interact(id, leader.position);
+    const result = this.map.interact(id, leader.position, () => this.world.random.next());
+    if (result === "completed" && this.questDestinationId) this.navigateToQuest(this.questDestinationId);
+    return result;
+  }
+
+  claimQuest(id: string): ClaimResult {
+    if (this.state !== "running" && this.state !== "paused") return "unavailable";
+    const result = this.journal.claim(id);
+    if (result === "claimed" && this.questDestinationId === id) this.questDestinationId = null;
+    return result;
+  }
+
+  promoteRank(): ClaimResult { return this.state === "running" || this.state === "paused" ? this.journal.promote() : "unavailable"; }
+
+  navigateToQuest(id: string): boolean {
+    const quest = this.journal.quests.find((entry) => entry.id === id);
+    const leader = this.world.leader;
+    if (!quest?.destination || !leader || this.state !== "running" || this.journal.state(quest) === "locked") return false;
+    const poi = this.map.pois.find((entry) => entry.id === quest.destination?.poiId);
+    const target = poi ?? quest.destination.position;
+    if (!target) return false;
+    let accepted = poi ? this.navigateToPoi(poi.id) : this.setAutoDestination(target.x, target.y);
+    if (!accepted) {
+      const path = this.world.options.navigation.findWorldPath(leader.position, target, true);
+      for (const point of path) {
+        const gate = this.map.blockingGateAt(point);
+        if (gate) { accepted = this.navigateToPoi(gate); break; }
+      }
+    }
+    if (accepted) this.questDestinationId = id;
+    return accepted;
   }
 
   navigateToPoi(id: string): boolean {
@@ -432,6 +466,7 @@ export class DemoSession {
 
   setAutoDestination(x: number | null, y: number | null): boolean {
     if (this.state !== "running") return false;
+    this.questDestinationId = null;
     if (x === null || y === null) {
       this.world.path.clear();
       this.autoDestination = null;
@@ -483,6 +518,8 @@ export class DemoSession {
       this.world.update(this.fixedStep);
       const currentLeader = this.world.leader;
       if (currentLeader) this.map.discoverAt(currentLeader.position);
+      if (currentLeader) for (const poi of this.map.pois) if (poi.interaction?.auto && !this.map.isPoiInteracted(poi.id) &&
+          currentLeader.position.distance(poi) <= poi.interaction.radius) this.interactWithPoi(poi.id);
       const enemyIds = new Set(this.world.enemies.map((actor) => actor.id));
       this.spawns.afterTick();
       const events = this.world.combat.drainEvents();
@@ -490,14 +527,8 @@ export class DemoSession {
         if (event.type !== "death" || !enemyIds.has(event.targetId)) continue;
         const template = this.spawns.templateForActor(event.targetId) ?? this.enemyTemplates.get(event.targetId);
         if (template?.defeatFlag) { this.map.grantFlag(template.defeatFlag); this.map.incrementCounter(template.defeatFlag); }
-        const grants: Record<string, number> = {};
-        let experience = 0;
-        for (const reward of template?.defeatRewards ?? []) if (this.world.random.next() < (reward.chance ?? 1)) {
-          if ("resource" in reward) grants[reward.resource] = (grants[reward.resource] ?? 0) + reward.amount;
-          else experience += reward.amount;
-        }
-        if (Object.keys(grants).length) this.map.grantResources(grants);
-        if (experience) this.map.grantExperience(experience);
+        for (const counter of new Set(template?.defeatCounters ?? [])) this.map.incrementCounter(counter);
+        if (template?.defeatRewards?.length) this.map.grantRewards(template.defeatRewards, () => this.world.random.next());
       }
       this.defeatedEnemies += events.filter((event) => event.type === "death" && enemyIds.has(event.targetId)).length;
       this.frameEvents.push(...events);
@@ -553,6 +584,7 @@ export class DemoSession {
       discoveredFogCells: this.fog.discoveredCells(),
       fog: { width: this.fog.width, height: this.fog.height, cellSize: this.fog.cellSize, states: this.fog.states() },
       exploration: { ...this.map.snapshot(), events: [...this.explorationEvents] },
+      journal: this.journal.snapshot(),
       flashlight: {
         x: leader?.position.x ?? 0,
         y: leader?.position.y ?? 0,

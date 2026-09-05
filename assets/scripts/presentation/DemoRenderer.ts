@@ -2,6 +2,7 @@ import { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
 import { ReferenceArtLayer } from "./ReferenceArtLayer";
 import { FogRenderer } from "./FogRenderer";
 import { WorldOverview } from "./WorldOverview";
+import { ProgressJournalView } from "./ProgressJournalView";
 import { pointInPolygon } from "../core/world/WorldGeometry";
 
 interface WorldPoint {
@@ -24,6 +25,7 @@ const DEPTH_SCALE = 0.58;
 
 export class DemoRenderer {
     readonly overview: WorldOverview;
+    readonly journal: ProgressJournalView;
     private readonly host: cc.Node;
     private readonly worldRoot: cc.Node;
     private readonly minimapSprite: cc.Sprite;
@@ -107,6 +109,7 @@ export class DemoRenderer {
         this.interactionLabel.node.setContentSize(200, 48);
         this.interactionLabel.node.active = false;
         this.overview = new WorldOverview(host);
+        this.journal = new ProgressJournalView(host);
     }
 
     setLoading(message: string): void {
@@ -131,6 +134,7 @@ export class DemoRenderer {
         this.actorLabels.forEach((label) => { label.node.active = false; });
         this.destination = null;
         this.overview.close();
+        this.journal.close();
         this.interactionId = null;
         this.setJoystick(cc.Vec2.ZERO, false);
     }
@@ -163,7 +167,7 @@ export class DemoRenderer {
     }
 
     showInteractionResult(result: string): void {
-        const messages = { completed: "\u5df2\u5b8c\u6210", insufficient_resources: "\u9999\u706b\u94b1\u4e0d\u8db3", requirements_not_met: "\u524d\u7f6e\u6761\u4ef6\u672a\u6ee1\u8db3",
+        const messages = { completed: "\u5df2\u5b8c\u6210", claimed: "\u5956\u52b1\u5df2\u9886\u53d6", already_claimed: "\u5df2\u9886\u53d6", promoted: "\u5934\u8854\u5df2\u664b\u5347", insufficient_resources: "\u6750\u6599\u4e0d\u8db3", requirements_not_met: "\u524d\u7f6e\u6761\u4ef6\u672a\u6ee1\u8db3",
             out_of_range: "\u8ddd\u79bb\u8fc7\u8fdc", locked: "\u533a\u57df\u672a\u89e3\u9501", unavailable: "\u6682\u65f6\u4e0d\u53ef\u7528" };
         this.interactionFeedback = messages[result] || "";
         this.interactionFeedbackTime = 2;
@@ -220,6 +224,7 @@ export class DemoRenderer {
         this.drawResultAndControls(snapshot);
         this.drawInteraction(snapshot);
         this.overview.update(snapshot, this.referenceArt && this.referenceArt.overviewTexture());
+        this.journal.update(snapshot);
     }
 
     pushCombatFeedback(snapshot: DemoSnapshot): void {
@@ -245,6 +250,7 @@ export class DemoRenderer {
 
     destroy(): void {
         this.overview.destroy();
+        this.journal.destroy();
         if (this.referenceArt) this.referenceArt.destroy();
         if (this.softFog) this.softFog.destroy();
         this.floatTexts.splice(0).forEach((entry) => entry.node.destroy());
@@ -588,7 +594,7 @@ export class DemoRenderer {
         const discovered = snapshot.discoveredFogCells.length;
         const total = snapshot.fog.width * snapshot.fog.height;
         this.statusLabel.string = `${this.config.world.name || "MIST VALLEY"}   ${Math.floor(snapshot.elapsedSeconds)}s\nSQUAD ${players.filter((actor) => actor.hp > 0).length}/${players.length}  HOSTILES ${enemies.length}  EXPLORED ${Math.round(discovered / total * 100)}%`;
-        if (snapshot.exploration.resources.length) this.statusLabel.string = `${this.config.world.name}  Lv.${snapshot.exploration.level}\n${snapshot.exploration.resources.map((resource) => `${resource.name} ${resource.amount}`).join("   ")}`;
+        if (snapshot.exploration.resources.length) this.statusLabel.string = `${this.config.world.name}  Lv.${snapshot.exploration.level}\n${snapshot.exploration.resources.filter((resource) => resource.showInHud).map((resource) => `${resource.name} ${resource.amount}`).join("   ")}`;
         if (snapshot.exploration.experience) {
             const experience = snapshot.exploration.experience;
             this.statusLabel.string += `   EXP ${experience.current}/${experience.required ?? "MAX"}`;
@@ -622,7 +628,7 @@ export class DemoRenderer {
         g.strokeColor = cc.color(184, 174, 116); g.lineWidth = 2; g.stroke();
         this.interactionLabel.node.active = true;
         this.interactionLabel.node.setPosition(center);
-        this.interactionLabel.string = `${poi.type === "portal" ? "\u4fee\u590d" : "\u9a71\u6563\u8ff7\u96fe"}${poi.interaction.cost ? `  ${poi.interaction.cost.amount}` : ""}`;
+        this.interactionLabel.string = `${poi.interaction.command || (poi.type === "portal" ? "\u4fee\u590d" : "\u9a71\u6563\u8ff7\u96fe")}${poi.interaction.cost ? `  ${poi.interaction.cost.amount}` : ""}`;
     }
 
     private updateFloatTexts(deltaSeconds: number): void {

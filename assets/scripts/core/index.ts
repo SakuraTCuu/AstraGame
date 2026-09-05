@@ -13,4 +13,5 @@ export * from "./squad/SquadFormation";
 export * from "./world/GameWorld";
 export * from "./world/WorldMap";
 export * from "./world/ProgressConditions";
+export * from "./world/ProgressionJournal";
 export * from "./world/SpawnDirector";

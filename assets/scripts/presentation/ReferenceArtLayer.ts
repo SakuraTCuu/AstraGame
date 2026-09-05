@@ -98,7 +98,7 @@ export class ReferenceArtLayer {
         const existing = new Set(snapshot.actors.map((actor) => actor.id));
         snapshot.exploration.pois.forEach((poi) => {
             const binding = this.config.bindings[poi.id];
-            if (!binding || (poi.type !== "portal" && poi.type !== "fog_gate") || (poi.type === "fog_gate" && poi.completed)) return;
+            if (!binding || !["portal", "fog_gate", "chest"].includes(poi.type) || (poi.type === "fog_gate" && poi.completed)) return;
             existing.add(poi.id);
             const point = project(poi.x, poi.y);
             if (Math.abs(point.x) > 650 || Math.abs(point.y) > 1000) return;

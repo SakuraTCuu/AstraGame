@@ -26,6 +26,16 @@ export function compileReferenceCondition(source, lookup, depth = 0) {
   if (body.startsWith("{") && body.endsWith("}")) body = body.slice(1, -1);
   const killCount = /^id:(\d+)_num:(\d+)$/.exec(body);
   if (type === "HisKillMonsterCondition" && killCount) return { kind: "counter", id: `defeat:${killCount[1]}`, value: Number(killCount[2]), label: `\u51fb\u8d25${lookup("Monster", Number(killCount[1]))?.name || "\u602a\u7269"}` };
+  if (type === "HisOwnItemNumCondition" && killCount) return { kind: "counter", id: `owned:${Number(killCount[1]) === 4 ? "incense" : `item:${killCount[1]}`}`, value: Number(killCount[2]), label: lookup("Item", Number(killCount[1]))?.name || "\u7d2f\u8ba1\u83b7\u5f97" };
+  const partyLevel = /^level:(\d+)_num:(\d+)$/.exec(body);
+  if (type === "HeroLevelNumCondition" && partyLevel) return { kind: "party_level", level: Number(partyLevel[1]), count: Number(partyLevel[2]), label: `${partyLevel[2]}\u540d\u9547\u90aa\u4eba\u8fbe\u5230${partyLevel[1]}\u7ea7` };
+  const totalLevel = /^level:(\d+)$/.exec(body);
+  if (type === "HeroTotalLevelCondition" && totalLevel) return { kind: "party_total_level", value: Number(totalLevel[1]), label: "\u51fa\u6218\u603b\u7b49\u7ea7" };
+  const count = /^num:(\d+)$/.exec(body);
+  const counters = { HisRenameTimesCond: ["rename", "\u66f4\u6539\u540d\u5b57"], HisRecruitCondition: ["recruit", "\u7d2f\u8ba1\u62db\u52df"], DressEquipQualityCondition: ["equipped", "\u7a7f\u6234\u88c5\u5907"] };
+  if (count && counters[type]) return { kind: "counter", id: counters[type][0], value: Number(count[1]), label: counters[type][1] };
+  const subtype = /^type:(\d+)_subType:(\d+)_num:(\d+)$/.exec(body);
+  if (type === "KillMonsterSubTypeCondition" && subtype) return { kind: "counter", id: `defeat:type:${subtype[1]}:subtype:${subtype[2]}`, value: Number(subtype[3]), label: "\u51fb\u8d25\u6307\u5b9a\u7c7b\u578b\u602a\u7269" };
   const fields = /^([A-Za-z]+)\s*:\s*(\d+)$/.exec(body);
   if (!fields) throw new Error(`Unsupported condition arguments ${source}`);
   const value = Number(fields[2]);

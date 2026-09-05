@@ -138,9 +138,10 @@ export class WorldOverview {
         }
         this.markers = [];
         const occupied: cc.Vec2[] = [];
-        const pois = snapshot.exploration.pois.slice().sort((a, b) => Number(b.id === this.selectedId) - Number(a.id === this.selectedId) || Number(b.type === "portal") - Number(a.type === "portal"));
+        const priority = (type: string) => type === "portal" ? 3 : type === "fog_gate" ? 2 : type === "boss" ? 1 : 0;
+        const pois = snapshot.exploration.pois.slice().sort((a, b) => Number(b.id === this.selectedId) - Number(a.id === this.selectedId) || priority(b.type) - priority(a.type));
         for (const poi of pois) {
-            if (poi.type === "resource" || (poi.type === "fog_gate" && poi.completed)) continue;
+            if (poi.type === "resource" || (poi.type === "chest" && !poi.discovered) || (poi.type === "fog_gate" && poi.completed)) continue;
             const point = this.project(poi);
             if (Math.abs(point.x) > 345 || Math.abs(point.y) > 435 || occupied.some((other) => other.sub(point).mag() < 25)) continue;
             occupied.push(point);

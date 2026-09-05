@@ -3,6 +3,7 @@ import { DemoRenderer } from "../presentation/DemoRenderer";
 import { ExploreRuntime, SessionReady } from "../framework/ExploreRuntime";
 import { createLocalDemoPorts } from "../framework/LocalDemoPorts";
 import { RuntimePorts } from "../framework/RuntimePorts";
+import type { JournalAction } from "../presentation/ProgressJournalView";
 
 const { ccclass } = cc._decorator;
 const JOYSTICK_CENTER = cc.v2(0, -470);
@@ -22,6 +23,8 @@ export default class DemoBootstrap extends cc.Component {
     private controlTouch: "pause" | "restart" | null = null;
     private resumeOnShow = false;
     private resumeAfterOverview = false;
+    private resumeAfterJournal = false;
+    private journalTouch = false;
 
     get session(): DemoSession { return this.runtime && this.runtime.session; }
 
@@ -111,10 +114,10 @@ export default class DemoBootstrap extends cc.Component {
         if (!this.renderer) return;
         const point = this.node.convertToNodeSpaceAR(event.getLocation());
         if (this.renderer.overview.isOpen) this.renderer.overview.hover(point);
-        else this.renderer.setHoveredControl(this.renderer.hitControl(point));
+        else { this.renderer.setHoveredControl(this.renderer.hitControl(point)); this.renderer.journal.hover(point); }
     }
 
-    private onMouseLeave(): void { if (this.renderer) { this.renderer.setHoveredControl(null); this.renderer.overview.hover(null); } }
+    private onMouseLeave(): void { if (this.renderer) { this.renderer.setHoveredControl(null); this.renderer.overview.hover(null); this.renderer.journal.hover(null); } }
     private onMouseWheel(event: cc.Event.EventMouse): void { if (this.renderer.overview.isOpen) this.renderer.overview.zoom(event.getScrollY() > 0 ? 1 : -1); }
 
     private onTouchStart(event: cc.Event.EventTouch): void {
@@ -123,6 +126,8 @@ export default class DemoBootstrap extends cc.Component {
         this.touchStart = this.toCanvas(event);
         this.touchCurrent = this.touchStart;
         if (this.renderer.overview.isOpen) { this.renderer.overview.beginDrag(this.touchStart); return; }
+        this.journalTouch = this.renderer.journal.contains(this.touchStart);
+        if (this.journalTouch) return;
         this.controlTouch = this.renderer.hitControl(this.touchStart);
         this.joystickTouch = !this.controlTouch && this.touchStart.sub(JOYSTICK_CENTER).mag() <= JOYSTICK_RADIUS;
         this.joystickOrigin = JOYSTICK_CENTER;
@@ -130,7 +135,7 @@ export default class DemoBootstrap extends cc.Component {
     }
 
     private onTouchMove(event: cc.Event.EventTouch): void {
-        if (event.getID() !== this.touchId || this.controlTouch) return;
+        if (event.getID() !== this.touchId || this.controlTouch || this.journalTouch) return;
         this.touchCurrent = this.toCanvas(event);
         if (this.renderer.overview.isOpen) { if (this.touchStart.y < 470 && this.touchStart.y > -425) this.renderer.overview.drag(this.touchCurrent); return; }
         if (!this.joystickTouch && this.touchStart.y < 470 && !this.renderer.isMinimapPoint(this.touchStart) &&
@@ -155,6 +160,8 @@ export default class DemoBootstrap extends cc.Component {
                     else this.renderer.showInteractionResult("unavailable");
                 } else if (action.kind === "navigate" && !this.session.navigateToPoi(action.id)) this.renderer.rejectDestination();
             }
+        } else if (this.journalTouch) {
+            if (end.sub(this.touchStart).mag() < 18) this.handleJournalAction(this.renderer.journal.hit(end));
         } else if (this.controlTouch) {
             if (this.renderer.hitControl(end) === this.controlTouch) {
                 if (this.controlTouch === "restart") void this.restart();
@@ -177,6 +184,26 @@ export default class DemoBootstrap extends cc.Component {
             }
         }
         this.resetTouch();
+    }
+
+    private handleJournalAction(action: JournalAction | null): void {
+        if (!action || !this.session) return;
+        if (action.kind === "open") {
+            this.resumeAfterJournal = this.session.runState === "running";
+            this.pause(); this.renderer.journal.open(action.tab);
+        } else if (action.kind === "claim") {
+            this.renderer.showInteractionResult(this.session.claimQuest(action.id));
+        } else if (action.kind === "promote") {
+            const result = this.session.promoteRank();
+            this.renderer.showInteractionResult(result === "claimed" ? "promoted" : result);
+        } else {
+            this.renderer.journal.close();
+            if (this.resumeAfterJournal) this.resume();
+            this.resumeAfterJournal = false;
+            if (action.kind === "navigate" && !this.session.navigateToQuest(action.id)) this.renderer.rejectDestination();
+        }
+        this.renderer.update(this.session.getSnapshot(), 0);
+        void this.runtime.flushProgress();
     }
 
     private onTouchCancel(event: cc.Event.EventTouch): void {
@@ -203,6 +230,7 @@ export default class DemoBootstrap extends cc.Component {
         this.touchId = -1;
         this.joystickTouch = false;
         this.controlTouch = null;
+        this.journalTouch = false;
     }
 
     private toCanvas(event: cc.Event.EventTouch): cc.Vec2 {

@@ -66,12 +66,14 @@ test("natural combat grants each kill reward once for static enemies and preserv
     squad: { actors: [{ id: "hero", kind: "hero", x: 2, y: 2, hp: 100, attack: 10, defense: 0, moveSpeed: 4, attackRange: 3, aggroRange: 10 }] },
     enemies: ["one", "two"].map((id, index) => ({ id, kind: "resource", x: 3 + index, y: 2, hp: 1, attack: 0, defense: 0,
       moveSpeed: 0, attackRange: 0, aggroRange: 0, defeatFlag: "defeat:guard",
+      defeatCounters: ["defeat:type:1:subtype:2"],
       defeatRewards: [{ experience: true, amount: 7 }, { resource: "coins", amount: 2 }] })),
     skills: { player: { id: "hit", range: 3, cooldown: 0.2, power: 1, target: "enemy" }, enemy: { id: "wait", range: 0, cooldown: 1, power: 0, target: "enemy" } },
   };
   const session = new DemoSession(config);
   session.update(2);
   assert.equal(session.map.counter("defeat:guard"), 2);
+  assert.equal(session.map.counter("defeat:type:1:subtype:2"), 2);
   assert.equal(session.map.level, 2);
   assert.deepEqual(session.map.snapshot().experience, { current: 4, required: 20 });
   assert.equal(session.map.snapshot().resources[0].amount, 4);

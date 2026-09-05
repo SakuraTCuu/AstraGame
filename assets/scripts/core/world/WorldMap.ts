@@ -4,6 +4,7 @@ import type { GridNavigation } from "../navigation/GridNavigation";
 import type { ProgressCondition } from "./ProgressConditions";
 import { meetsCondition, unmetConditions, validateCondition } from "./ProgressConditions";
 import { pointInPolygon, polygonIntersectsRect, validateConvexPolygon } from "./WorldGeometry";
+import type { ProgressReward } from "./ProgressionJournal";
 
 export interface WorldRect { readonly x: number; readonly y: number; readonly width: number; readonly height: number; }
 export type WorldObstacle =
@@ -12,11 +13,11 @@ export type WorldObstacle =
 export interface ResourceCost { readonly resource: string; readonly amount: number; }
 export interface WorldPoi extends Vec2Like {
   readonly id: string; readonly name?: string; readonly type: string; readonly discoverRadius: number;
-  readonly interaction?: { readonly radius: number; readonly cost?: ResourceCost; readonly grants?: Readonly<Record<string, number>>; readonly initiallyCompleted?: boolean; readonly condition?: ProgressCondition; readonly allowLockedApproach?: boolean };
+  readonly interaction?: { readonly radius: number; readonly cost?: ResourceCost; readonly grants?: Readonly<Record<string, number>>; readonly rewards?: readonly ProgressReward[]; readonly initiallyCompleted?: boolean; readonly condition?: ProgressCondition; readonly allowLockedApproach?: boolean; readonly command?: string; readonly auto?: boolean };
 }
 export interface WorldZone { readonly id: string; readonly name?: string; readonly rect: WorldRect; readonly unlock: string; readonly minimumLevel?: number; readonly polygon?: readonly Vec2Like[]; }
 export interface ExperienceLevel { readonly level: number; readonly required: number; }
-export interface WorldProgression { readonly level: number; readonly rank?: number; readonly initialFlags?: readonly string[]; readonly experienceLevels?: readonly ExperienceLevel[]; readonly resources: Readonly<Record<string, { readonly name: string; readonly initial: number }>>; }
+export interface WorldProgression { readonly level: number; readonly rank?: number; readonly initialFlags?: readonly string[]; readonly initialCounters?: Readonly<Record<string, number>>; readonly partyLevels?: readonly number[]; readonly experienceLevels?: readonly ExperienceLevel[]; readonly resources: Readonly<Record<string, { readonly name: string; readonly initial: number; readonly optionalInSave?: boolean; readonly showInHud?: boolean }>>; }
 export interface MapProgress { readonly level: number; readonly rank?: number; readonly experience?: number; readonly counters?: Readonly<Record<string, number>>; readonly flags?: readonly string[]; readonly resources: Readonly<Record<string, number>>; readonly discoveredPoiIds: readonly string[]; readonly interactedPoiIds: readonly string[]; readonly completedEncounterIds: readonly string[]; }
 export type InteractionResult = "completed" | "already_completed" | "out_of_range" | "insufficient_resources" | "requirements_not_met" | "locked" | "unavailable";
 export interface ExplorationEvent { readonly type: "poi_discovered" | "poi_interacted" | "zone_unlocked" | "encounter_completed" | "progress_changed" | "resource_changed" | "teleported" | "level_up"; readonly id: string; }
@@ -42,6 +43,9 @@ export class WorldMap {
   private readonly interacted = new Set<string>();
   private readonly balances = new Map<string, number>();
   private readonly resourceNames = new Map<string, string>();
+  private readonly optionalResources = new Set<string>();
+  private readonly hiddenResources = new Set<string>();
+  readonly partyLevels: readonly number[];
   private readonly experienceLevels = new Map<number, number>();
   private readonly counters = new Map<string, number>();
   private experience = 0;
@@ -69,6 +73,9 @@ export class WorldMap {
     this.pois = pois;
     this.level = progression.level;
     this.rank = progression.rank ?? 0;
+    this.partyLevels = [...(progression.partyLevels ?? [])];
+    if (this.partyLevels.some((level) => !Number.isSafeInteger(level) || level < 1)) throw new Error("Invalid party level");
+    for (const [id, amount] of Object.entries(progression.initialCounters ?? {})) this.incrementCounter(id, amount);
     this.zoneMode = zoneMode;
     if (!Number.isSafeInteger(this.rank) || this.rank < 0) throw new Error("Invalid exploration rank");
     for (const flag of progression.initialFlags ?? []) { if (!flag || typeof flag !== "string") throw new Error("Invalid initial flag"); this.flags.add(flag); }
@@ -86,6 +93,8 @@ export class WorldMap {
       if (!Number.isSafeInteger(resource.initial) || resource.initial < 0) throw new Error(`Invalid resource ${id}`);
       this.balances.set(id, resource.initial);
       this.resourceNames.set(id, resource.name);
+      if (resource.optionalInSave) this.optionalResources.add(id);
+      if (resource.showInHud === false) this.hiddenResources.add(id);
     }
     const ids = new Set<string>();
     for (const poi of pois) {
@@ -96,6 +105,7 @@ export class WorldMap {
         if (poi.interaction.condition) validateCondition(poi.interaction.condition);
         if (poi.interaction.cost) this.validateResourceAmount(poi.interaction.cost.resource, poi.interaction.cost.amount);
         for (const id of Object.keys(poi.interaction.grants ?? {})) this.validateResourceAmount(id, poi.interaction.grants![id]);
+        for (const reward of poi.interaction.rewards ?? []) this.validateReward(reward);
         if (poi.interaction.initiallyCompleted) this.interacted.add(poi.id);
       }
     }
@@ -143,6 +153,8 @@ export class WorldMap {
     this.events.push({ type: "progress_changed", id });
   }
   isConditionMet(condition?: ProgressCondition): boolean { return meetsCondition(condition, this); }
+  resourceBalance(id: string): number { return this.balances.get(id) ?? 0; }
+  resourceName(id: string): string { return this.resourceNames.get(id) ?? id; }
   grantFlag(id: string): void {
     if (!id || this.flags.has(id)) return;
     this.flags.add(id); this.revision += 1;
@@ -156,10 +168,42 @@ export class WorldMap {
   grantResources(grants: Readonly<Record<string, number>>): void {
     for (const id of Object.keys(grants)) {
       this.validateResourceAmount(id, grants[id]);
-      if (!Number.isSafeInteger(this.balances.get(id)! + grants[id])) throw new Error(`Resource overflow: ${id}`);
+      if (!Number.isSafeInteger(this.balances.get(id)! + grants[id]) || !Number.isSafeInteger(this.counter(`owned:${id}`) + grants[id])) throw new Error(`Resource overflow: ${id}`);
     }
-    for (const id of Object.keys(grants)) { this.balances.set(id, this.balances.get(id)! + grants[id]); this.events.push({ type: "resource_changed", id }); }
+    for (const id of Object.keys(grants)) { this.balances.set(id, this.balances.get(id)! + grants[id]); this.incrementCounter(`owned:${id}`, grants[id]); this.events.push({ type: "resource_changed", id }); }
     this.revision += 1;
+  }
+
+  validateReward(reward: ProgressReward): void {
+    if (!reward || !Number.isSafeInteger(reward.amount) || reward.amount < 0 || !Number.isFinite(reward.chance ?? 1) ||
+        (reward.chance ?? 1) < 0 || (reward.chance ?? 1) > 1) throw new Error("Invalid progression reward");
+    if ("resource" in reward) this.validateResourceAmount(reward.resource, reward.amount);
+    else if (reward.experience !== true || !this.experienceLevels.size) throw new Error("Experience reward requires a level table");
+  }
+
+  private validateRewardBatch(rewards: readonly ProgressReward[], balances = this.balances, extraOwned: Readonly<Record<string, number>> = {}): void {
+    const maximum: Record<string, number> = {};
+    let maximumExperience = 0;
+    for (const reward of rewards) {
+      this.validateReward(reward);
+      if ("resource" in reward) maximum[reward.resource] = (maximum[reward.resource] ?? 0) + reward.amount;
+      else maximumExperience += reward.amount;
+    }
+    for (const [id, amount] of Object.entries(maximum)) if (!Number.isSafeInteger((balances.get(id) ?? 0) + amount) ||
+        !Number.isSafeInteger(this.counter(`owned:${id}`) + (extraOwned[id] ?? 0) + amount)) throw new Error("Reward balance overflow");
+    if (!Number.isSafeInteger(this.experience + maximumExperience)) throw new Error("Experience reward overflow");
+  }
+
+  grantRewards(rewards: readonly ProgressReward[], random: () => number): void {
+    this.validateRewardBatch(rewards);
+    const grants: Record<string, number> = {};
+    let experience = 0;
+    for (const reward of rewards) if (random() < (reward.chance ?? 1)) {
+      if ("resource" in reward) grants[reward.resource] = (grants[reward.resource] ?? 0) + reward.amount;
+      else experience += reward.amount;
+    }
+    if (Object.keys(grants).length) this.grantResources(grants);
+    if (experience) this.grantExperience(experience);
   }
 
   grantExperience(amount: number): void {
@@ -185,7 +229,7 @@ export class WorldMap {
     return Boolean(poi && poi.type === "portal" && this.interacted.has(id) && this.isPositionUnlocked(poi));
   }
 
-  interact(id: string, position: Vec2Like): InteractionResult {
+  interact(id: string, position: Vec2Like, random?: () => number): InteractionResult {
     const poi = this.pois.find((entry) => entry.id === id);
     if (!poi?.interaction) return "unavailable";
     if (!this.isPositionUnlocked(position) || (!poi.interaction.allowLockedApproach && !this.isPositionUnlocked(poi))) return "locked";
@@ -194,14 +238,18 @@ export class WorldMap {
     if (Math.hypot(position.x - poi.x, position.y - poi.y) > poi.interaction.radius || !this.navigation.isSegmentWalkable(position, poi, Boolean(poi.interaction.allowLockedApproach))) return "out_of_range";
     const cost = poi.interaction.cost;
     if (cost && this.balances.get(cost.resource)! < cost.amount) return "insufficient_resources";
+    if (poi.interaction.rewards?.length && !random) throw new Error("Reward interaction requires deterministic random");
     const next = new Map(this.balances);
     if (cost) next.set(cost.resource, next.get(cost.resource)! - cost.amount);
     for (const resource of Object.keys(poi.interaction.grants ?? {})) {
       const balance = next.get(resource)! + poi.interaction.grants![resource];
-      if (!Number.isSafeInteger(balance)) throw new Error(`Resource overflow: ${resource}`);
+      if (!Number.isSafeInteger(balance) || !Number.isSafeInteger(this.counter(`owned:${resource}`) + poi.interaction.grants![resource])) throw new Error(`Resource overflow: ${resource}`);
       next.set(resource, balance);
     }
+    this.validateRewardBatch(poi.interaction.rewards ?? [], next, poi.interaction.grants);
     for (const [resource, amount] of next) this.balances.set(resource, amount);
+    for (const [id, amount] of Object.entries(poi.interaction.grants ?? {})) this.incrementCounter(`owned:${id}`, amount);
+    if (poi.interaction.rewards?.length) this.grantRewards(poi.interaction.rewards, random!);
     this.interacted.add(id);
     this.revision += 1;
     this.events.push({ type: "poi_interacted", id });
@@ -223,6 +271,13 @@ export class WorldMap {
     if (!contains(this.bounds, point)) return false;
     if (this.zoneMode === "overlay") return !this.zones.some((zone) => !this.unlocked.has(zone.id) && contains(zone.rect, point) && (!zone.polygon || pointInPolygon(point, zone.polygon)));
     return this.zones.length === 0 || this.zones.some((zone) => contains(zone.rect, point) && this.unlocked.has(zone.id));
+  }
+
+  blockingGateAt(point: Vec2Like): string | undefined {
+    const cell = this.navigation.worldToGrid(point), size = this.navigation.cellSize;
+    const rect = { x: cell.x * size, y: cell.y * size, width: size, height: size };
+    return this.zones.find((zone) => !this.unlocked.has(zone.id) && zone.unlock.startsWith("interact:") &&
+      (zone.polygon ? polygonIntersectsRect(zone.polygon, rect) : overlapArea(zone.rect, rect) > 0))?.unlock.slice(9);
   }
 
   discoverAt(position: Vec2Like): void {
@@ -259,7 +314,7 @@ export class WorldMap {
       experience: this.experienceLevels.size ? { current: this.experience, required: this.experienceLevels.has(this.level + 1) ? this.experienceLevels.get(this.level)! : null } : null,
       counters: this.counterProgress(),
       flags: [...this.flags],
-      resources: [...this.balances].map(([id, amount]) => ({ id, name: this.resourceNames.get(id)!, amount })),
+      resources: [...this.balances].map(([id, amount]) => ({ id, name: this.resourceNames.get(id)!, amount, showInHud: !this.hiddenResources.has(id) })),
       pois: this.pois.map((poi) => ({ ...poi, discovered: this.discovered.has(poi.id), completed: this.interacted.has(poi.id),
         unlocked: this.isPositionUnlocked(poi), requirements: this.interacted.has(poi.id) ? [] : unmetConditions(poi.interaction?.condition, this),
         canAfford: !poi.interaction?.cost || this.balances.get(poi.interaction.cost.resource)! >= poi.interaction.cost.amount })),
@@ -281,7 +336,7 @@ export class WorldMap {
         (this.experienceLevels.has(progress.level + 1) ? experience >= this.experienceLevels.get(progress.level)! : experience !== 0)) throw new Error("Invalid saved experience");
     for (const [id, amount] of Object.entries(progress.counters ?? {})) if (!id || !Number.isSafeInteger(amount) || amount < 0) throw new Error("Invalid saved progression count");
     for (const [id, amount] of Object.entries(progress.resources)) this.validateResourceAmount(id, amount);
-    if (Object.keys(progress.resources).length !== this.balances.size) throw new Error("Saved resources do not match configuration");
+    for (const id of this.balances.keys()) if (!(id in progress.resources) && !this.optionalResources.has(id)) throw new Error("Saved resources do not match configuration");
     for (const id of progress.discoveredPoiIds) if (!this.pois.some((poi) => poi.id === id)) throw new Error(`Unknown saved POI ${id}`);
     for (const id of progress.interactedPoiIds) if (!this.pois.some((poi) => poi.id === id && poi.interaction)) throw new Error(`Unknown saved interaction ${id}`);
     if (!Number.isSafeInteger(progress.rank ?? 0) || (progress.rank ?? 0) < 0) throw new Error("Invalid saved rank");

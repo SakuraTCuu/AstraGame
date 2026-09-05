@@ -83,6 +83,10 @@ try {
   });
   assert.ok(initial.tiles > 0, "No detailed map textures rendered");
   assert.deepEqual(initial.failures, []);
+  assert.ok(await evaluate(() => {
+    const journal = window.__referenceBoot.renderer.journal;
+    return journal.trackerTitle.string.length > 0 && journal.trackerTitle.node.width > 200 && journal.trackerStatus.node.width > 200;
+  }), "Quest tracker labels lost their fixed layout dimensions");
   const foreground = await evaluate(() => {
     const renderer = window.__referenceBoot.renderer.referenceArt.foreground;
     const pixels = renderer.maskTexture.readPixels();
@@ -91,6 +95,19 @@ try {
     return { polygons: renderer.visiblePolygons, coveredSamples: covered, totalSamples: pixels.length / 16 };
   });
   assert.ok(foreground.polygons > 0 && foreground.coveredSamples > 100 && foreground.coveredSamples < foreground.totalSamples);
+  await clickDesign(-310, 300);
+  assert.ok(await evaluate(() => window.__referenceBoot.renderer.journal.isOpen && window.__referenceBoot.session.runState === "paused"));
+  await clickDesign(214, 484);
+  await capture("rank-tasks");
+  for (let index = 0; index < 3; index++) { await clickDesign(0, 355 - index * 83); await clickDesign(140, -547); }
+  await clickDesign(-170, -547);
+  const journal = await evaluate(() => ({ rank: window.__referenceBoot.session.map.rank,
+    rankClaims: window.__referenceBoot.session.journal.snapshot().quests.filter((quest) => quest.category === "rank" && quest.state === "claimed").length }));
+  assert.ok(journal.rank === 2 && journal.rankClaims === 3, JSON.stringify(journal));
+  await capture("rank-promoted");
+  await clickDesign(306, 557);
+  await clickDesign(-185, 380);
+  assert.ok(await evaluate(() => window.__referenceBoot.session.map.hasFlag("quest:10010018") && window.__referenceBoot.session.map.resourceBalance("item:1") === 10));
   await clickDesign(254, 443);
   const overview = await evaluate(() => ({ open: window.__referenceBoot.renderer.overview.isOpen, state: window.__referenceBoot.session.runState,
     scale: window.__referenceBoot.renderer.overview.scale }));
@@ -295,6 +312,9 @@ try {
     await clickDesign(254, 443);
     await capture(`${name}-overview`);
     await clickDesign(312, 570);
+    await clickDesign(-310, 300);
+    await capture(`${name}-journal`);
+    await clickDesign(306, 557);
   }
   const resetCounts = [];
   for (let index = 0; index < 3; index++) {
@@ -307,7 +327,7 @@ try {
   assert.ok(resetCounts.every((count) => count.root === resetCounts[0].root && count.world === 8 && count.actors === 4), JSON.stringify(resetCounts));
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
-  const report = { initial, foreground, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, resetCounts, viewports, errors, failures };
+  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

@@ -134,19 +134,19 @@ export class GridNavigation {
     return nearest;
   }
 
-  findWorldPath(from: Vec2Like, to: Vec2Like): Vector2[] {
-    if (this.isSegmentWalkable(from, to)) return [Vector2.from(to)];
-    const cells = this.findPath(this.worldToGrid(from), this.worldToGrid(to));
+  findWorldPath(from: Vec2Like, to: Vec2Like, ignoreLocks = false): Vector2[] {
+    if (this.isSegmentWalkable(from, to, ignoreLocks) && !ignoreLocks) return [Vector2.from(to)];
+    const cells = this.findPath(this.worldToGrid(from), this.worldToGrid(to), ignoreLocks);
     if (cells.length === 0) return [];
     const points = cells.map((point) => this.gridToWorld(point));
-    if (points.length > 1 && this.isSegmentWalkable(from, points[1])) points.shift();
-    if (points.length > 1 && this.isSegmentWalkable(points[points.length - 2], to)) points.pop();
+    if (points.length > 1 && this.isSegmentWalkable(from, points[1], ignoreLocks)) points.shift();
+    if (points.length > 1 && this.isSegmentWalkable(points[points.length - 2], to, ignoreLocks)) points.pop();
     points.push(Vector2.from(to));
     return points;
   }
 
-  findPath(start: GridPoint, goal: GridPoint): GridPoint[] {
-    if (this.isBlocked(start) || this.isBlocked(goal)) return [];
+  findPath(start: GridPoint, goal: GridPoint, ignoreLocks = false): GridPoint[] {
+    if (this.isBlocked(start, ignoreLocks) || this.isBlocked(goal, ignoreLocks)) return [];
     const startKey = this.index(start);
     const goalKey = this.index(goal);
     const open: number[] = [startKey];
@@ -167,7 +167,7 @@ export class GridNavigation {
       for (const direction of DIRECTIONS) {
         const currentPoint = this.point(current);
         const neighbor = { x: currentPoint.x + direction.x, y: currentPoint.y + direction.y };
-        if (this.isBlocked(neighbor)) continue;
+        if (this.isBlocked(neighbor, ignoreLocks)) continue;
         const neighborKey = this.index(neighbor);
         const tentative = gScore[current] + 1;
         if (tentative >= gScore[neighborKey]) continue;

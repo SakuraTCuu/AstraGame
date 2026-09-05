@@ -3,6 +3,7 @@ import { inflateSync } from "node:zlib";
 import { tableRow } from "./reference-cache.mjs";
 import { compileReferenceCondition, parseReferenceItem, referenceFogPolygon } from "./reference-rules.mjs";
 import { createReferenceSkillCompiler } from "./reference-skills.mjs";
+import { createReferenceRewardCompiler, buildReferenceJournal } from "./reference-progression.mjs";
 
 function readJsonAsset(data) {
   const json = JSON.parse(data);
@@ -14,7 +15,7 @@ function readJsonAsset(data) {
 export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   const families = new Map();
   for (const [name, table] of Object.entries(tables)) {
-    const family = name.match(/^(Avatar|Hero|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item|PlayerLevel)(?:_(?:\d+|Xs))?$/)?.[1];
+    const family = name.match(/^(Avatar|Hero|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item|PlayerLevel|Quest|BossFirstKill|Equip)(?:_(?:\d+|Xs))?$/)?.[1];
     if (!family) continue;
     if (!families.has(family)) families.set(family, new Map());
     for (const id of Object.keys(table)) if (id !== "__KEY_MAP__") families.get(family).set(id, table);
@@ -116,11 +117,13 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   config.spawns = [];
   const skipped = [];
   const unsupported = [];
+  const progressionIssues = [];
+  const rewardCompiler = createReferenceRewardCompiler(row, config.world.progression.resources, progressionIssues);
   for (const id of families.get("NpcSpawn").keys()) {
     const spawn = row("NpcSpawn", id);
     if (spawn.map !== 100001) continue;
     const npc = row("Npc", spawn.npcId);
-    if (!npc || ![3, 5].includes(npc.type)) continue;
+    if (!npc || ![1, 3, 5].includes(npc.type)) continue;
     const position = toWorld(spawn.px, spawn.py);
     if (position.x < 0 || position.y < 0 || position.x >= config.world.width || position.y >= config.world.height) continue;
     const poiId = `reference_npc_${id}`;
@@ -128,10 +131,12 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     try { condition = compileReferenceCondition(npc.condition, row); }
     catch (error) { unsupported.push({ npcId: id, field: "condition", source: npc.condition }); condition = { kind: "flag", id: `external:npc:${id}`, label: "\u524d\u7f6e\u6761\u4ef6\u672a\u6ee1\u8db3" }; }
     const cost = npc.cost ? parseReferenceItem(npc.cost) : null;
-    if (cost && cost.itemId !== 4) throw new Error(`Unsupported NPC currency ${npc.cost}`);
-    const poi = { id: poiId, name: npc.name, type: npc.type === 3 ? "fog_gate" : "portal", ...position,
+    const grant = rewardCompiler.safe(npc.type === 1 ? npc.reward : null, poiId);
+    if (grant.blocked) condition = { kind: "all", conditions: [condition, grant.blocked].filter(Boolean) };
+    const poi = { id: poiId, name: npc.name || (npc.type === 1 ? "\u5b9d\u7bb1" : npc.logName), type: npc.type === 3 ? "fog_gate" : npc.type === 5 ? "portal" : "chest", ...position,
       discoverRadius: Math.max(300, npc.activeDistance || 200), interaction: { radius: npc.activeDistance || 200,
-        condition, allowLockedApproach: npc.type === 3, cost: cost ? { resource: "incense", amount: cost.amount } : undefined,
+        condition, allowLockedApproach: npc.type === 3, cost: cost ? { resource: rewardCompiler.resource(cost.itemId), amount: cost.amount } : undefined,
+        rewards: grant.rewards, command: npc.type === 1 ? "\u6253\u5f00" : undefined, auto: npc.type === 1 && npc.autoOpen === 1,
         initiallyCompleted: npc.type === 5 && Number(id) === 500000 } };
     config.world.pointsOfInterest.push(poi);
     art.bindings[poiId] = binding(npc.display);
@@ -183,6 +188,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
       collisionRadius: row("Avatar", monster.avatar)?.volume || 20,
       phaseThresholds: boss ? phaseThresholds : undefined, phaseNames: boss ? Array.from({ length: phaseThresholds.length + 1 }, (_, index) => `phase${index + 1}`) : undefined,
       skillIds: enemySkills.map((skill) => skill.id), healthBars: boss ? 20 : 1, defeatFlag: `defeat:${monsterId}`, defeatRewards: rewards });
+    enemies.get(templateId).defeatCounters = String(monster.subtype || "").split(",").filter(Boolean).map((subtype) => `defeat:type:${monster.type}:subtype:${subtype}`);
     const spawnId = `reference_spawn_${id}`;
     art.bindings[spawnId] = visual;
     if (visual) {
@@ -194,6 +200,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     if (boss) config.world.pointsOfInterest.push({ id: spawnId, name: monster.name, type: "boss", ...position, discoverRadius: 500 });
   }
   config.enemies = [...enemies.values()];
+  config.journal = buildReferenceJournal(row, (family) => [...(families.get(family)?.keys() ?? [])], config, toWorld, rewardCompiler, progressionIssues);
   config.skills.definitions = [...config.skills.definitions.filter((skill) => !skill.summonEnemyId), ...skillCompiler.definitions.values()];
   for (const id of families.get("WorldMap").keys()) {
     const region = row("WorldMap", id);
@@ -210,6 +217,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     fogZones: config.fog.unlockZones.length, portals: config.world.pointsOfInterest.filter(poi => poi.type === "portal").length, unsupported,
     requiredMapTiles: requiredTiles.length, missingMapTiles: requiredTiles.filter((path) => !availableTiles.has(path)),
     compiledSkills: skillCompiler.definitions.size, skillIssues: skillCompiler.issues.filter((issue) => issue.kind !== "no_direct_actions" || !skillCompiler.definitions.get(Number(issue.id))?.actions.length),
+    journalQuests: config.journal.quests.length, progressionIssues,
     limitations: ["The party uses source level-10 hero attributes, not the live account. Defense math and critical multiplier still need live calibration.",
       "Standalone starts with 20 incense, a repaired home portal and spawn-containing fog already open; host account progression is separate.",
       "Quest progression, full skill formulas, other inventory rewards and dynamic NPC state still require adaptation."] } };
