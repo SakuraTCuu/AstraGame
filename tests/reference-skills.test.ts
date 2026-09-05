@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createReferenceSkillCompiler, skillFrames, skillTuple } from "../tools/reference-skills.mjs";
+import { createReferenceSkillCompiler, heroSkillAtStar, skillFrames, skillTuple } from "../tools/reference-skills.mjs";
 
 test("frame expressions preserve action order, frame timing and damage types", () => {
   const frames = skillFrames("[key:2_action:[damageAction,6000]_dmgType:[2]]&[key:4_action:[damageAction,6000]|[addBuffAction,9,1]]");
@@ -41,4 +41,31 @@ test("source buffs become timed modifiers and source HP gates remain conditions"
   assert.equal(skill.actions[0].status.duration, 3);
   assert.equal(skill.actions[0].status.modifiers.attackRate, 0.2);
   assert.equal(skill.actions[0].status.state, "ready");
+});
+
+test("hero skill selection enforces star gates and selects the highest unlocked tier", () => {
+  assert.equal(heroSkillAtStar("102_3,101_0,103_7", 0), 101);
+  assert.equal(heroSkillAtStar("102_3,101_0,103_7", 6), 102);
+  assert.equal(heroSkillAtStar("102_3,101_0,103_7", 7), 103);
+  assert.equal(heroSkillAtStar("201_1,202_5", 0), undefined);
+  assert.equal(heroSkillAtStar("101_0_201,102_4_202", 0), 101);
+  assert.equal(heroSkillAtStar("101_0,102_4|1", 0), 101);
+  assert.equal(heroSkillAtStar("201_1,202_1|2", 0), undefined);
+  assert.equal(heroSkillAtStar(null), undefined);
+  assert.throws(() => heroSkillAtStar("101_0,102_0"), /Duplicate/);
+  assert.throws(() => heroSkillAtStar("101_bad"), /Invalid/);
+});
+
+test("zero-star heroes do not receive gated active or passive skills", () => {
+  const queried: number[] = [];
+  const compiler = createReferenceSkillCompiler((family, id) => {
+    assert.equal(family, "Skill"); queried.push(id);
+    if (id === 4) return { skillType: 3, triggerActions: "[changeAttrAction,atkRate,1000]" };
+    if (id === 5) return { skillType: 3, triggerActions: "[changeAttrAction,atkRate,9000]" };
+    return { skillType: 1, firstSelector: [50, 1], frameKey: "[key:0_action:[damageAction,10000]]" };
+  });
+  const result = compiler.heroSkills({ attack: "1_0,11_4", skill1: "2_0", skill2: "3_1", skill5: "4_0;5_3;6_2" }, 12);
+  assert.deepEqual(result.ids, ["reference_skill_1", "reference_skill_2"]);
+  assert.deepEqual(result.modifiers, { attackRate: 0.1 });
+  assert.deepEqual(new Set(queried), new Set([1, 2, 4]));
 });

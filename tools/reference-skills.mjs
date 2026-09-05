@@ -42,6 +42,21 @@ const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", 
 const list = (source) => source ? splitSkillExpression(source, "|").map(skillTuple) : [];
 const skillId = (id) => `reference_skill_${id}`;
 
+export function heroSkillAtStar(source, star = 0) {
+  if (!Number.isSafeInteger(star) || star < 0) throw new Error("Invalid hero star");
+  let selected, unlocked = -1;
+  const thresholds = new Set();
+  for (const value of String(source || "").split(",").filter(Boolean)) {
+    const match = /^(\d+)_(\d+)(?:_\d+)?(?:\|\d+)?$/.exec(value.trim());
+    if (!match || Number(match[1]) < 1 || !Number.isSafeInteger(Number(match[1])) || !Number.isSafeInteger(Number(match[2]))) throw new Error("Invalid hero skill progression");
+    const required = Number(match[2]);
+    if (required <= star && thresholds.has(required)) throw new Error("Duplicate hero skill threshold");
+    thresholds.add(required);
+    if (required <= star && required > unlocked) { selected = Number(match[1]); unlocked = required; }
+  }
+  return selected;
+}
+
 export function createReferenceSkillCompiler(lookup) {
   const definitions = new Map(), statuses = new Map(), issues = [];
   const report = (id, kind, value) => issues.push({ id: String(id), kind, value });
@@ -141,11 +156,16 @@ export function createReferenceSkillCompiler(lookup) {
     return definition;
   };
   const heroSkills = (hero, fps) => {
-    const ids = [hero.attack, hero.skill1, hero.skill2].filter(Boolean).map((value) => Number(value.split(",")[0].split("_")[0]));
+    for (const source of [hero.attack, hero.skill1, hero.skill2, hero.skill5].filter(Boolean)) {
+      if (/[|]|\d+_\d+_\d+/.test(source)) report(hero.id, "hero_skill_variant", source);
+    }
+    const ids = [hero.attack, hero.skill1, hero.skill2].map((value) => heroSkillAtStar(value)).filter((id) => id !== undefined);
     const modifiers = {};
     const passiveActions = [];
     for (const group of (hero.skill5 || "").split(";").filter(Boolean)) {
-      const id = Number(group.split(",")[0].split("_")[0]), passive = lookup("Skill", id);
+      const id = heroSkillAtStar(group);
+      if (id === undefined) continue;
+      const passive = lookup("Skill", id);
       if (!passive) continue;
       if (passive.skillType !== 3) { ids.push(id); continue; }
       for (const action of list(passive.triggerActions)) {
