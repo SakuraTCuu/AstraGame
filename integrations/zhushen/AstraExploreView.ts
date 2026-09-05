@@ -3,6 +3,8 @@ import { UIManager } from "../../comm/manager/UIManager";
 import { StorageMgr } from "../../comm/manager/StorageMgr";
 import { MessageCenter } from "../../comm/util/MessageCenter";
 import { LayerConstant } from "../../comm/constant/LayerConstant";
+import { ObjectProxy } from "../../comm/commodules/object/ObjectProxy";
+import { StringUtil } from "../../comm/util/StringUtil";
 import DemoBootstrap from "./app/DemoBootstrap";
 import { createLocalDemoPorts } from "./framework/LocalDemoPorts";
 import { createZhushenPorts } from "./framework/ZhushenPorts";
@@ -14,6 +16,7 @@ export interface AstraExploreOptions {
     config?: RuntimeConfigPort;
     protocol?: RuntimeProtocolPort;
     configPath?: string;
+    roleKey?: string;
 }
 
 export const ASTRA_EXPLORE_VIEW = {
@@ -37,13 +40,21 @@ export class AstraExploreView extends BaseUI {
     private backdrop: cc.Graphics = null;
     private fittedWidth = 0;
     private fittedHeight = 0;
+    private roleKey: string = null;
+    private openOptions: AstraExploreOptions = null;
 
     public enter(...args: any[]): void {
+        const options: AstraExploreOptions = args[0] || this.openOptions || {};
+        const role = ObjectProxy.instance.getRoleVo();
+        const roleKey = args[0]?.roleKey ?? (role && role.srv_id && role.rid ? StringUtil.getNorKey(role.reg_time, role.srv_id, role.rid) : this.roleKey || options.roleKey);
+        if (typeof roleKey !== "string" || !roleKey) throw new Error("Exploration requires an active role");
+        if (this.explore && this.roleKey !== roleKey) this.releaseContent();
         super.enter(...args);
         if (this.explore) { this.explore.resume(); return; }
-        const options: AstraExploreOptions = args[0] || {};
+        this.roleKey = roleKey;
+        this.openOptions = options;
         if (!this.node.getComponent(cc.BlockInputEvents)) this.node.addComponent(cc.BlockInputEvents);
-        this.backdrop = this.node.addComponent(cc.Graphics);
+        this.backdrop = this.backdrop || this.node.addComponent(cc.Graphics);
         this.content = new cc.Node("ExploreContent");
         this.content.active = false;
         this.content.setContentSize(720, 1280);
@@ -52,12 +63,14 @@ export class AstraExploreView extends BaseUI {
         this.explore.autoStart = false;
         this.explore.manageResolution = false;
         this.content.active = true;
+        this.addBackButton();
         this.fitContent();
         const local = createLocalDemoPorts();
         void this.explore.open(createZhushenPorts({
             config: options.config || local.config,
             protocol: options.protocol || local.protocol,
             storage: StorageMgr.instance,
+            roleKey,
             messages: MessageCenter,
         }), options.configPath || "config/auto_explore/world_demo");
     }
@@ -70,12 +83,30 @@ export class AstraExploreView extends BaseUI {
     }
 
     public dispose(force: boolean = true): void {
-        if (force && this.content) {
-            this.content.destroy();
-            this.content = null;
-            this.explore = null;
-        } else if (this.explore) this.explore.pause();
+        if (force) this.releaseContent();
+        else if (this.explore) this.explore.pause();
         super.dispose(force);
+    }
+
+    private releaseContent(): void {
+        if (this.explore) this.explore.close();
+        if (this.content) { this.content.active = false; this.content.destroy(); }
+        this.content = null; this.explore = null;
+        this.fittedWidth = this.fittedHeight = 0;
+    }
+
+    private addBackButton(): void {
+        const node = new cc.Node("HostBackButton"); this.content.addChild(node); node.zIndex = 1000;
+        node.setPosition(-218, -555); node.setContentSize(64, 64);
+        const g = node.addComponent(cc.Graphics); g.fillColor = cc.color(24, 46, 39, 240); g.circle(0, 0, 30); g.fill();
+        g.strokeColor = cc.color(220, 234, 212); g.lineWidth = 3; g.circle(0, 0, 30); g.stroke();
+        g.moveTo(8, 13); g.lineTo(-7, 0); g.lineTo(8, -13); g.stroke();
+        const hint = new cc.Node("BackHint"); node.addChild(hint); hint.setPosition(0, 46); hint.setContentSize(90, 32);
+        const label = hint.addComponent(cc.Label); label.string = "\u8fd4\u56de"; label.fontSize = 18; label.lineHeight = 24;
+        label.horizontalAlign = cc.Label.HorizontalAlign.CENTER; hint.active = false;
+        node.on(cc.Node.EventType.MOUSE_ENTER, () => { hint.active = true; }, this);
+        node.on(cc.Node.EventType.MOUSE_LEAVE, () => { hint.active = false; }, this);
+        node.on(cc.Node.EventType.TOUCH_END, (event: cc.Event.EventTouch) => { event.stopPropagation(); this.closeSelf(); }, this);
     }
 
     private fitContent(): void {

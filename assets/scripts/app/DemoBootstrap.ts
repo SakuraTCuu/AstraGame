@@ -32,6 +32,8 @@ export default class DemoBootstrap extends cc.Component {
     private recoveryTouch = false;
     private rosterTouch = false;
     private resumeAfterRoster = false;
+    private openRevision = 0;
+    private destroyed = false;
 
     get session(): DemoSession { return this.runtime && this.runtime.session; }
 
@@ -41,8 +43,13 @@ export default class DemoBootstrap extends cc.Component {
     }
 
     async open(ports: RuntimePorts = createLocalDemoPorts(), configPath = "config/auto_explore/world_demo"): Promise<boolean> {
+        if (this.destroyed || !cc.isValid(this.node, true)) return false;
+        const revision = ++this.openRevision;
         this.initializeView();
-        if (this.runtime) { await this.runtime.flushProgress(); this.runtime.dispose(); }
+        const previous = this.runtime;
+        if (previous) await previous.flushProgress();
+        if (this.destroyed || revision !== this.openRevision || !cc.isValid(this.node, true)) return false;
+        if (previous) previous.dispose();
         this.runtime = new ExploreRuntime(ports);
         this.runtime.events.on("loading", () => this.renderer.setLoading("LOADING WORLD..."));
         this.runtime.events.on<SessionReady>("ready", ({ config, session }) => {
@@ -64,6 +71,12 @@ export default class DemoBootstrap extends cc.Component {
 
     pause(): boolean { this.stopJoystick(); return this.runtime ? this.runtime.pause() : false; }
     resume(): boolean { return this.runtime ? this.runtime.resume() : false; }
+    close(): void {
+        this.openRevision++;
+        this.stopJoystick();
+        if (this.runtime) this.runtime.dispose();
+        this.runtime = null;
+    }
 
     update(deltaSeconds: number): void {
         if (!this.runtime || !this.renderer) return;
@@ -74,6 +87,7 @@ export default class DemoBootstrap extends cc.Component {
     }
 
     onDestroy(): void {
+        this.destroyed = true;
         this.node.off(cc.Node.EventType.TOUCH_START, this.onTouchStart, this);
         this.node.off(cc.Node.EventType.TOUCH_MOVE, this.onTouchMove, this);
         this.node.off(cc.Node.EventType.TOUCH_END, this.onTouchEnd, this);
@@ -83,7 +97,7 @@ export default class DemoBootstrap extends cc.Component {
         this.node.off(cc.Node.EventType.MOUSE_WHEEL, this.onMouseWheel, this);
         cc.game.off(cc.game.EVENT_HIDE, this.onGameHide, this);
         cc.game.off(cc.game.EVENT_SHOW, this.onGameShow, this);
-        if (this.runtime) this.runtime.dispose();
+        this.close();
         if (this.renderer) this.renderer.destroy();
         this.renderer = null;
         this.runtime = null;

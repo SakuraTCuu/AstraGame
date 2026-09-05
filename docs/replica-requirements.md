@@ -27,7 +27,7 @@ The objective remains behavior parity with the WeChat game Zhenxieren, including
 | Skills and damage | Source skill coefficients/timelines, multi-target projectiles, separate normal/tactical energy, public cooldowns, buffs and critical hits; periodic stacking/settlement, separate damage categories and personal traits; equipment and rank stats affect combat | Verify live energy regeneration/hit timing; complete specialized actions, conditional/team buffs, effect playback, defense/critical formulas and live periodic-damage comparison |
 | Boss and normal enemies | Source first-Boss attacks, charge, jump and HP gate; natural two-gate/Boss run completed with three survivors | Complete other Boss-specific mechanics, damage limits and health-layer counts |
 | State machines | Actor/cast/travel/run states; recoverable full-party defeat, town/repaired-portal return and battle reset; persisted exploration, development and respawn timers | Verify exact revival fees/timers, partial-party recovery and reset rules; restore in-progress enemy combat; extend long-session checks |
-| Zhushen/H5 foundation | `ExploreRuntime` plus a tested role-scoped `StorageMgr`/`MessageCenter` port adapter | Exercise the actual BaseUI module in the host; current integration tests use service doubles |
+| Zhushen/H5 foundation | Actual host UI/storage/resource/message managers exercised in an isolated Creator project; input, cache, role isolation and close races verified | Integrate into the production checkout and verify full startup, live account/protocol/reconnect behavior |
 
 ## Observed versus assumed rules
 

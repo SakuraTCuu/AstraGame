@@ -116,3 +116,27 @@ test("Zhushen adapter uses role-scoped StorageMgr methods and MessageCenter even
   ports.telemetry.track("explore_finished", { runId: "host-run" });
   assert.deepEqual(messages, [["auto_explore:explore_finished", { runId: "host-run" }]]);
 });
+
+test("queued exploration writes retain the captured host role after a switch", async () => {
+  const fixture = portsFixture(), values = new Map<string, unknown>();
+  fixture.ports.config.load = async <T>() => ({ ...config, session: { ...config.session, persistExploration: true } }) as T;
+  let currentRole = "_A";
+  const services = { config: fixture.ports.config, protocol: fixture.ports.protocol, messages: { sendMessage: () => {} },
+    storage: { getObject: (key: string, fallback: unknown, role: boolean) => values.get(key + (role ? currentRole : "")) ?? fallback,
+      setObject: (key: string, value: unknown, role: boolean) => { values.set(key + (role ? currentRole : ""), value); },
+      remove: (key: string, role: boolean) => { values.delete(key + (role ? currentRole : "")); } } };
+  const first = createZhushenPorts({ ...services, roleKey: currentRole });
+  const runtime = new ExploreRuntime(first); assert.equal(await runtime.start(), true);
+  runtime.session!.world.players[0].health = 41;
+  runtime.session!.map.recordProgressChange("wound");
+  const saved = runtime.flushProgress(); runtime.dispose(); currentRole = "_B";
+  const second = createZhushenPorts({ ...services, roleKey: currentRole });
+  await saved;
+  assert.equal((await first.storage.loadExploration!("default"))!.party[0].hp, 41);
+  assert.equal(await second.storage.loadExploration!("default"), null);
+  const checkpoint = { runId: "B", sequence: 1, payload: {} };
+  await second.storage.saveCheckpoint(checkpoint);
+  assert.equal(await first.storage.loadCheckpoint(), null);
+  await first.storage.clearExploration!("default");
+  assert.deepEqual(await second.storage.loadCheckpoint(), checkpoint);
+});
