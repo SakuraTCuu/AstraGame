@@ -16,7 +16,7 @@ export default class DemoBootstrap extends cc.Component {
     private destroyed = false;
 
     onLoad(): void {
-        cc.view.setDesignResolutionSize(720, 1280, cc.ResolutionPolicy.FIXED_WIDTH);
+        cc.view.setDesignResolutionSize(720, 1280, cc.ResolutionPolicy.SHOW_ALL);
         cc.debug.setDisplayStats(false);
         this.renderer = new DemoRenderer(this.node);
         this.bindInput();
@@ -95,8 +95,9 @@ export default class DemoBootstrap extends cc.Component {
         if (this.joystickTouch) {
             this.stopJoystick();
         } else if (this.session && end.sub(this.touchStart).mag() < 18 && end.y < 535) {
-            const destination = this.renderer.screenToWorld(end);
+            const destination = this.renderer.navigationTarget(end);
             if (this.session.setAutoDestination(destination.x, destination.y)) this.renderer.setDestination(destination);
+            else this.renderer.rejectDestination();
         }
         this.resetTouch();
     }
@@ -113,7 +114,6 @@ export default class DemoBootstrap extends cc.Component {
         const length = offset.mag();
         const normalized = length > JOYSTICK_RADIUS ? offset.mul(1 / length) : offset.mul(1 / JOYSTICK_RADIUS);
         this.session.setMoveIntent(normalized.x, normalized.y / 0.58);
-        this.renderer.setDestination(null);
         this.renderer.setJoystick(normalized, true);
     }
 

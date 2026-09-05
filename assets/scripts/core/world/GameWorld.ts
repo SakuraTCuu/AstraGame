@@ -37,6 +37,7 @@ export class GameWorld {
   private readonly enemyAIs = new Map<string, EnemyAI>();
   private facing = new Vector2(0, 1);
   private readonly revealRadius: number;
+  private readonly actorPaths = new Map<string, { goal: Vec2Like; position: Vector2; revision: number; path: AutoPath }>();
   readonly options: WorldOptions;
 
   constructor(options: WorldOptions) {
@@ -59,14 +60,17 @@ export class GameWorld {
   navigateTo(destination: Vec2Like): boolean {
     const leader = this.players[0];
     if (!leader?.alive) return false;
-    const path = this.options.navigation.findPath(
-      this.options.navigation.worldToGrid(leader.position),
-      this.options.navigation.worldToGrid(destination),
-    );
+    const path = this.options.navigation.findWorldPath(leader.position, destination);
     if (path.length === 0) return false;
-    this.path.setPath(path.slice(1).map((point) => this.options.navigation.gridToWorld(point)));
+    this.path.setPath(path);
     return true;
   }
+
+  setFacing(direction: Vec2Like): void {
+    if (Vector2.from(direction).lengthSquared() > 0) this.facing = Vector2.from(direction).normalized();
+  }
+
+  get facingDirection(): Vector2 { return this.facing; }
 
   update(deltaSeconds: number): void {
     if (deltaSeconds <= 0) return;
@@ -80,12 +84,12 @@ export class GameWorld {
       if (movement.lengthSquared() > 0) this.facing = movement.normalized();
       this.options.fog.reveal(leader.position, this.revealRadius);
       this.updatePlayers(deltaSeconds);
-      this.formation.update(leader.position, this.facing, deltaSeconds);
+      this.formation.update(leader.position, this.facing, deltaSeconds, this.moveActor);
     }
     for (const enemy of this.enemies) {
       const bossAI = this.bosses.get(enemy.id);
-      if (bossAI) bossAI.update(enemy, this.players, this.combat, deltaSeconds);
-      else this.enemyAIs.get(enemy.id)?.update(enemy, this.players, this.combat, deltaSeconds);
+      if (bossAI) bossAI.update(enemy, this.players, this.combat, deltaSeconds, this.moveActor);
+      else this.enemyAIs.get(enemy.id)?.update(enemy, this.players, this.combat, deltaSeconds, this.moveActor);
     }
   }
 
@@ -126,11 +130,34 @@ export class GameWorld {
         const maximumRange = damageSkills.reduce((maximum, skill) => Math.max(maximum, skill.range), player.stats.attackRange);
         if (player.position.distance(target.position) > maximumRange && !(player === this.players[0] && this.leaderTravelActive)) {
           player.fsm.force("chasing");
-          player.moveTowards(target.position, deltaSeconds);
+          this.moveActor(player, target.position, deltaSeconds);
         }
       }
     }
   }
+
+  private readonly moveActor = (actor: Actor, target: Vec2Like, deltaSeconds: number): void => {
+    const navigation = this.options.navigation;
+    const destination = navigation.nearestWalkable(target);
+    if (!destination || !navigation.isWorldWalkable(actor.position)) return;
+    if (navigation.isSegmentWalkable(actor.position, destination)) {
+      this.actorPaths.delete(actor.id);
+      actor.moveTowards(destination, deltaSeconds);
+      return;
+    }
+    const goal = navigation.worldToGrid(destination);
+    let route = this.actorPaths.get(actor.id);
+    if (!route || route.goal.x !== goal.x || route.goal.y !== goal.y || route.revision !== navigation.revision ||
+        !route.position.equals(actor.position) || route.path.complete) {
+      const points = navigation.findWorldPath(actor.position, destination);
+      const path = new AutoPath();
+      path.setPath(points);
+      route = { goal, position: actor.position, revision: navigation.revision, path };
+      this.actorPaths.set(actor.id, route);
+    }
+    actor.position = route.path.update(actor.position, actor.stats.moveSpeed, deltaSeconds);
+    route.position = actor.position;
+  };
 
   private registerEnemyAI(enemy: Actor, phaseThresholds?: readonly number[]): void {
     const skills = this.skillsFor(enemy, this.options.enemySkill).filter((skill) => skill.target === "enemy");

@@ -1,7 +1,7 @@
 {
   "meta": {
-    "id": "auto_explore_demo_v1",
-    "schemaVersion": 1,
+    "id": "auto_explore_demo_v2",
+    "schemaVersion": 2,
     "contentStatus": "ORIGINAL_PLACEHOLDER",
     "notice": "All names, geometry and numeric values are original adjustable placeholders for engineering validation. They were not extracted from Zhen Xie Ren or any other game.",
     "designResolution": {
@@ -55,8 +55,8 @@
     ],
     "pointsOfInterest": [
       { "id": "camp_start", "type": "safe_zone", "x": 520, "y": 520, "discoverRadius": 280 },
-      { "id": "shrine_west", "type": "heal", "x": 720, "y": 2920, "discoverRadius": 240 },
-      { "id": "cache_east", "type": "reward", "x": 3900, "y": 3200, "discoverRadius": 220 },
+      { "id": "shrine_west", "type": "heal", "x": 720, "y": 2320, "discoverRadius": 240 },
+      { "id": "cache_east", "type": "reward", "x": 2080, "y": 1640, "discoverRadius": 220 },
       { "id": "gate_north", "type": "checkpoint", "x": 2420, "y": 5100, "discoverRadius": 320 },
       { "id": "boss_altar", "type": "boss", "x": 4000, "y": 6240, "discoverRadius": 420 }
     ]
@@ -75,7 +75,7 @@
     "sharedBySquad": true,
     "unlockZones": [
       { "id": "south", "rect": { "x": 0, "y": 0, "width": 2400, "height": 2600 }, "unlock": "initial" },
-      { "id": "east", "rect": { "x": 2400, "y": 0, "width": 2400, "height": 4000 }, "unlock": "discover:cache_east" },
+      { "id": "east", "rect": { "x": 2400, "y": 0, "width": 2400, "height": 2600 }, "unlock": "discover:cache_east" },
       { "id": "north", "rect": { "x": 0, "y": 2600, "width": 4800, "height": 2600 }, "unlock": "discover:shrine_west" },
       { "id": "boss", "rect": { "x": 0, "y": 5200, "width": 4800, "height": 2000 }, "unlock": "clear:gate_guard" }
     ]
@@ -270,7 +270,7 @@
     { "id": "spawn_ruin_01", "trigger": "distance", "x": 2160, "y": 3020, "triggerRadius": 620, "enemyId": "mob_husk", "count": 5, "spawnRadius": 300, "respawn": false },
     { "id": "spawn_ruin_02", "trigger": "distance", "x": 2640, "y": 3320, "triggerRadius": 620, "enemyId": "mob_wisp", "count": 3, "spawnRadius": 240, "respawn": false },
     { "id": "spawn_gate_guard", "trigger": "distance", "x": 2420, "y": 4860, "triggerRadius": 700, "enemyId": "mob_husk", "count": 7, "spawnRadius": 380, "respawn": false, "encounterId": "gate_guard" },
-    { "id": "spawn_boss", "trigger": "zone_unlocked", "x": 4000, "y": 6240, "triggerRadius": 760, "enemyId": "boss_gate_guard", "count": 1, "spawnRadius": 0, "respawn": false, "encounterId": "boss_final" }
+    { "id": "spawn_boss", "trigger": "zone_unlocked", "zoneId": "boss", "x": 4000, "y": 6240, "triggerRadius": 760, "enemyId": "boss_gate_guard", "count": 1, "spawnRadius": 0, "respawn": false, "encounterId": "boss_final" }
   ],
   "autoPath": {
     "enabled": true,

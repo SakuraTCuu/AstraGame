@@ -163,7 +163,9 @@ function featureConfig(): DemoConfig {
   return {
     seed: 7,
     world: { width: 100, height: 100, cellSize: 5, blocked: [] },
-    fog: { cellSize: 5, revealRadius: 10 },
+    fog: { cellSize: 5, revealRadius: 10, unlockZones: [
+      { id: "open", rect: { x: 0, y: 0, width: 100, height: 100 }, unlock: "initial" },
+    ] },
     squad: {
       actors: [
         { id: "leader", kind: "hero", team: "player", x: 0, y: 0, hp: 100, attack: 20, defense: 0, moveSpeed: 10, attackRange: 10, aggroRange: 20, skillIds: ["strike"] },
@@ -187,7 +189,7 @@ function featureConfig(): DemoConfig {
     },
     spawns: [
       { id: "near", trigger: "distance", x: 5, y: 0, triggerRadius: 2, enemyId: "mob_template", count: 3, spawnRadius: 1 },
-      { id: "boss", trigger: "zone_unlocked", x: 40, y: 0, triggerRadius: 3, enemyId: "boss_template", count: 1, spawnRadius: 0 },
+      { id: "boss", trigger: "zone_unlocked", zoneId: "open", x: 40, y: 0, triggerRadius: 3, enemyId: "boss_template", count: 1, spawnRadius: 0 },
     ],
     ticksPerSecond: 20,
   };

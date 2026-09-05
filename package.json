@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node --no-warnings --loader ./tests/ts-loader.mjs --test tests/*.test.ts",
     "check": "node --no-warnings --loader ./tests/ts-loader.mjs --test tests/*.test.ts",
-    "smoke:web": "node tools/cdp-smoke.mjs http://127.0.0.1:4173"
+    "smoke:web": "node tools/cdp-smoke.mjs"
   },
   "engines": {
     "node": ">=20"

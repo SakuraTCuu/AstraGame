@@ -1,6 +1,7 @@
 import type { Actor } from "../actor/Actor";
 import type { CombatSystem, SkillDefinition } from "../combat/Combat";
 import { EnemyAI } from "./EnemyAI";
+import type { Vec2Like } from "../math/Vector2";
 
 export type BossPhase = "phase1" | "phase2" | "enraged" | "dead";
 
@@ -28,13 +29,14 @@ export class BossAI {
     return this.phaseValue;
   }
 
-  update(boss: Actor, targets: readonly Actor[], combat: CombatSystem, deltaSeconds: number): void {
+  update(boss: Actor, targets: readonly Actor[], combat: CombatSystem, deltaSeconds: number,
+    move?: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void): void {
     const ratio = boss.health / boss.stats.maxHealth;
     const next: BossPhase = !boss.alive ? "dead" : ratio <= this.enragedThreshold ? "enraged" : ratio <= this.phase2Threshold ? "phase2" : "phase1";
     if (next !== this.phaseValue) {
       this.phaseChanges.push({ from: this.phaseValue, to: next, healthRatio: ratio });
       this.phaseValue = next;
     }
-    if (boss.alive) this.regularAI.update(boss, targets, combat, deltaSeconds);
+    if (boss.alive) this.regularAI.update(boss, targets, combat, deltaSeconds, move);
   }
 }

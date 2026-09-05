@@ -4,6 +4,8 @@ This checklist verifies an engineering demo, not complete parity with any refere
 
 Record each item as `PASS`, `FAIL`, `BLOCKED` or `NOT IMPLEMENTED`, plus build revision and evidence. A static source inspection is not a runtime pass.
 
+The world-rules increment has a scoped [validation record](validation-world-rules.md). Unchecked items below are not implicitly covered by that record.
+
 ## Boot and Configuration
 
 - [ ] The project opens in Cocos Creator 2.4.15 without missing-script errors.

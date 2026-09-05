@@ -2,7 +2,7 @@
 
 ## Start
 
-Open the `auto_explore` scene in Cocos Creator 2.4.15 and run Preview. The exact scene filename and project start command are defined by the minimal-client bootstrap task; this document deliberately does not assume the old `game.fire` scene.
+Open `assets/scenes/demo.fire` in Cocos Creator 2.4.15 and run Preview.
 
 The configuration is loaded from `assets/resources/config/auto_explore/world_demo.json`. A configuration error should appear visibly and stop the run.
 
@@ -12,11 +12,12 @@ The configuration is loaded from `assets/resources/config/auto_explore/world_dem
 | --- | --- |
 | Drag the virtual joystick | Move the squad leader and immediately override auto path |
 | Release the joystick | After a short delay, rejoin the route and resume auto path |
-| Tap a discovered map target | Set it as the auto-path destination, if implemented in the current slice |
-| Pause button | Freeze simulation timers, movement and AI |
-| Reset button | Recreate the same deterministic demo from initial state |
+| Tap the world or minimap | Select a reachable auto-path destination; blocked requests preserve the previous route |
+| Reload the preview | Recreate the same deterministic demo from initial state |
 
 The current phase intentionally has no manual attack button. Heroes and enemies acquire targets and release skills through their state machines.
+
+Pause and in-game reset controls remain planned. Region rules and implemented validation are recorded in [world-rules.md](world-rules.md).
 
 ## What to Observe
 

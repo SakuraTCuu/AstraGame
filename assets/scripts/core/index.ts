@@ -10,3 +10,4 @@ export * from "./navigation/GridNavigation";
 export * from "./random/SeededRandom";
 export * from "./squad/SquadFormation";
 export * from "./world/GameWorld";
+export * from "./world/WorldMap";

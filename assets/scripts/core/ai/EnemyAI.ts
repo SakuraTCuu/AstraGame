@@ -1,6 +1,7 @@
 import type { Actor } from "../actor/Actor";
 import { selectNearestTarget } from "../combat/Combat";
 import type { CombatSystem, SkillDefinition } from "../combat/Combat";
+import type { Vec2Like } from "../math/Vector2";
 
 export class EnemyAI {
   private readonly skills: readonly SkillDefinition[];
@@ -9,7 +10,8 @@ export class EnemyAI {
     this.skills = Array.isArray(skills) ? skills : [skills as SkillDefinition];
   }
 
-  update(enemy: Actor, targets: readonly Actor[], combat: CombatSystem, deltaSeconds: number): void {
+  update(enemy: Actor, targets: readonly Actor[], combat: CombatSystem, deltaSeconds: number,
+    move?: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void): void {
     if (!enemy.alive) return;
     const current = targets.find((target) => target.id === enemy.targetId && target.alive);
     const target = current && enemy.position.distance(current.position) <= enemy.stats.aggroRange
@@ -32,6 +34,7 @@ export class EnemyAI {
     }
 
     enemy.fsm.force("chasing");
-    enemy.moveTowards(target.position, deltaSeconds);
+    if (move) move(enemy, target.position, deltaSeconds);
+    else enemy.moveTowards(target.position, deltaSeconds);
   }
 }

@@ -34,6 +34,7 @@ export class DemoRenderer {
     private joystick = cc.v2(0, 0);
     private joystickActive = false;
     private destination: WorldPoint = null;
+    private navigationFeedback = 0;
 
     constructor(host: cc.Node) {
         this.host = host;
@@ -75,9 +76,24 @@ export class DemoRenderer {
         };
     }
 
+    navigationTarget(screen: cc.Vec2): WorldPoint {
+        if (this.snapshot && screen.x >= 170 && screen.x <= 338 && screen.y >= 370 && screen.y <= 515) {
+            const bounds = this.snapshot.worldBounds;
+            return {
+                x: bounds.minX + (screen.x - 170) / 168 * (bounds.maxX - bounds.minX),
+                y: bounds.minY + (screen.y - 370) / 145 * (bounds.maxY - bounds.minY),
+            };
+        }
+        return this.screenToWorld(screen);
+    }
+
+    rejectDestination(): void { this.navigationFeedback = 1.5; }
+
     update(snapshot: DemoSnapshot, deltaSeconds: number): void {
         if (!this.config) return;
         this.snapshot = snapshot;
+        this.navigationFeedback = Math.max(0, this.navigationFeedback - deltaSeconds);
+        this.destination = snapshot.autoNavigation.destination;
         const leader = snapshot.actors.find((actor) => actor.team === "player");
         if (leader) {
             this.cameraTarget.set(cc.v2(leader.x, leader.y + 150));
@@ -181,7 +197,8 @@ export class DemoRenderer {
         poi.forEach((entry: any) => {
             const p = this.project(entry);
             if (!this.isVisible(p, 80)) return;
-            g.fillColor = entry.type === "boss" ? cc.color(169, 62, 56) : cc.color(102, 170, 132);
+            const discovered = this.snapshot.exploration.discoveredPoiIds.includes(entry.id);
+            g.fillColor = entry.type === "boss" ? cc.color(169, 62, 56) : discovered ? cc.color(102, 170, 132) : cc.color(218, 183, 80);
             g.circle(p.x, p.y, entry.type === "boss" ? 26 : 18);
             g.fill();
             g.strokeColor = cc.color(218, 204, 159, 180);
@@ -268,26 +285,23 @@ export class DemoRenderer {
     }
 
     private drawFog(g: cc.Graphics, snapshot: DemoSnapshot): void {
-        const discovered = new Set<string>();
-        snapshot.discoveredFogCells.forEach((cell) => discovered.add(`${cell.x}:${cell.y}`));
+        this.drawFlashlight(g, snapshot);
         const size = snapshot.fog.cellSize;
         const minWorldX = this.camera.x - VIEW_WIDTH / (2 * WORLD_SCALE) - size;
         const maxWorldX = this.camera.x + VIEW_WIDTH / (2 * WORLD_SCALE) + size;
         const minWorldY = this.camera.y - VIEW_HEIGHT / (2 * WORLD_SCALE * DEPTH_SCALE) - size;
         const maxWorldY = this.camera.y + VIEW_HEIGHT / (2 * WORLD_SCALE * DEPTH_SCALE) + size;
-        const leader = snapshot.actors.find((actor) => actor.team === "player");
         for (let x = Math.max(0, Math.floor(minWorldX / size)); x <= Math.min(snapshot.fog.width - 1, Math.ceil(maxWorldX / size)); x += 1) {
             for (let y = Math.max(0, Math.floor(minWorldY / size)); y <= Math.min(snapshot.fog.height - 1, Math.ceil(maxWorldY / size)); y += 1) {
                 const world = { x: x * size, y: y * size };
                 const p = this.project(world);
-                const current = leader && Math.hypot(world.x + size / 2 - leader.x, world.y + size / 2 - leader.y) < snapshot.flashlight.radius;
-                const alpha = current ? 18 : discovered.has(`${x}:${y}`) ? 92 : 226;
+                const state = snapshot.fog.states[y * snapshot.fog.width + x];
+                const alpha = state === "locked" ? 255 : state === "visible" ? 18 : state === "explored" ? 92 : 226;
                 g.fillColor = cc.color(7, 14, 20, alpha);
                 g.rect(p.x, p.y, size * WORLD_SCALE + 1, size * WORLD_SCALE * DEPTH_SCALE + 1);
                 g.fill();
             }
         }
-        if (leader) this.drawFlashlight(g, snapshot);
     }
 
     private drawFlashlight(g: cc.Graphics, snapshot: DemoSnapshot): void {
@@ -350,6 +364,23 @@ export class DemoRenderer {
         g.rect(left, bottom, width, height);
         g.stroke();
         const bounds = snapshot.worldBounds;
+        const scaleX = width / (bounds.maxX - bounds.minX);
+        const scaleY = height / (bounds.maxY - bounds.minY);
+        snapshot.exploration.zones.forEach((zone) => {
+            g.fillColor = zone.unlocked ? cc.color(40, 67, 62) : cc.color(17, 21, 26);
+            g.rect(left + zone.rect.x * scaleX, bottom + zone.rect.y * scaleY, zone.rect.width * scaleX, zone.rect.height * scaleY);
+            g.fill();
+            g.strokeColor = cc.color(100, 111, 106);
+            g.lineWidth = 1;
+            g.stroke();
+        });
+        const pois = this.config.world.pointsOfInterest || [];
+        pois.forEach((poi: any) => {
+            const discovered = snapshot.exploration.discoveredPoiIds.includes(poi.id);
+            g.fillColor = discovered ? cc.color(115, 207, 161) : cc.color(228, 191, 82);
+            g.circle(left + poi.x * scaleX, bottom + poi.y * scaleY, 3);
+            g.fill();
+        });
         snapshot.actors.forEach((actor) => {
             if (actor.hp <= 0) return;
             const x = left + (actor.x - bounds.minX) / (bounds.maxX - bounds.minX) * width;
@@ -395,11 +426,12 @@ export class DemoRenderer {
         const discovered = snapshot.discoveredFogCells.length;
         const total = snapshot.fog.width * snapshot.fog.height;
         this.statusLabel.string = `MIST VALLEY   ${Math.floor(snapshot.elapsedSeconds)}s\nSQUAD ${players.filter((actor) => actor.hp > 0).length}/${players.length}  HOSTILES ${enemies.length}  EXPLORED ${Math.round(discovered / total * 100)}%`;
-        this.objectiveLabel.string = bossPhase
+        this.objectiveLabel.string = this.navigationFeedback > 0 ? "PATH BLOCKED" : bossPhase
             ? `BOSS - ${bossPhase.toUpperCase()}`
             : leader && leader.state === "attacking"
                 ? "ENGAGING"
-                : this.destination ? "AUTO PATH ACTIVE" : "FREE EXPLORE";
+                : snapshot.autoNavigation.mode === "resume_wait" ? "ROUTE PAUSED"
+                : snapshot.autoNavigation.mode === "auto_path" ? "AUTO PATH ACTIVE" : "FREE EXPLORE";
     }
 
     private updateFloatTexts(deltaSeconds: number): void {

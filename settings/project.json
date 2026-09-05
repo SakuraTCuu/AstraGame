@@ -24,7 +24,7 @@
   "design-resolution-width": 720,
   "design-resolution-height": 1280,
   "fit-width": true,
-  "fit-height": false,
+  "fit-height": true,
   "use-project-simulator-setting": false,
   "simulator-orientation": false,
   "use-customize-simulator": true,

@@ -6,8 +6,11 @@ Minimal Cocos Creator 2.4.15 frontend prototype for a portrait 2.5D squad explor
 
 - large scrollable world with a 2.5D presentation
 - fog of war and persistent discovery during a session
+- event-driven region unlocking shared by fog, movement and spawning
+- rectangle/circle obstacles respected by the leader, followers and enemies
 - player-centered flashlight cone
 - pointer navigation and automatic path following
+- minimap navigation and delayed route resumption after manual input
 - four-character squad formation
 - autonomous target acquisition
 - attacks, skills, healing, damage numbers, enemies, and a boss
@@ -15,6 +18,9 @@ Minimal Cocos Creator 2.4.15 frontend prototype for a portrait 2.5D squad explor
 - deterministic core tests independent of Cocos
 
 All visuals and tuning values are original placeholders. No third-party game assets or extracted code are included.
+
+See [world rules](docs/world-rules.md) for region conditions, geometry conventions and the current verification boundary.
+The latest scoped results are in [world rules validation](docs/validation-world-rules.md).
 
 ## Open in Creator
 
