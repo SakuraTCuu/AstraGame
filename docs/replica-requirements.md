@@ -8,6 +8,7 @@ The objective remains behavior parity with the WeChat game Zhenxieren, including
 - User-provided screenshots from task `01a06b72-3422-7ca3-8f2e-c60988987fdb`: portrait world exploration, four active party slots, auto-route markers, healing feedback and formation screens.
 - Direct Windows Computer Use observation on 2026-09-05: the running game exposed a Boss encounter, a connected multi-region world-map overview, a level-15 region gate, and compact party movement. The observed account progressed through levels 10 and 11, so it is not a frozen new-player replay.
 - Direct repair interaction on 2026-09-05: an unbuilt teleport platform displayed a cost of 5. Clicking it changed the visible resource balance from 299 to 294 and replaced the unbuilt platform with its completed appearance. This confirms paid platform repair, not every fog-unlock condition.
+- A later same-day roster observation showed five deployed heroes on the level-17 account. The four-character comparison preset therefore does not represent the reference's full roster capacity.
 - A public nine-second clip linked from `https://www.17yoo.cn/detail/57220` was inspected and excluded: it depicts a landscape single-character interface, inconsistent with the user's reference. Its extracted contact sheet remains in ignored `reference-private/`.
 
 ## Requirement audit
@@ -23,7 +24,7 @@ The objective remains behavior parity with the WeChat game Zhenxieren, including
 | Multiple characters | Four slots, navigation-aware follow, surviving leader selection, per-position equipment and table-driven levels | Compare compact movement formation, roster changes and companion/pet behavior |
 | Skills and damage | Source skill coefficients/timelines, multi-target projectiles, energy, public cooldowns, buffs and critical hits; equipment and rank stats affect combat | Complete specialized actions, effect playback, defense/critical formulas and remaining source skill issues |
 | Boss and normal enemies | Source first-Boss attacks, charge, jump and HP gate; natural two-gate/Boss run completed with three survivors | Complete other Boss-specific mechanics, damage limits and health-layer counts |
-| State machines | Actor/cast/travel/run states; paid interactions; persisted exploration, level/experience, kill counts and respawn timers; coalesced storage writes | Match reference death/revival, restore in-progress enemy combat, and extend long-session checks |
+| State machines | Actor/cast/travel/run states; recoverable full-party defeat, town/repaired-portal return and battle reset; persisted exploration, development and respawn timers | Verify exact revival fees/timers, partial-party recovery and reset rules; restore in-progress enemy combat; extend long-session checks |
 | Zhushen/H5 foundation | `ExploreRuntime` plus a tested role-scoped `StorageMgr`/`MessageCenter` port adapter | Exercise the actual BaseUI module in the host; current integration tests use service doubles |
 
 ## Observed versus assumed rules
@@ -35,5 +36,7 @@ Source config now supplies fog costs and prerequisites, portal locations and cos
 Team experience follows item 7 rewards and the configured PlayerLevel thresholds. A natural first-Boss run advanced from level 1 to 2 with 40/600 experience, and restored those values from a save. Kill counters support multi-kill and monster-subtype prerequisites. The journal adds mainline/first-kill reward claims and ordered rank promotion, with nine mainline steps, equipment assignment and the first promotion verified through natural gameplay. Basic hero upgrades consume configured merit and honor rank caps. Recruitment, rename, advanced growth and other-mode actions remain absent; their conditions remain enforced.
 
 Still unconfirmed or incomplete: defense and critical formulas, specialized source skill actions and modifiers, dynamic attribute scaling, exact Boss health layers, death/revival, other main-world maps, source quest progression and path-resume timing. The comparison party now uses source level-10 attributes; it remains separate from the live account.
+
+Revival support currently follows the main-map enable flag and source return-command labels. Its full-health return, zeroed energy, encounter reset and nearest repaired-portal selection still require live parity checks. Controlled engine tests exercise natural defeats; browser recovery checks use an explicit lethal-damage fixture after the natural Boss route. Neither proves the unobserved original-game timing or cost rules.
 
 The initial `discover:` and `clear:` demo rules remain engineering fixtures. Temporary reference art and converted configuration are used only in ignored local preview directories; the tracked implementation and host export contain owned code and fixture data. See `local-reference-preview.md` for current evidence and boundaries.

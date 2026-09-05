@@ -36,6 +36,8 @@ export class BossAI {
     return this.phaseValue;
   }
 
+  reset(): void { this.stage = 0; this.phaseValue = this.phaseNames?.[0] ?? "phase1"; this.phaseChanges.splice(0); }
+
   update(boss: Actor, targets: readonly Actor[], combat: CombatSystem, deltaSeconds: number,
     move?: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void): void {
     const ratio = boss.health / boss.stats.maxHealth;

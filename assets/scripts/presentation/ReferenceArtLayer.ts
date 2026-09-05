@@ -112,7 +112,7 @@ export class ReferenceArtLayer {
                 const names = view.skeleton.skeletonData.getRuntimeData().animations.map((entry) => entry.name);
                 const action = names.includes("idle") ? "idle" : names[0];
                 if (action && view.action !== action) view.skeleton.setAnimation(0, action, true);
-                view.action = action; view.skeleton.paused = snapshot.runState !== "running";
+                view.action = action; view.skeleton.paused = snapshot.runState !== "running" && snapshot.runState !== "recovering";
             } else {
                 const action = poi.completed ? "dead" : "idle";
                 const key = `${binding.path}:${action}`;
@@ -124,7 +124,7 @@ export class ReferenceArtLayer {
                     this.frames.set(key, frames);
                 }
                 if (view.action !== action) { view.age = !view.action && poi.completed ? frames.length / binding.fps : 0; view.action = action; }
-                if (snapshot.runState === "running") view.age += delta;
+                if (snapshot.runState === "running" || snapshot.runState === "recovering") view.age += delta;
                 if (frames.length) view.sprite.spriteFrame = frames[poi.completed ? Math.min(frames.length - 1, Math.floor(view.age * binding.fps)) : Math.floor(view.age * binding.fps) % frames.length];
             }
         });
@@ -220,7 +220,7 @@ export class ReferenceArtLayer {
             if (action === "idle" && view.action !== "idle" && view.action !== "move" && track && !track.isComplete()) action = view.action;
             if (view.action !== action || (cast && view.castId !== cast.id)) view.skeleton.setAnimation(0, action, action === "idle" || action === "move" || phases?.hold === action);
             view.skeleton.timeScale = cast?.playbackRate || 1;
-            view.skeleton.paused = snapshot.runState !== "running";
+            view.skeleton.paused = snapshot.runState !== "running" && snapshot.runState !== "recovering";
         } else {
             const key = `${view.binding.path}:${action}`;
             let frames = this.frames.get(key);
@@ -231,7 +231,7 @@ export class ReferenceArtLayer {
                 this.frames.set(key, frames);
             }
             if (view.action !== action) view.age = 0;
-            if (snapshot.runState === "running") view.age += delta;
+            if (snapshot.runState === "running" || snapshot.runState === "recovering") view.age += delta;
             if (frames.length) view.sprite.spriteFrame = frames[actor.hp <= 0 ? Math.min(frames.length - 1, Math.floor(view.age * view.binding.fps)) : Math.floor(view.age * view.binding.fps) % frames.length];
         }
         view.action = action;

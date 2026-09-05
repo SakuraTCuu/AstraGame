@@ -28,6 +28,7 @@ export default class DemoBootstrap extends cc.Component {
     private journalTouch = false;
     private developmentTouch = false;
     private resumeAfterDevelopment = false;
+    private recoveryTouch = false;
 
     get session(): DemoSession { return this.runtime && this.runtime.session; }
 
@@ -128,6 +129,8 @@ export default class DemoBootstrap extends cc.Component {
         this.touchId = event.getID();
         this.touchStart = this.toCanvas(event);
         this.touchCurrent = this.touchStart;
+        this.recoveryTouch = this.session?.runState === "recovering";
+        if (this.recoveryTouch) return;
         if (this.renderer.overview.isOpen) { this.renderer.overview.beginDrag(this.touchStart); return; }
         this.developmentTouch = this.renderer.development.contains(this.touchStart);
         if (this.developmentTouch) return;
@@ -140,7 +143,7 @@ export default class DemoBootstrap extends cc.Component {
     }
 
     private onTouchMove(event: cc.Event.EventTouch): void {
-        if (event.getID() !== this.touchId || this.controlTouch || this.journalTouch || this.developmentTouch) return;
+        if (event.getID() !== this.touchId || this.controlTouch || this.journalTouch || this.developmentTouch || this.recoveryTouch) return;
         this.touchCurrent = this.toCanvas(event);
         if (this.renderer.overview.isOpen) { if (this.touchStart.y < 470 && this.touchStart.y > -425) this.renderer.overview.drag(this.touchCurrent); return; }
         if (!this.joystickTouch && this.touchStart.y < 470 && !this.renderer.isMinimapPoint(this.touchStart) &&
@@ -154,7 +157,14 @@ export default class DemoBootstrap extends cc.Component {
     private onTouchEnd(event: cc.Event.EventTouch): void {
         if (event.getID() !== this.touchId) return;
         const end = this.toCanvas(event);
-        if (this.renderer.overview.isOpen) {
+        if (this.recoveryTouch) {
+            const action = end.sub(this.touchStart).mag() < 18 ? this.renderer.hitRecovery(end) : null;
+            if (action && this.session.recoverParty(action)) {
+                const snapshot = this.session.getSnapshot();
+                this.renderer.centerOnLeader(snapshot); this.renderer.update(snapshot, 0);
+                void this.runtime.flushProgress();
+            }
+        } else if (this.renderer.overview.isOpen) {
             const action = end.sub(this.touchStart).mag() < 18 ? this.renderer.overview.hit(end) : null;
             if (action) {
                 this.renderer.overview.close();
@@ -259,6 +269,7 @@ export default class DemoBootstrap extends cc.Component {
         this.controlTouch = null;
         this.journalTouch = false;
         this.developmentTouch = false;
+        this.recoveryTouch = false;
     }
 
     private toCanvas(event: cc.Event.EventTouch): cc.Vec2 {

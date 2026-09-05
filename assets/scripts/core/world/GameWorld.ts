@@ -106,6 +106,20 @@ export class GameWorld {
     }
   }
 
+  recoverParty(positions: readonly Vec2Like[]): void {
+    if (positions.length !== this.players.length || positions.some((point) => !this.options.navigation.isWorldWalkable(point))) throw new Error("Invalid party recovery positions");
+    this.clearTravel();
+    this.combat.resetEngagement();
+    for (const actor of [...this.enemies, ...this.alliedSummons]) if (actor.summonerId) this.removeEnemy(actor.id);
+    for (const enemy of this.enemies) if (enemy.alive) {
+      enemy.recoverAt(enemy.homePosition);
+      this.bosses.get(enemy.id)?.reset();
+    }
+    this.players.forEach((actor, index) => actor.recoverAt(positions[index]));
+    this.previousLeaderId = this.leader?.id;
+    if (this.leader) this.options.fog.reveal(this.leader.position, this.revealRadius);
+  }
+
   update(deltaSeconds: number): void {
     if (deltaSeconds <= 0) return;
     this.elapsedSeconds += deltaSeconds;

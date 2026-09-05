@@ -362,6 +362,67 @@ try {
   assert.equal(await evaluate(() => window.__referenceBoot.session.map.counter("equipped")), 1);
   await clickDesign(306, 557);
   const development = { before: equipmentBefore, equipped, restored: equipmentRestored, unequippedAndTransferred: true };
+  const induceDefeat = () => evaluate(async () => {
+    const boot = window.__referenceBoot; boot.enabled = false;
+    for (const actor of boot.session.world.players) actor.receiveDamage(1000000000);
+    boot.session.update(0.05);
+    const snapshot = boot.session.getSnapshot();
+    boot.renderer.centerOnLeader(snapshot); boot.renderer.update(snapshot, 0.1);
+    await boot.runtime.flushProgress();
+    return { state: snapshot.runState, result: snapshot.result, recovery: snapshot.recovery,
+      resources: boot.session.map.saveProgress().resources, equipment: boot.session.development.save(), explored: snapshot.discoveredFogCells.length };
+  });
+  const defeat = await induceDefeat();
+  assert.equal(defeat.state, "recovering");
+  assert.equal(defeat.result, null);
+  assert.ok(defeat.recovery.portalId);
+  await capture("recovery-before");
+  await send("Page.reload", { ignoreCache: true });
+  assert.ok(await waitReady());
+  const defeatRestored = await evaluate(() => {
+    const boot = window.__referenceBoot; boot.enabled = false;
+    return { state: boot.session.runState, recovery: boot.session.getSnapshot().recovery,
+      equipment: boot.session.development.save(), resources: boot.session.map.saveProgress().resources,
+      controlsHidden: !boot.renderer.controlGraphics.node.active && !boot.renderer.development.node.active && !boot.renderer.journal.node.active };
+  });
+  assert.equal(defeatRestored.state, "recovering");
+  assert.deepEqual(defeatRestored.recovery, defeat.recovery);
+  assert.deepEqual(defeatRestored.equipment, defeat.equipment);
+  assert.deepEqual(defeatRestored.resources, defeat.resources);
+  assert.ok(defeatRestored.controlsHidden);
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+    await delay(200); await capture(`${name}-recovery`);
+  }
+  await clickDesign(148, -40);
+  const revivedAtPortal = await evaluate((portalId) => {
+    const boot = window.__referenceBoot, snapshot = boot.session.getSnapshot();
+    const portal = boot.session.map.pois.find((poi) => poi.id === portalId);
+    return { state: snapshot.runState, distance: boot.session.world.leader.position.distance(portal),
+      fullHealth: boot.session.world.players.every((actor) => actor.health === actor.stats.maxHealth),
+      resources: boot.session.map.saveProgress().resources, equipment: boot.session.development.save(),
+      projectiles: snapshot.projectiles.length, casts: snapshot.casts.length, explored: snapshot.discoveredFogCells.length };
+  }, defeat.recovery.portalId);
+  assert.ok(revivedAtPortal.state === "running" && revivedAtPortal.fullHealth && revivedAtPortal.distance < 120);
+  assert.equal(revivedAtPortal.projectiles + revivedAtPortal.casts, 0);
+  assert.deepEqual(revivedAtPortal.resources, defeat.resources);
+  assert.deepEqual(revivedAtPortal.equipment, defeat.equipment);
+  assert.ok(revivedAtPortal.explored >= defeat.explored);
+  await capture("recovered-at-portal");
+  await induceDefeat();
+  await clickDesign(-148, -40);
+  const revivedAtTown = await evaluate(async () => {
+    const boot = window.__referenceBoot;
+    await boot.runtime.flushProgress();
+    const save = await boot.runtime.ports.storage.loadExploration(boot.session.config.meta.id);
+    const result = { distance: boot.session.world.leader.position.distance(boot.session.config.session.recovery.town), state: boot.session.runState,
+      savedAlive: save.party.every((actor) => actor.hp > 0), savedRecovery: save.recoveryPosition || null };
+    boot.enabled = true;
+    return result;
+  });
+  assert.ok(revivedAtTown.state === "running" && revivedAtTown.distance < 120 && revivedAtTown.savedAlive && revivedAtTown.savedRecovery === null);
+  await capture("recovered-at-town");
+  const recovery = { setup: "lethal-damage fixture after normal Boss and equipment play", defeat, defeatRestored, revivedAtPortal, revivedAtTown };
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -389,7 +450,7 @@ try {
   assert.ok(resetCounts.every((count) => count.root === resetCounts[0].root && count.world === 8 && count.actors === 4), JSON.stringify(resetCounts));
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
-  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, resetCounts, viewports, errors, failures };
+  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

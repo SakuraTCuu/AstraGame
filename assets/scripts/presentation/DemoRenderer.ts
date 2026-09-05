@@ -38,6 +38,9 @@ export class DemoRenderer {
     private readonly resultGraphics: cc.Graphics;
     private readonly controlGraphics: cc.Graphics;
     private readonly resultLabel: cc.Label;
+    private readonly recoveryGraphics: cc.Graphics;
+    private readonly recoveryTown: cc.Label;
+    private readonly recoveryPortal: cc.Label;
     private readonly tooltipLabel: cc.Label;
     private readonly bossLabel: cc.Label;
     private readonly ownedNodes: cc.Node[] = [];
@@ -99,6 +102,10 @@ export class DemoRenderer {
         this.resultLabel = this.createLabel("Result", 34, cc.color(239, 222, 167), cc.v2(0, 80), cc.Label.HorizontalAlign.CENTER);
         this.resultLabel.node.zIndex = 45;
         this.resultLabel.node.active = false;
+        this.recoveryGraphics = this.createGraphics("RecoveryControls", 95);
+        this.recoveryTown = this.createLabel("RecoveryTown", 23, cc.color(236, 235, 209), cc.v2(-148, -40), cc.Label.HorizontalAlign.CENTER);
+        this.recoveryPortal = this.createLabel("RecoveryPortal", 23, cc.color(236, 235, 209), cc.v2(148, -40), cc.Label.HorizontalAlign.CENTER);
+        for (const label of [this.recoveryTown, this.recoveryPortal]) { label.node.zIndex = 96; label.node.setContentSize(270, 56); label.node.active = false; }
         this.tooltipLabel = this.createLabel("ControlTooltip", 18, cc.color(226, 231, 221), cc.v2(0, -605), cc.Label.HorizontalAlign.CENTER);
         this.tooltipLabel.node.zIndex = 45;
         this.tooltipLabel.node.active = false;
@@ -152,6 +159,7 @@ export class DemoRenderer {
     setHoveredControl(control: "pause" | "restart" | null): void { this.hoveredControl = control; }
 
     hitControl(point: cc.Vec2): "pause" | "restart" | null {
+        if (this.snapshot?.recovery) return null;
         if (point.sub(cc.v2(305, -555)).mag() <= 36) return "pause";
         if (point.sub(cc.v2(-305, -555)).mag() <= 36) return "restart";
         return null;
@@ -159,9 +167,16 @@ export class DemoRenderer {
 
     isMinimapPoint(screen: cc.Vec2): boolean { return screen.x >= 170 && screen.x <= 338 && screen.y >= 370 && screen.y <= 515; }
 
+    hitRecovery(point: cc.Vec2): "town" | "nearest_portal" | null {
+        if (!this.snapshot?.recovery || Math.abs(point.y + 40) > 31) return null;
+        if (Math.abs(point.x + 148) <= 135) return "town";
+        return this.snapshot.recovery.portalId && Math.abs(point.x - 148) <= 135 ? "nearest_portal" : null;
+    }
+
     centerOnLeader(snapshot: DemoSnapshot): void {
         const leader = snapshot.actors.find((actor) => actor.id === snapshot.leaderId);
-        if (leader) { this.camera.set(cc.v2(leader.x, leader.y + 150)); this.cameraTarget.set(this.camera); }
+        const position = leader ?? snapshot.recovery?.origin;
+        if (position) { this.camera.set(cc.v2(position.x, position.y + 150)); this.cameraTarget.set(this.camera); }
     }
 
     openOverview(snapshot: DemoSnapshot): void { this.overview.open(snapshot, this.config); }
@@ -218,7 +233,7 @@ export class DemoRenderer {
         this.updateFloatTexts(deltaSeconds);
         if (this.referenceArt) this.referenceArt.update(snapshot, this.camera, deltaSeconds);
         const nightRegions = this.config.presentation?.reference?.nightRegions;
-        const directional = !nightRegions || Boolean(leader && nightRegions.some((polygon) => pointInPolygon(leader, polygon)));
+        const directional = !nightRegions || nightRegions.some((polygon) => pointInPolygon(snapshot.flashlight, polygon));
         const ambient = directional ? this.config.flashlight?.ambientRadius || 150 : this.config.fog.revealRadius;
         if (this.softFog) this.softFogReady = this.softFog.update(snapshot, this.camera, this.worldScale, this.depthScale, ambient, deltaSeconds, directional);
         this.drawWorld(snapshot);
@@ -230,7 +245,8 @@ export class DemoRenderer {
         this.overview.update(snapshot, this.referenceArt && this.referenceArt.overviewTexture());
         this.journal.update(snapshot);
         this.development.update(snapshot, (atlas, name) => this.referenceArt ? this.referenceArt.iconFrame(atlas, name) : null);
-        if (this.overview.isOpen) { this.journal.node.active = false; this.development.node.active = false; }
+        if (snapshot.recovery) { this.overview.close(); this.journal.node.active = false; this.development.node.active = false; }
+        else if (this.overview.isOpen) { this.journal.node.active = false; this.development.node.active = false; }
         else if (this.journal.isOpen) this.development.node.active = false;
         else if (this.development.isOpen) this.journal.node.active = false;
     }
@@ -716,15 +732,25 @@ export class DemoRenderer {
     private drawResultAndControls(snapshot: DemoSnapshot): void {
         const result = this.resultGraphics;
         result.clear();
+        this.recoveryGraphics.clear();
+        this.recoveryTown.node.active = this.recoveryPortal.node.active = Boolean(snapshot.recovery);
         this.resultLabel.node.active = snapshot.runState !== "running";
         if (this.resultLabel.node.active) {
             result.fillColor = cc.color(5, 12, 15, 190);
             result.rect(-360, -640, 720, 1280);
             result.fill();
-            this.resultLabel.string = snapshot.runState === "paused" ? "PAUSED" : snapshot.runState === "won" ? "AREA CLEARED" : "SQUAD DEFEATED";
+            this.resultLabel.string = snapshot.recovery ? "\u961f\u4f0d\u5df2\u6218\u8d25" : snapshot.runState === "paused" ? "PAUSED" : snapshot.runState === "won" ? "AREA CLEARED" : "SQUAD DEFEATED";
+        }
+        if (snapshot.recovery) {
+            const recovery = this.recoveryGraphics;
+            recovery.fillColor = cc.color(54, 105, 80, 250); recovery.roundRect(-283, -71, 270, 62, 4); recovery.fill();
+            recovery.fillColor = snapshot.recovery.portalId ? cc.color(143, 103, 56, 250) : cc.color(65, 72, 69, 250);
+            recovery.roundRect(13, -71, 270, 62, 4); recovery.fill();
+            this.recoveryTown.string = "\u56de\u5230\u57ce\u9547"; this.recoveryPortal.string = "\u56de\u5230\u6700\u8fd1\u4f20\u9001\u53f0";
         }
         const g = this.controlGraphics;
         g.clear();
+        g.node.active = !snapshot.recovery;
         for (const control of ["restart", "pause"]) {
             const x = control === "pause" ? 305 : -305;
             g.fillColor = cc.color(18, 35, 39, 230);
@@ -755,7 +781,7 @@ export class DemoRenderer {
                 g.close(); g.fill();
             }
         }
-        this.tooltipLabel.node.active = Boolean(this.hoveredControl);
+        this.tooltipLabel.node.active = Boolean(this.hoveredControl && !snapshot.recovery);
         this.tooltipLabel.string = this.hoveredControl === "restart" ? "Restart" : snapshot.runState === "paused" ? "Resume" : "Pause";
     }
 

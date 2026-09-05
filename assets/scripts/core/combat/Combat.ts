@@ -245,6 +245,12 @@ export class CombatSystem {
   drainEvents(): CombatEvent[] { return this.events.splice(0); }
   drainSummons(): SummonRequest[] { return this.summons.splice(0); }
 
+  resetEngagement(): void {
+    this.casts.clear(); this.projectiles.clear(); this.summons.splice(0);
+    this.cooldowns.clear(); this.publicCooldowns.clear(); this.combatTimes.clear(); this.events.splice(0);
+    this.actors = []; this.move = undefined;
+  }
+
   private launch(cast: Cast): void {
     cast.resolved = true;
     if (cast.skill.projectileSpeed && cast.skill.projectileSpeed > 0) {

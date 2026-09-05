@@ -6,6 +6,7 @@ import type { StatModifiers } from "../combat/SkillEffects";
 import { FogGrid } from "../fog/FogGrid";
 import type { FogCellState } from "../fog/FogGrid";
 import { Vector2 } from "../math/Vector2";
+import type { Vec2Like } from "../math/Vector2";
 import { GridNavigation } from "../navigation/GridNavigation";
 import type { GridPoint } from "../navigation/GridNavigation";
 import { GameWorld } from "../world/GameWorld";
@@ -105,7 +106,8 @@ export interface DemoConfig {
   };
   readonly spawns?: readonly DemoSpawnConfig[];
   readonly ticksPerSecond?: number;
-  readonly session?: { readonly completionEncounterId?: string; readonly autoStopForCombat?: boolean; readonly persistExploration?: boolean };
+  readonly session?: { readonly completionEncounterId?: string; readonly autoStopForCombat?: boolean; readonly persistExploration?: boolean;
+    readonly recovery?: { readonly town: Vec2Like; readonly nearestPortal?: boolean } };
 }
 
 export interface ExplorationSave {
@@ -120,9 +122,10 @@ export interface ExplorationSave {
   readonly clearedSpawns: readonly string[];
   readonly respawns?: readonly RespawnProgress[];
   readonly development?: DevelopmentSave;
+  readonly recoveryPosition?: Vec2Like;
 }
 
-export type RunState = "running" | "paused" | "won" | "failed";
+export type RunState = "running" | "paused" | "recovering" | "won" | "failed";
 export interface RunResult { readonly outcome: "won" | "failed"; readonly elapsedSeconds: number; readonly defeatedEnemies: number; }
 
 export interface DemoSkillConfig {
@@ -185,6 +188,7 @@ export interface DemoSnapshot {
   readonly exploration: ReturnType<WorldMap["snapshot"]> & { readonly events: readonly ExplorationEvent[] };
   readonly journal: ReturnType<ProgressionJournal["snapshot"]>;
   readonly development: ReturnType<PartyDevelopment["snapshot"]> | null;
+  readonly recovery: { readonly origin: Vec2Like; readonly town: Vec2Like; readonly portalId?: string; readonly portalName?: string } | null;
   readonly flashlight: {
     readonly x: number;
     readonly y: number;
@@ -253,6 +257,7 @@ export class DemoSession {
   private readonly enemyTemplates = new Map<string, DemoActorConfig>();
   private state: RunState = "running";
   private result: RunResult | null = null;
+  private recoveryPosition: Vector2 | null = null;
   private defeatedEnemies = 0;
 
   constructor(config: DemoConfig = DEFAULT_CONFIG) {
@@ -279,6 +284,8 @@ export class DemoSession {
     for (const player of players) {
       if (!navigation.isWorldWalkable(player.position)) throw new Error(`Player ${player.id} starts on blocked ground`);
     }
+    const recovery = config.session?.recovery;
+    if (recovery && (![recovery.town.x, recovery.town.y].every(Number.isFinite) || !navigation.isWorldWalkable(recovery.town))) throw new Error("Recovery town must be on unlocked walkable ground");
     const spawnIds = new Set<string>();
     for (const spawn of config.spawns ?? []) {
       if (spawnIds.has(spawn.id)) throw new Error(`Duplicate spawn ${spawn.id}`);
@@ -364,6 +371,37 @@ export class DemoSession {
   upgradeHero(actorId: string): DevelopmentResult { return this.canDevelop() ? this.development!.upgrade(actorId) : "unavailable"; }
   private canDevelop(): boolean { return Boolean(this.development && (this.state === "running" || this.state === "paused")); }
 
+  recoverParty(destination: "town" | "nearest_portal"): boolean {
+    const recovery = this.config.session?.recovery;
+    if (this.state !== "recovering" || !recovery || (destination !== "town" && destination !== "nearest_portal")) return false;
+    const portal = destination === "nearest_portal" ? this.nearestRecoveryPortal() : undefined;
+    if (destination === "nearest_portal" && !portal) return false;
+    const target = portal ?? recovery.town;
+    const navigation = this.world.options.navigation;
+    const positions = this.world.players.map((_, index) => navigation.nearestWalkable(Vector2.from(target).add(this.config.squad.formationOffsets?.[index] ?? Vector2.ZERO)));
+    if (positions.some((position, index) => !position || position.distance(Vector2.from(target).add(this.config.squad.formationOffsets?.[index] ?? Vector2.ZERO)) > navigation.cellSize * 3)) return false;
+    this.world.recoverParty(positions as Vector2[]);
+    this.state = "running"; this.result = null; this.recoveryPosition = null;
+    this.frameEvents = []; this.accumulator = 0;
+    this.autoDestination = null; this.questDestinationId = null; this.moveIntent = Vector2.ZERO; this.resumeRemaining = 0; this.navigationMode = "idle";
+    this.map.recordProgressChange("party_recovered");
+    this.map.discoverAt(this.world.leader!.position);
+    return true;
+  }
+
+  private nearestRecoveryPortal(): WorldPoi | undefined {
+    if (!this.config.session?.recovery?.nearestPortal || !this.recoveryPosition) return undefined;
+    return this.map.pois.filter((poi) => this.map.isPortalActive(poi.id)).slice()
+      .sort((a, b) => this.recoveryPosition!.distanceSquared(a) - this.recoveryPosition!.distanceSquared(b) || a.id.localeCompare(b.id))[0];
+  }
+
+  private enterRecovery(position: Vec2Like): void {
+    if (this.state === "recovering") return;
+    this.state = "recovering"; this.recoveryPosition = Vector2.from(position);
+    this.world.clearTravel(); this.moveIntent = Vector2.ZERO; this.autoDestination = null; this.questDestinationId = null; this.resumeRemaining = 0; this.navigationMode = "idle";
+    this.map.recordProgressChange("party_defeated");
+  }
+
   navigateToQuest(id: string): boolean {
     const quest = this.journal.quests.find((entry) => entry.id === id);
     const leader = this.world.leader;
@@ -417,7 +455,8 @@ export class DemoSession {
     return { schema: 1, configId: this.config.meta?.id ?? "default", configVersion: this.config.meta?.schemaVersion ?? 1,
       map: this.map.saveProgress(), exploredCells: this.fog.exploredIndices(),
       party: this.world.players.map((actor) => ({ id: actor.id, x: actor.position.x, y: actor.position.y, hp: actor.health, energy: actor.energy })),
-      elapsedSeconds: this.world.elapsedSeconds, randomState: this.world.random.snapshot(), clearedSpawns: this.spawns.clearedPermanentIds(), respawns: this.spawns.respawnProgress(), development: this.development?.save() };
+      elapsedSeconds: this.world.elapsedSeconds, randomState: this.world.random.snapshot(), clearedSpawns: this.spawns.clearedPermanentIds(), respawns: this.spawns.respawnProgress(), development: this.development?.save(),
+      recoveryPosition: this.recoveryPosition ?? undefined };
   }
 
   restoreExploration(save: ExplorationSave): void {
@@ -425,6 +464,8 @@ export class DemoSession {
     if (this.world.elapsedSeconds !== 0 || !Number.isFinite(save.elapsedSeconds) || save.elapsedSeconds < 0 ||
         !Number.isInteger(save.randomState) || save.randomState <= 0 || save.randomState > 0xffffffff) throw new Error("Invalid exploration clock or random state");
     if (save.party.length !== this.world.players.length || new Set(save.party.map((entry) => entry.id)).size !== save.party.length) throw new Error("Saved party does not match configuration");
+    if (save.recoveryPosition && (!this.config.session?.recovery || ![save.recoveryPosition.x, save.recoveryPosition.y].every(Number.isFinite) ||
+        save.recoveryPosition.x < 0 || save.recoveryPosition.y < 0 || save.recoveryPosition.x >= this.config.world.width || save.recoveryPosition.y >= this.config.world.height || save.party.some((actor) => actor.hp > 0))) throw new Error("Invalid saved recovery position");
     if (save.development && !this.development) throw new Error("Saved development is not supported by this configuration");
     const development = this.development && (save.development ?? this.development.save());
     if (development) this.development!.validateSave(development, save.map.resources);
@@ -456,6 +497,7 @@ export class DemoSession {
     this.world.elapsedSeconds = save.elapsedSeconds;
     const leader = this.world.leader;
     if (leader) this.fog.reveal(leader.position, this.config.fog.revealRadius);
+    else if (this.config.session?.recovery) this.enterRecovery(save.recoveryPosition ?? save.party[save.party.length - 1]);
     else this.finish("failed");
   }
 
@@ -516,10 +558,10 @@ export class DemoSession {
   update(deltaSeconds: number): number {
     this.frameEvents = [];
     this.explorationEvents = [];
-    if (this.state !== "running") return 0;
+    if (this.state !== "running" && this.state !== "recovering") return 0;
     this.accumulator += Math.max(0, deltaSeconds);
     let ticks = 0;
-    while (this.state === "running" && this.accumulator + Number.EPSILON >= this.fixedStep) {
+    while ((this.state === "running" || this.state === "recovering") && this.accumulator + Number.EPSILON >= this.fixedStep) {
       const leader = this.world.leader;
       if (leader?.alive && this.moveIntent.lengthSquared() > 0) {
         leader.position = this.world.options.navigation.moveWithCollision(leader.position,
@@ -576,7 +618,8 @@ export class DemoSession {
         const target = this.world.enemies.find((actor) => actor.id === currentLeader.targetId && actor.alive);
         if (target && this.moveIntent.lengthSquared() === 0) this.flashlightDirection = target.position.subtract(currentLeader.position).normalized();
       }
-      if (!currentLeader) this.finish("failed");
+      if (!currentLeader && this.config.session?.recovery) this.enterRecovery(leader?.position ?? this.recoveryPosition ?? this.world.players[this.world.players.length - 1].position);
+      else if (!currentLeader) this.finish("failed");
       else if (this.config.session?.completionEncounterId && this.map.isEncounterCompleted(this.config.session.completionEncounterId)) this.finish("won");
       this.accumulator -= this.fixedStep;
       ticks += 1;
@@ -617,9 +660,11 @@ export class DemoSession {
       exploration: { ...this.map.snapshot(), events: [...this.explorationEvents] },
       journal: this.journal.snapshot(),
       development: this.development?.snapshot() ?? null,
+      recovery: this.state === "recovering" && this.config.session?.recovery ? { origin: this.recoveryPosition!, town: this.config.session.recovery.town,
+        portalId: this.nearestRecoveryPortal()?.id, portalName: this.nearestRecoveryPortal()?.name } : null,
       flashlight: {
-        x: leader?.position.x ?? 0,
-        y: leader?.position.y ?? 0,
+        x: leader?.position.x ?? this.recoveryPosition?.x ?? 0,
+        y: leader?.position.y ?? this.recoveryPosition?.y ?? 0,
         directionX: this.flashlightDirection.x,
         directionY: this.flashlightDirection.y,
         radius: this.config.flashlight?.range ?? this.config.fog.revealRadius,

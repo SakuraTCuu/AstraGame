@@ -51,6 +51,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     progression: { level: 1, rank: 0, initialFlags: [],
       experienceLevels: [...families.get("PlayerLevel").keys()].map((id) => { const level = row("PlayerLevel", id); return { level: level.level, required: level.exp }; }).sort((a, b) => a.level - b.level),
       resources: { incense: { name: row("Item", 4).name, initial: 20 } } } };
+  if (sourceMap.revive) config.session.recovery = { town: config.world.start, nearestPortal: true };
   for (let y = 0; y < config.world.height / cellSize; y++) for (let x = 0; x < config.world.width / cellSize; x++) {
     const blocked = [[0.15, 0.15], [0.85, 0.15], [0.5, 0.5], [0.15, 0.85], [0.85, 0.85]].some(([dx, dy]) =>
       sourceBlocked(origin.x + (x + dx) * cellSize, origin.y + (y + dy) * cellSize * depth));

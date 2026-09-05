@@ -17,7 +17,7 @@ const TRANSITIONS: Record<ActorState, readonly ActorState[]> = {
   attacking: ["idle", "moving", "acquiring", "chasing", "windup", "recovering", "returning", "dead"],
   recovering: ["idle", "moving", "acquiring", "chasing", "windup", "attacking", "returning", "dead"],
   returning: ["idle", "moving", "dead"],
-  dead: [],
+  dead: ["idle"],
 };
 
 export interface ActorStats {
@@ -119,6 +119,17 @@ export class Actor {
     this.statuses.push({ definition, remaining: definition.duration });
   }
   gainEnergy(amount: number): void { if (this.alive) this.energy = Math.max(0, Math.min(this.stats.maxEnergy ?? 0, this.energy + amount)); }
+
+  recoverAt(position: Vec2Like): void {
+    if (![position.x, position.y].every(Number.isFinite)) throw new Error("Invalid recovery position");
+    this.position = Vector2.from(position);
+    this.health = this.stats.maxHealth;
+    this.energy = 0;
+    this.targetId = undefined;
+    this.shields.splice(0);
+    this.statuses.splice(0);
+    this.setState("idle");
+  }
 
   setState(state: ActorState): void {
     if (this.fsm.state === state) return;
