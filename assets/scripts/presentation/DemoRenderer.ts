@@ -3,6 +3,7 @@ import { ReferenceArtLayer } from "./ReferenceArtLayer";
 import { FogRenderer } from "./FogRenderer";
 import { WorldOverview } from "./WorldOverview";
 import { ProgressJournalView } from "./ProgressJournalView";
+import { DevelopmentView } from "./DevelopmentView";
 import { pointInPolygon } from "../core/world/WorldGeometry";
 
 interface WorldPoint {
@@ -26,6 +27,7 @@ const DEPTH_SCALE = 0.58;
 export class DemoRenderer {
     readonly overview: WorldOverview;
     readonly journal: ProgressJournalView;
+    readonly development: DevelopmentView;
     private readonly host: cc.Node;
     private readonly worldRoot: cc.Node;
     private readonly minimapSprite: cc.Sprite;
@@ -110,6 +112,7 @@ export class DemoRenderer {
         this.interactionLabel.node.active = false;
         this.overview = new WorldOverview(host);
         this.journal = new ProgressJournalView(host);
+        this.development = new DevelopmentView(host);
     }
 
     setLoading(message: string): void {
@@ -135,6 +138,7 @@ export class DemoRenderer {
         this.destination = null;
         this.overview.close();
         this.journal.close();
+        this.development.close();
         this.interactionId = null;
         this.setJoystick(cc.Vec2.ZERO, false);
     }
@@ -225,6 +229,10 @@ export class DemoRenderer {
         this.drawInteraction(snapshot);
         this.overview.update(snapshot, this.referenceArt && this.referenceArt.overviewTexture());
         this.journal.update(snapshot);
+        this.development.update(snapshot, (atlas, name) => this.referenceArt ? this.referenceArt.iconFrame(atlas, name) : null);
+        if (this.overview.isOpen) { this.journal.node.active = false; this.development.node.active = false; }
+        else if (this.journal.isOpen) this.development.node.active = false;
+        else if (this.development.isOpen) this.journal.node.active = false;
     }
 
     pushCombatFeedback(snapshot: DemoSnapshot): void {
@@ -251,6 +259,7 @@ export class DemoRenderer {
     destroy(): void {
         this.overview.destroy();
         this.journal.destroy();
+        this.development.destroy();
         if (this.referenceArt) this.referenceArt.destroy();
         if (this.softFog) this.softFog.destroy();
         this.floatTexts.splice(0).forEach((entry) => entry.node.destroy());

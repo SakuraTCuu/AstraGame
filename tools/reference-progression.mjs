@@ -57,8 +57,11 @@ export function buildReferenceJournal(lookup, ids, config, toWorld, rewards, iss
       const source = sourceDestination(row);
       if (source?.map === 100001) destination = { position: toWorld(source.px ?? source.x, source.py ?? source.y) };
     }
+    const completeCondition = condition(row);
+    if (!destination && (completeCondition.kind === "party_level" || completeCondition.kind === "party_total_level" ||
+        (completeCondition.kind === "counter" && completeCondition.id === "equipped"))) destination = { menu: "development" };
     return { id: `reference_quest_${row.id}`, flag: `quest:${row.id}`, name: row.text, category, order: row.index,
-      prerequisite, condition: condition(row), rewards: grant.rewards, destination };
+      prerequisite, condition: completeCondition, rewards: grant.rewards, destination };
   };
   const quests = all.filter((row) => !row.type && row.index >= beginning.index && row.index <= lastIndex).map((row) => quest(row, "main"));
   const ranks = ids("MilitaryRank").map((id) => lookup("MilitaryRank", id)).map((rank) => ({ id: rank.id, name: rank.name,

@@ -4,6 +4,7 @@ import { ExploreRuntime, SessionReady } from "../framework/ExploreRuntime";
 import { createLocalDemoPorts } from "../framework/LocalDemoPorts";
 import { RuntimePorts } from "../framework/RuntimePorts";
 import type { JournalAction } from "../presentation/ProgressJournalView";
+import type { DevelopmentAction } from "../presentation/DevelopmentView";
 
 const { ccclass } = cc._decorator;
 const JOYSTICK_CENTER = cc.v2(0, -470);
@@ -25,6 +26,8 @@ export default class DemoBootstrap extends cc.Component {
     private resumeAfterOverview = false;
     private resumeAfterJournal = false;
     private journalTouch = false;
+    private developmentTouch = false;
+    private resumeAfterDevelopment = false;
 
     get session(): DemoSession { return this.runtime && this.runtime.session; }
 
@@ -114,10 +117,10 @@ export default class DemoBootstrap extends cc.Component {
         if (!this.renderer) return;
         const point = this.node.convertToNodeSpaceAR(event.getLocation());
         if (this.renderer.overview.isOpen) this.renderer.overview.hover(point);
-        else { this.renderer.setHoveredControl(this.renderer.hitControl(point)); this.renderer.journal.hover(point); }
+        else { this.renderer.setHoveredControl(this.renderer.hitControl(point)); this.renderer.journal.hover(point); this.renderer.development.hover(point); }
     }
 
-    private onMouseLeave(): void { if (this.renderer) { this.renderer.setHoveredControl(null); this.renderer.overview.hover(null); this.renderer.journal.hover(null); } }
+    private onMouseLeave(): void { if (this.renderer) { this.renderer.setHoveredControl(null); this.renderer.overview.hover(null); this.renderer.journal.hover(null); this.renderer.development.hover(null); } }
     private onMouseWheel(event: cc.Event.EventMouse): void { if (this.renderer.overview.isOpen) this.renderer.overview.zoom(event.getScrollY() > 0 ? 1 : -1); }
 
     private onTouchStart(event: cc.Event.EventTouch): void {
@@ -126,6 +129,8 @@ export default class DemoBootstrap extends cc.Component {
         this.touchStart = this.toCanvas(event);
         this.touchCurrent = this.touchStart;
         if (this.renderer.overview.isOpen) { this.renderer.overview.beginDrag(this.touchStart); return; }
+        this.developmentTouch = this.renderer.development.contains(this.touchStart);
+        if (this.developmentTouch) return;
         this.journalTouch = this.renderer.journal.contains(this.touchStart);
         if (this.journalTouch) return;
         this.controlTouch = this.renderer.hitControl(this.touchStart);
@@ -135,7 +140,7 @@ export default class DemoBootstrap extends cc.Component {
     }
 
     private onTouchMove(event: cc.Event.EventTouch): void {
-        if (event.getID() !== this.touchId || this.controlTouch || this.journalTouch) return;
+        if (event.getID() !== this.touchId || this.controlTouch || this.journalTouch || this.developmentTouch) return;
         this.touchCurrent = this.toCanvas(event);
         if (this.renderer.overview.isOpen) { if (this.touchStart.y < 470 && this.touchStart.y > -425) this.renderer.overview.drag(this.touchCurrent); return; }
         if (!this.joystickTouch && this.touchStart.y < 470 && !this.renderer.isMinimapPoint(this.touchStart) &&
@@ -160,6 +165,8 @@ export default class DemoBootstrap extends cc.Component {
                     else this.renderer.showInteractionResult("unavailable");
                 } else if (action.kind === "navigate" && !this.session.navigateToPoi(action.id)) this.renderer.rejectDestination();
             }
+        } else if (this.developmentTouch) {
+            if (end.sub(this.touchStart).mag() < 18) this.handleDevelopmentAction(this.renderer.development.hit(end));
         } else if (this.journalTouch) {
             if (end.sub(this.touchStart).mag() < 18) this.handleJournalAction(this.renderer.journal.hit(end));
         } else if (this.controlTouch) {
@@ -188,6 +195,7 @@ export default class DemoBootstrap extends cc.Component {
 
     private handleJournalAction(action: JournalAction | null): void {
         if (!action || !this.session) return;
+        if (action.kind === "develop") { this.handleDevelopmentAction({ kind: "open" }); return; }
         if (action.kind === "open") {
             this.resumeAfterJournal = this.session.runState === "running";
             this.pause(); this.renderer.journal.open(action.tab);
@@ -201,6 +209,25 @@ export default class DemoBootstrap extends cc.Component {
             if (this.resumeAfterJournal) this.resume();
             this.resumeAfterJournal = false;
             if (action.kind === "navigate" && !this.session.navigateToQuest(action.id)) this.renderer.rejectDestination();
+        }
+        this.renderer.update(this.session.getSnapshot(), 0);
+        void this.runtime.flushProgress();
+    }
+
+    private handleDevelopmentAction(action: DevelopmentAction | null): void {
+        if (!action || !this.session) return;
+        if (action.kind === "open") {
+            this.resumeAfterDevelopment = this.session.runState === "running" || this.resumeAfterJournal;
+            this.renderer.journal.close(); this.resumeAfterJournal = false;
+            this.pause(); this.renderer.development.open();
+        } else if (action.kind === "close") {
+            this.renderer.development.close();
+            if (this.resumeAfterDevelopment) this.resume();
+            this.resumeAfterDevelopment = false;
+        } else {
+            const result = action.kind === "upgrade" ? this.session.upgradeHero(action.actorId) :
+                action.kind === "equip" ? this.session.equipItem(action.itemId, action.slotId) : this.session.unequipItem(action.slotId);
+            this.renderer.showInteractionResult(result);
         }
         this.renderer.update(this.session.getSnapshot(), 0);
         void this.runtime.flushProgress();
@@ -231,6 +258,7 @@ export default class DemoBootstrap extends cc.Component {
         this.joystickTouch = false;
         this.controlTouch = null;
         this.journalTouch = false;
+        this.developmentTouch = false;
     }
 
     private toCanvas(event: cc.Event.EventTouch): cc.Vec2 {

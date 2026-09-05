@@ -135,6 +135,13 @@ export class ReferenceArtLayer {
         if (this.foreground) this.foreground.update(this.ground, snapshot, camera, scale, depth);
     }
 
+    iconFrame(path: string, name: string): cc.SpriteFrame | null {
+        if (!this.bundle) return null;
+        const asset = this.loaded.get(path);
+        if (!asset) { this.load(this.bundle, path, cc.SpriteAtlas); return null; }
+        return (asset as cc.SpriteAtlas).getSpriteFrame(name);
+    }
+
     destroy(): void {
         this.dead = true;
         if (this.foreground) this.foreground.destroy();

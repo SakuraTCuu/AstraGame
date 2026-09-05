@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const url = process.argv[2] || "http://127.0.0.1:4174/?reference=1";
+await fetch(url, { signal: AbortSignal.timeout(5000) }).then((response) => { if (!response.ok) throw new Error(`Development server returned ${response.status}`); });
 const profile = await mkdtemp(join(tmpdir(), "astra-reference-"));
 const output = resolve("temp/qa-reference");
 await mkdir(output, { recursive: true });
@@ -44,7 +45,7 @@ const waitReady = async () => {
   for (let index = 0; index < 150; index++) {
     const ready = await evaluate(() => {
       const boot = window.cc && cc.find("Canvas")?.getComponent("DemoBootstrap"); window.__referenceBoot = boot;
-      return Boolean(boot?.session && boot.session.world.players.every((actor) => boot.renderer.referenceArt?.views.has(actor.id)) && boot.renderer.softFogReady);
+      return Boolean(boot?.session && boot.session.world.players.every((actor) => !actor.alive || boot.renderer.referenceArt?.views.has(actor.id)) && boot.renderer.softFogReady);
     });
     if (ready) return true;
     await delay(200);
@@ -302,7 +303,65 @@ try {
   assert.ok(battleArt.tiles > 0 && battleArt.tiles <= 16);
   assert.ok(battleArt.atlasAnimationLengths.some((length) => length > 1), "Enemy atlas animations contain only a fallback frame");
   assert.deepEqual(battleArt.failures, []);
-  await evaluate(() => { window.__referenceBoot.enabled = true; });
+  const advanceBattle = async (boss) => {
+    for (let index = 0; index < 40; index++) {
+      const result = await evaluate((boss) => {
+        const boot = window.__referenceBoot, session = boot.session; boot.enabled = false;
+        for (let tick = 0; tick < 250 && session.runState === "running" && (boss ? !session.map.hasFlag("defeat:102020001") : !session.world.path.complete); tick++) session.update(0.05);
+        boot.renderer.update(session.getSnapshot(), 0.1);
+        return { state: session.runState, complete: boss ? session.map.hasFlag("defeat:102020001") : session.world.path.complete };
+      }, boss);
+      assert.equal(result.state, "running", "Party was defeated during equipment acquisition");
+      if (result.complete) return;
+    }
+    throw new Error("Natural equipment route timed out");
+  };
+  assert.ok(await evaluate(() => window.__referenceBoot.session.navigateToPoi("reference_npc_302002")));
+  await advanceBattle(false);
+  assert.equal(await evaluate(() => window.__referenceBoot.session.interactWithPoi("reference_npc_302002")), "completed");
+  assert.ok(await evaluate(() => window.__referenceBoot.session.navigateToPoi("reference_spawn_100190001")));
+  await advanceBattle(true);
+  const equipmentBefore = await evaluate(() => {
+    const boot = window.__referenceBoot; boot.session.setAutoDestination(null, null); boot.enabled = true;
+    const actor = boot.session.world.players[0], item = boot.session.development.snapshot().items.find((item) => item.resource === "item:101001001");
+    return { actorId: actor.id, stats: actor.stats, itemId: item?.id, count: boot.session.map.resourceBalance("item:101001001") };
+  });
+  assert.ok(equipmentBefore.itemId && equipmentBefore.count === 1, "First Boss did not award its equipment");
+  await clickDesign(-238, 300);
+  assert.ok(await evaluate(() => window.__referenceBoot.renderer.development.isOpen && !window.__referenceBoot.renderer.journal.node.active));
+  for (let index = 0; index < 30; index++) {
+    if (await evaluate(() => window.__referenceBoot.renderer.development.icons.some((icon) => icon.node.active && icon.spriteFrame?.name === "equip_06003"))) break;
+    await delay(100);
+  }
+  assert.ok(await evaluate(() => window.__referenceBoot.renderer.development.icons.some((icon) => icon.node.active && icon.spriteFrame?.name === "equip_06003")), "Source equipment icon did not render");
+  await capture("equipment-before");
+  await clickDesign(174, -548);
+  const equipped = await evaluate(async () => {
+    const boot = window.__referenceBoot; await boot.runtime.flushProgress();
+    return { stats: boot.session.world.players[0].stats, count: boot.session.map.counter("equipped"),
+      itemId: boot.session.development.snapshot().slots[0].itemId, icons: boot.renderer.development.icons.filter((icon) => icon.node.active).map((icon) => icon.spriteFrame.name) };
+  });
+  assert.equal(equipped.itemId, equipmentBefore.itemId);
+  assert.equal(equipped.stats.attack, equipmentBefore.stats.attack + 23);
+  assert.equal(equipped.stats.defense, equipmentBefore.stats.defense + 4);
+  assert.equal(equipped.stats.maxHealth, equipmentBefore.stats.maxHealth + 338);
+  assert.ok(await evaluate(() => window.__referenceBoot.renderer.development.labels.some((label) => label.node.active && label.string === "\u653b\u51fb -23")), "Unequip preview does not show the lost attack stat");
+  await capture("equipment-after");
+  await send("Page.reload", { ignoreCache: true });
+  assert.ok(await waitReady());
+  const equipmentRestored = await evaluate(() => ({ stats: window.__referenceBoot.session.world.players[0].stats,
+    itemId: window.__referenceBoot.session.development.snapshot().slots[0].itemId }));
+  assert.equal(equipmentRestored.itemId, equipmentBefore.itemId);
+  assert.deepEqual(equipmentRestored.stats, equipped.stats);
+  await clickDesign(-238, 300);
+  await clickDesign(174, -548);
+  assert.equal(await evaluate(() => window.__referenceBoot.session.world.players[0].stats.attack), equipmentBefore.stats.attack);
+  await clickDesign(-82, 481);
+  await clickDesign(174, -548);
+  assert.ok(await evaluate(() => window.__referenceBoot.session.development.snapshot().slots.some((slot) => slot.actorId === window.__referenceBoot.session.world.players[1].id && slot.itemId)));
+  assert.equal(await evaluate(() => window.__referenceBoot.session.map.counter("equipped")), 1);
+  await clickDesign(306, 557);
+  const development = { before: equipmentBefore, equipped, restored: equipmentRestored, unequippedAndTransferred: true };
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -314,6 +373,9 @@ try {
     await clickDesign(312, 570);
     await clickDesign(-310, 300);
     await capture(`${name}-journal`);
+    await clickDesign(306, 557);
+    await clickDesign(-238, 300);
+    await capture(`${name}-development`);
     await clickDesign(306, 557);
   }
   const resetCounts = [];
@@ -327,7 +389,7 @@ try {
   assert.ok(resetCounts.every((count) => count.root === resetCounts[0].root && count.world === 8 && count.actors === 4), JSON.stringify(resetCounts));
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
-  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, resetCounts, viewports, errors, failures };
+  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

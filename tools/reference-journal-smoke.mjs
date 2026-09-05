@@ -34,10 +34,26 @@ assert.ok(completed.includes("reference_quest_11010001"));
 assert.equal(session.claimQuest("reference_firstkill_90101"), "claimed");
 assert.equal(session.map.resourceBalance("item:52"), 1);
 assert.equal(session.claimQuest("reference_firstkill_90101"), "already_claimed");
+const item = session.development.snapshot().items.find((item) => item.resource === "item:101001001");
+assert.ok(item, "First Boss equipment did not drop");
+const actor = session.world.players.find((actor) => actor.alive);
+const slot = session.development.snapshot().slots.find((slot) => slot.actorId === actor.id && slot.type === item.type);
+const before = actor.stats;
+assert.equal(session.equipItem(item.id, slot.id), "completed");
+assert.equal(actor.stats.attack, before.attack + 23);
+assert.equal(actor.stats.defense, before.defense + 4);
+assert.equal(actor.stats.maxHealth, before.maxHealth + 338);
+assert.equal(session.claimQuest("reference_quest_10010033"), "claimed");
+completed.push("reference_quest_10010033");
+assert.equal(session.claimQuest("reference_quest_120100001"), "claimed");
+completed.push("reference_quest_120100001");
 const restored = new DemoSession(config);
 restored.restoreExploration(session.saveExploration());
 assert.equal(restored.map.resourceBalance("item:52"), 1);
 assert.equal(restored.claimQuest("reference_firstkill_90101"), "already_claimed");
+assert.equal(restored.development.snapshot().slots.find((entry) => entry.id === slot.id).itemId, item.id);
+assert.equal(restored.world.players.find((entry) => entry.id === actor.id).stats.maxHealth, actor.stats.maxHealth);
 console.log(JSON.stringify({ completed, interactions, rank: session.map.rank, level: session.map.level,
   seals: session.map.resourceBalance("item:52"), vouchers: session.map.resourceBalance("item:2"), elapsed: session.world.elapsedSeconds,
-  survivors: session.world.players.filter((actor) => actor.alive).length, usedTeleport: false, modifiedCombatStats: false }, null, 2));
+  survivors: session.world.players.filter((actor) => actor.alive).length,
+  equipment: { name: item.name, actorId: actor.id, before, after: actor.stats }, usedTeleport: false, usedStatOverrides: false }, null, 2));

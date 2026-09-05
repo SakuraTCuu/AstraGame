@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createExplorationDriver } from "./exploration-playthrough.mjs";
 
 const url = process.argv[2] || "http://127.0.0.1:4173";
+await fetch(url, { signal: AbortSignal.timeout(5000) }).then((response) => { if (!response.ok) throw new Error(`Development server returned ${response.status}`); });
 const outputDir = resolve("temp/qa");
 const debugPort = 9337;
 const profileDir = await mkdtemp(join(tmpdir(), "auto-explore-cdp-"));
@@ -109,14 +110,18 @@ try {
   });
   await Promise.all([send("Page.enable"), send("Runtime.enable"), send("Log.enable")]);
   await send("Emulation.setDeviceMetricsOverride", { width: 720, height: 1280, deviceScaleFactor: 1, mobile: false });
-  await delay(2500);
-
-  const runtime = await evaluate(() => {
-    const root = window.cc && cc.find("Canvas");
-    const boot = root && root._components.find((component) => component.session && component.renderer);
-    const rect = document.querySelector("canvas").getBoundingClientRect();
-    return { ready: Boolean(boot), canvas: { width: rect.width, height: rect.height }, state: boot?.session.runState };
-  });
+  let runtime;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    runtime = await evaluate(() => {
+      const root = window.cc && cc.find("Canvas");
+      const boot = root && root._components.find((component) => component.session && component.renderer);
+      const rect = document.querySelector("canvas")?.getBoundingClientRect();
+      return { ready: Boolean(boot && rect), canvas: rect ? { width: rect.width, height: rect.height } : null, state: boot?.session.runState };
+    });
+    if (runtime.ready) break;
+    await delay(150);
+  }
+  if (!runtime.ready) throw new Error(`Scene did not initialize: ${consoleErrors.join("; ")}`);
   const screenshots = { initial: await capture("initial") };
   const hostPrefab = await evaluate(() => new Promise((resolve, reject) => {
     cc.resources.load("auto_explore/ExploreView", cc.Prefab, (error, asset) => {

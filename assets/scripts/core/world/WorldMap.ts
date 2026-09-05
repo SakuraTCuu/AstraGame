@@ -45,7 +45,7 @@ export class WorldMap {
   private readonly resourceNames = new Map<string, string>();
   private readonly optionalResources = new Set<string>();
   private readonly hiddenResources = new Set<string>();
-  readonly partyLevels: readonly number[];
+  private currentPartyLevels: readonly number[];
   private readonly experienceLevels = new Map<number, number>();
   private readonly counters = new Map<string, number>();
   private experience = 0;
@@ -73,7 +73,7 @@ export class WorldMap {
     this.pois = pois;
     this.level = progression.level;
     this.rank = progression.rank ?? 0;
-    this.partyLevels = [...(progression.partyLevels ?? [])];
+    this.currentPartyLevels = [...(progression.partyLevels ?? [])];
     if (this.partyLevels.some((level) => !Number.isSafeInteger(level) || level < 1)) throw new Error("Invalid party level");
     for (const [id, amount] of Object.entries(progression.initialCounters ?? {})) this.incrementCounter(id, amount);
     this.zoneMode = zoneMode;
@@ -145,6 +145,18 @@ export class WorldMap {
   isPoiInteracted(id: string): boolean { return this.interacted.has(id); }
   hasFlag(id: string): boolean { return this.flags.has(id) || (id.startsWith("poi:") && this.interacted.has(id.slice(4))); }
   counter(id: string): number { return this.counters.get(id) ?? 0; }
+  get partyLevels(): readonly number[] { return this.currentPartyLevels; }
+  setPartyLevels(levels: readonly number[]): void {
+    if (levels.some((level) => !Number.isSafeInteger(level) || level < 1)) throw new Error("Invalid party level");
+    if (levels.length === this.partyLevels.length && levels.every((level, index) => level === this.partyLevels[index])) return;
+    this.currentPartyLevels = [...levels]; this.recordProgressChange("party_levels");
+  }
+  setCounter(id: string, amount: number): void {
+    if (!id || !Number.isSafeInteger(amount) || amount < 0) throw new Error("Invalid progression count");
+    if (this.counter(id) === amount) return;
+    this.counters.set(id, amount); this.recordProgressChange(id);
+  }
+  recordProgressChange(id: string): void { this.revision += 1; this.events.push({ type: "progress_changed", id }); }
   incrementCounter(id: string, amount = 1): void {
     if (!id || !Number.isSafeInteger(amount) || amount < 0 || !Number.isSafeInteger(this.counter(id) + amount)) throw new Error("Invalid progression count");
     if (!amount) return;
@@ -172,6 +184,14 @@ export class WorldMap {
     }
     for (const id of Object.keys(grants)) { this.balances.set(id, this.balances.get(id)! + grants[id]); this.incrementCounter(`owned:${id}`, grants[id]); this.events.push({ type: "resource_changed", id }); }
     this.revision += 1;
+  }
+
+  spendResources(cost: Readonly<Record<string, number>>): boolean {
+    for (const [id, amount] of Object.entries(cost)) this.validateResourceAmount(id, amount);
+    if (Object.entries(cost).some(([id, amount]) => this.resourceBalance(id) < amount)) return false;
+    for (const [id, amount] of Object.entries(cost)) { this.balances.set(id, this.resourceBalance(id) - amount); this.events.push({ type: "resource_changed", id }); }
+    if (Object.keys(cost).length) this.revision += 1;
+    return true;
   }
 
   validateReward(reward: ProgressReward): void {

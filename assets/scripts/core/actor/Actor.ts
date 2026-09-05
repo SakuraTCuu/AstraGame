@@ -55,7 +55,7 @@ export interface ActorOptions {
 export class Actor {
   readonly id: string;
   readonly faction: Faction;
-  readonly stats: ActorStats;
+  private currentStats: ActorStats;
   readonly tags: ReadonlySet<string>;
   readonly skillIds: readonly string[];
   readonly fsm: StateMachine<ActorState, Actor>;
@@ -81,7 +81,7 @@ export class Actor {
     this.kind = options.kind ?? (options.tags?.includes("boss") ? "boss" : options.faction === "player" ? "hero" : "normal");
     this.displayName = options.name ?? options.id;
     this.healthBars = Math.max(1, Math.floor(options.healthBars ?? 1));
-    this.stats = options.stats;
+    this.currentStats = options.stats;
     this.tags = new Set(options.tags ?? []);
     this.skillIds = [...(options.skillIds ?? [])];
     this.health = Math.max(0, Math.min(options.stats.maxHealth, options.initialHealth ?? options.stats.maxHealth));
@@ -94,6 +94,16 @@ export class Actor {
 
   get alive(): boolean {
     return this.health > 0;
+  }
+
+  get stats(): ActorStats { return this.currentStats; }
+  updateStats(stats: ActorStats): void {
+    if (![stats.maxHealth, stats.attack, stats.defense, stats.moveSpeed, stats.attackRange, stats.aggroRange].every(Number.isFinite) ||
+        stats.maxHealth <= 0 || Math.min(stats.attack, stats.defense, stats.moveSpeed, stats.attackRange, stats.aggroRange) < 0) throw new Error("Invalid actor growth stats");
+    const ratio = this.health / this.stats.maxHealth;
+    this.currentStats = stats;
+    this.health = this.alive ? Math.min(stats.maxHealth, Math.max(1, Math.round(ratio * stats.maxHealth))) : 0;
+    this.energy = Math.min(this.energy, stats.maxEnergy ?? 0);
   }
 
   get shield(): number { return this.shields.reduce((sum, layer) => sum + layer.amount, 0); }

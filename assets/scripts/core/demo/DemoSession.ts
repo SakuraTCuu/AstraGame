@@ -15,6 +15,8 @@ import type { RespawnProgress, SpawnSnapshot } from "../world/SpawnDirector";
 import type { ExplorationEvent, InteractionResult, MapProgress, WorldObstacle, WorldPoi, WorldProgression, WorldZone } from "../world/WorldMap";
 import { ProgressionJournal } from "../world/ProgressionJournal";
 import type { JournalConfig, ProgressReward, ClaimResult } from "../world/ProgressionJournal";
+import { PartyDevelopment } from "../world/PartyDevelopment";
+import type { DevelopmentConfig, DevelopmentSave, DevelopmentResult } from "../world/PartyDevelopment";
 
 export type DefeatReward = ProgressReward;
 
@@ -50,6 +52,7 @@ export interface DemoActorConfig {
   readonly defeatFlag?: string;
   readonly defeatCounters?: readonly string[];
   readonly defeatRewards?: readonly DefeatReward[];
+  readonly firstDefeatRewards?: readonly DefeatReward[];
 }
 
 export interface DemoSpawnConfig {
@@ -71,6 +74,7 @@ export interface DemoConfig {
   readonly meta?: { readonly id: string; readonly schemaVersion: number };
   readonly seed: number;
   readonly journal?: JournalConfig;
+  readonly development?: DevelopmentConfig;
   readonly world: {
     readonly width: number;
     readonly height: number;
@@ -115,6 +119,7 @@ export interface ExplorationSave {
   readonly randomState: number;
   readonly clearedSpawns: readonly string[];
   readonly respawns?: readonly RespawnProgress[];
+  readonly development?: DevelopmentSave;
 }
 
 export type RunState = "running" | "paused" | "won" | "failed";
@@ -179,6 +184,7 @@ export interface DemoSnapshot {
   readonly fog: { readonly width: number; readonly height: number; readonly cellSize: number; readonly states: readonly FogCellState[] };
   readonly exploration: ReturnType<WorldMap["snapshot"]> & { readonly events: readonly ExplorationEvent[] };
   readonly journal: ReturnType<ProgressionJournal["snapshot"]>;
+  readonly development: ReturnType<PartyDevelopment["snapshot"]> | null;
   readonly flashlight: {
     readonly x: number;
     readonly y: number;
@@ -231,6 +237,7 @@ export class DemoSession {
   readonly map: WorldMap;
   readonly spawns: SpawnDirector;
   readonly journal: ProgressionJournal;
+  readonly development?: PartyDevelopment;
   private readonly config: DemoConfig;
   private readonly fog: FogGrid;
   private readonly fixedStep: number;
@@ -268,7 +275,7 @@ export class DemoSession {
     );
     this.map = new WorldMap(navigation, this.fog, { x: 0, y: 0, width: config.world.width, height: config.world.height },
       config.fog.unlockZones, config.world.pointsOfInterest, config.world.obstacles, config.world.progression, config.world.zoneMode);
-    for (const enemy of enemyConfigs) for (const reward of enemy.defeatRewards ?? []) this.map.validateReward(reward);
+    for (const enemy of enemyConfigs) for (const reward of [...(enemy.defeatRewards ?? []), ...(enemy.firstDefeatRewards ?? [])]) this.map.validateReward(reward);
     for (const player of players) {
       if (!navigation.isWorldWalkable(player.position)) throw new Error(`Player ${player.id} starts on blocked ground`);
     }
@@ -314,6 +321,7 @@ export class DemoSession {
     this.fixedStep = 1 / ticksPerSecond;
     this.spawns = new SpawnDirector(this.world, this.map, config.spawns ?? [], this.enemyTemplates, (entry) => this.createActor(entry, "enemy"));
     this.journal = new ProgressionJournal(this.map, config.journal, () => this.world.random.next());
+    this.development = config.development ? new PartyDevelopment(players, this.map, config.development, () => this.world.random.next()) : undefined;
     const leader = this.world.leader;
     if (leader) {
       this.map.discoverAt(leader.position);
@@ -331,6 +339,7 @@ export class DemoSession {
     const leader = this.world.leader;
     if (this.state !== "running" || !leader) return "unavailable";
     const result = this.map.interact(id, leader.position, () => this.world.random.next());
+    if (result === "completed") this.development?.syncInventory();
     if (result === "completed" && this.questDestinationId) this.navigateToQuest(this.questDestinationId);
     return result;
   }
@@ -338,11 +347,22 @@ export class DemoSession {
   claimQuest(id: string): ClaimResult {
     if (this.state !== "running" && this.state !== "paused") return "unavailable";
     const result = this.journal.claim(id);
+    if (result === "claimed") this.development?.syncInventory();
     if (result === "claimed" && this.questDestinationId === id) this.questDestinationId = null;
     return result;
   }
 
-  promoteRank(): ClaimResult { return this.state === "running" || this.state === "paused" ? this.journal.promote() : "unavailable"; }
+  promoteRank(): ClaimResult {
+    if (this.state !== "running" && this.state !== "paused") return "unavailable";
+    const result = this.journal.promote();
+    if (result === "claimed") this.development?.syncInventory();
+    return result;
+  }
+
+  equipItem(itemId: string, slotId: string): DevelopmentResult { return this.canDevelop() ? this.development!.equip(itemId, slotId) : "unavailable"; }
+  unequipItem(slotId: string): DevelopmentResult { return this.canDevelop() ? this.development!.unequip(slotId) : "unavailable"; }
+  upgradeHero(actorId: string): DevelopmentResult { return this.canDevelop() ? this.development!.upgrade(actorId) : "unavailable"; }
+  private canDevelop(): boolean { return Boolean(this.development && (this.state === "running" || this.state === "paused")); }
 
   navigateToQuest(id: string): boolean {
     const quest = this.journal.quests.find((entry) => entry.id === id);
@@ -397,7 +417,7 @@ export class DemoSession {
     return { schema: 1, configId: this.config.meta?.id ?? "default", configVersion: this.config.meta?.schemaVersion ?? 1,
       map: this.map.saveProgress(), exploredCells: this.fog.exploredIndices(),
       party: this.world.players.map((actor) => ({ id: actor.id, x: actor.position.x, y: actor.position.y, hp: actor.health, energy: actor.energy })),
-      elapsedSeconds: this.world.elapsedSeconds, randomState: this.world.random.snapshot(), clearedSpawns: this.spawns.clearedPermanentIds(), respawns: this.spawns.respawnProgress() };
+      elapsedSeconds: this.world.elapsedSeconds, randomState: this.world.random.snapshot(), clearedSpawns: this.spawns.clearedPermanentIds(), respawns: this.spawns.respawnProgress(), development: this.development?.save() };
   }
 
   restoreExploration(save: ExplorationSave): void {
@@ -405,17 +425,22 @@ export class DemoSession {
     if (this.world.elapsedSeconds !== 0 || !Number.isFinite(save.elapsedSeconds) || save.elapsedSeconds < 0 ||
         !Number.isInteger(save.randomState) || save.randomState <= 0 || save.randomState > 0xffffffff) throw new Error("Invalid exploration clock or random state");
     if (save.party.length !== this.world.players.length || new Set(save.party.map((entry) => entry.id)).size !== save.party.length) throw new Error("Saved party does not match configuration");
+    if (save.development && !this.development) throw new Error("Saved development is not supported by this configuration");
+    const development = this.development && (save.development ?? this.development.save());
+    if (development) this.development!.validateSave(development, save.map.resources);
     for (const entry of save.party) {
       const actor = this.world.players.find((actor) => actor.id === entry.id);
-      if (!actor || ![entry.x, entry.y, entry.hp].every(Number.isFinite) || entry.hp < 0 || entry.hp > actor.stats.maxHealth ||
+      const stats = actor && (development ? this.development!.statsFor(actor.id, development, Math.max(this.map.rank, save.map.rank ?? 0)) : actor.stats);
+      if (!actor || ![entry.x, entry.y, entry.hp].every(Number.isFinite) || entry.hp < 0 || entry.hp > stats!.maxHealth ||
           entry.x < 0 || entry.y < 0 || entry.x >= this.config.world.width || entry.y >= this.config.world.height) throw new Error("Invalid saved party member");
-      if (entry.energy !== undefined && (!Number.isFinite(entry.energy) || entry.energy < 0 || entry.energy > (actor.stats.maxEnergy ?? 0))) throw new Error("Invalid saved energy");
+      if (entry.energy !== undefined && (!Number.isFinite(entry.energy) || entry.energy < 0 || entry.energy > (stats!.maxEnergy ?? 0))) throw new Error("Invalid saved energy");
     }
     this.map.validateProgress(save.map);
     this.fog.validateProgress(save.exploredCells);
     this.spawns.validateProgress(save.clearedSpawns);
     this.spawns.validateRespawns(save.respawns ?? []);
     this.map.restoreProgress(save.map);
+    if (development) this.development!.restore(development);
     this.spawns.restoreCleared(save.clearedSpawns);
     this.spawns.restoreRespawns(save.respawns ?? [], save.elapsedSeconds);
     this.fog.restore(save.exploredCells);
@@ -427,6 +452,7 @@ export class DemoSession {
       if (!actor.alive) actor.setState("dead");
     }
     this.world.random.restore(save.randomState);
+    this.development?.syncInventory();
     this.world.elapsedSeconds = save.elapsedSeconds;
     const leader = this.world.leader;
     if (leader) this.fog.reveal(leader.position, this.config.fog.revealRadius);
@@ -529,7 +555,12 @@ export class DemoSession {
         if (template?.defeatFlag) { this.map.grantFlag(template.defeatFlag); this.map.incrementCounter(template.defeatFlag); }
         for (const counter of new Set(template?.defeatCounters ?? [])) this.map.incrementCounter(counter);
         if (template?.defeatRewards?.length) this.map.grantRewards(template.defeatRewards, () => this.world.random.next());
+        if (template?.firstDefeatRewards?.length && !this.map.hasFlag(`first_drop:${template.id}`)) {
+          this.map.grantRewards(template.firstDefeatRewards, () => this.world.random.next());
+          this.map.grantFlag(`first_drop:${template.id}`);
+        }
       }
+      this.development?.syncInventory();
       this.defeatedEnemies += events.filter((event) => event.type === "death" && enemyIds.has(event.targetId)).length;
       this.frameEvents.push(...events);
       this.explorationEvents.push(...this.map.drainEvents());
@@ -585,6 +616,7 @@ export class DemoSession {
       fog: { width: this.fog.width, height: this.fog.height, cellSize: this.fog.cellSize, states: this.fog.states() },
       exploration: { ...this.map.snapshot(), events: [...this.explorationEvents] },
       journal: this.journal.snapshot(),
+      development: this.development?.snapshot() ?? null,
       flashlight: {
         x: leader?.position.x ?? 0,
         y: leader?.position.y ?? 0,
