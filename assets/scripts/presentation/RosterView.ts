@@ -78,7 +78,8 @@ export class RosterView {
     update(snapshot: DemoSnapshot, icon: (atlas: string, frame: string) => cc.SpriteFrame | null): void {
         this.snapshot = snapshot; this.node.active = Boolean(snapshot.roster);
         if (!this.node.active) return;
-        const button = this.button; button.clear(); button.strokeColor = cc.color(160, 177, 144); button.lineWidth = 2; button.circle(-166, 300, 28);
+        const button = this.button; button.clear(); button.fillColor = cc.color(24, 46, 39); button.circle(-166, 300, 28); button.fill();
+        button.strokeColor = cc.color(220, 234, 212); button.lineWidth = 3; button.circle(-166, 300, 28); button.stroke();
         button.circle(-174, 306, 5); button.circle(-158, 306, 5); button.moveTo(-182, 289); button.lineTo(-182, 296); button.lineTo(-166, 300); button.lineTo(-150, 296); button.lineTo(-150, 289); button.stroke();
         if (!this.isOpen) return;
         const g = this.frame; g.clear(); this.usedLabels = 0; this.portraits.forEach((sprite) => { sprite.node.active = false; });

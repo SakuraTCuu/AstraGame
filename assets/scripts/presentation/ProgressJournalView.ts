@@ -86,8 +86,9 @@ export class ProgressJournalView {
             this.snapshot.quests.find((quest) => quest.category === "main" && quest.state !== "claimed");
         const g = this.tracker; g.clear();
         g.fillColor = cc.color(18, 34, 31, 205); g.roundRect(-338, 334, 310, 83, 4); g.fill();
-        g.strokeColor = cc.color(160, 177, 144); g.lineWidth = 2; g.moveTo(-310, 309); g.lineTo(-292, 309); g.moveTo(-310, 300); g.lineTo(-292, 300); g.moveTo(-310, 291); g.lineTo(-292, 291); g.stroke();
-        g.circle(-310, 300, 28); g.stroke();
+        g.fillColor = cc.color(24, 46, 39); g.circle(-310, 300, 28); g.fill();
+        g.strokeColor = cc.color(220, 234, 212); g.lineWidth = 3; g.circle(-310, 300, 28); g.stroke();
+        g.moveTo(-322, 309); g.lineTo(-298, 309); g.moveTo(-322, 300); g.lineTo(-298, 300); g.moveTo(-322, 291); g.lineTo(-298, 291); g.stroke();
         this.trackerTitle.string = this.tracked?.name || "\u672c\u7ae0\u4efb\u52a1\u5df2\u5b8c\u6210";
         this.trackerStatus.string = this.tracked?.state === "ready" ? "\u9886\u53d6\u5956\u52b1" : this.tracked?.requirements.join("  ") || "";
         this.trackerStatus.node.color = this.tracked?.state === "ready" ? cc.color(137, 222, 159) : cc.color(207, 213, 205);

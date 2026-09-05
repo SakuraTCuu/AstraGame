@@ -66,8 +66,9 @@ export class DevelopmentView {
     update(snapshot: DemoSnapshot, icon: (atlas: string, name: string) => cc.SpriteFrame | null): void {
         this.snapshot = snapshot.development; this.node.active = Boolean(this.snapshot);
         if (!this.snapshot) return;
-        const button = this.button; button.clear(); button.strokeColor = cc.color(160, 177, 144); button.lineWidth = 2;
-        button.circle(-238, 300, 28); button.circle(-238, 307, 7); button.moveTo(-251, 287); button.arc(-238, 287, 13, 0, Math.PI, false); button.stroke();
+        const button = this.button; button.clear(); button.fillColor = cc.color(24, 46, 39); button.circle(-238, 300, 28); button.fill();
+        button.strokeColor = cc.color(220, 234, 212); button.lineWidth = 3; button.circle(-238, 300, 28); button.stroke();
+        button.circle(-238, 307, 7); button.moveTo(-251, 287); button.arc(-238, 287, 13, 0, Math.PI, false); button.stroke();
         if (!this.isOpen) return;
         this.usedLabels = 0; this.icons.forEach((sprite) => { sprite.node.active = false; });
         const g = this.frame; g.clear(); g.fillColor = cc.color(4, 10, 12, 235); g.rect(-360, -640, 720, 1280); g.fill();
