@@ -92,8 +92,41 @@ export class ReferenceArtLayer {
             view.node.zIndex = Math.round(100000 - actor.y);
             this.animate(view, actor, snapshot, delta);
         });
+        const existing = new Set(snapshot.actors.map((actor) => actor.id));
+        snapshot.exploration.pois.forEach((poi) => {
+            const binding = this.config.bindings[poi.id];
+            if (!binding || (poi.type !== "portal" && poi.type !== "fog_gate") || (poi.type === "fog_gate" && poi.completed)) return;
+            existing.add(poi.id);
+            const point = project(poi.x, poi.y);
+            if (Math.abs(point.x) > 650 || Math.abs(point.y) > 1000) return;
+            const asset = this.loaded.get(binding.path);
+            if (!asset) { this.load(this.bundle, binding.path, binding.kind === "spine" ? sp.SkeletonData : cc.SpriteAtlas); return; }
+            let view = this.views.get(poi.id);
+            if (!view) { view = this.createActor(poi, binding, asset); this.views.set(poi.id, view); }
+            present.add(poi.id);
+            view.node.active = true; view.node.setPosition(point); view.node.zIndex = Math.round(100000 - poi.y); view.bars.clear();
+            if (view.skeleton) {
+                const names = view.skeleton.skeletonData.getRuntimeData().animations.map((entry) => entry.name);
+                const action = names.includes("idle") ? "idle" : names[0];
+                if (action && view.action !== action) view.skeleton.setAnimation(0, action, true);
+                view.action = action; view.skeleton.paused = snapshot.runState !== "running";
+            } else {
+                const action = poi.completed ? "dead" : "idle";
+                const key = `${binding.path}:${action}`;
+                let frames = this.frames.get(key);
+                if (!frames) {
+                    const all = (asset as cc.SpriteAtlas).getSpriteFrames();
+                    frames = all.filter((frame) => new RegExp(`^${action}[_-]`).test(frame.name)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+                    if (!frames.length) frames = all.slice(0, 1);
+                    this.frames.set(key, frames);
+                }
+                if (view.action !== action) { view.age = !view.action && poi.completed ? frames.length / binding.fps : 0; view.action = action; }
+                if (snapshot.runState === "running") view.age += delta;
+                if (frames.length) view.sprite.spriteFrame = frames[poi.completed ? Math.min(frames.length - 1, Math.floor(view.age * binding.fps)) : Math.floor(view.age * binding.fps) % frames.length];
+            }
+        });
         this.views.forEach((view, id) => {
-            if (!snapshot.actors.some((actor) => actor.id === id)) { view.node.destroy(); this.views.delete(id); }
+            if (!existing.has(id) || !present.has(id)) { view.node.destroy(); this.views.delete(id); }
             else view.node.active = present.has(id);
         });
     }
@@ -112,7 +145,7 @@ export class ReferenceArtLayer {
         this.pending.add(path);
         bundle.load(path, type, (error: Error, asset: cc.Asset) => {
             this.pending.delete(path);
-            if (this.dead) return;
+            if (this.dead) { if (asset) asset.addRef().decRef(); return; }
             if (error) { this.failed.add(path); cc.warn("Reference art unavailable:", path, error.message); return; }
             asset.addRef();
             this.loaded.set(path, asset);
@@ -127,7 +160,7 @@ export class ReferenceArtLayer {
         return node;
     }
 
-    private createActor(actor: ActorSnapshot, binding: ArtBinding, asset: cc.Asset): ActorView {
+    private createActor(actor: Pick<ActorSnapshot, "id" | "x">, binding: ArtBinding, asset: cc.Asset): ActorView {
         const node = new cc.Node(`Art_${actor.id}`);
         const art = new cc.Node("Visual");
         node.addChild(art);
@@ -185,7 +218,7 @@ export class ReferenceArtLayer {
         view.castId = cast && cast.id;
         const g = view.bars;
         g.clear();
-        if (actor.hp <= 0) return;
+        if (actor.hp <= 0 || actor.kind === "resource") return;
         const height = view.binding.height * this.config.scale;
         const width = actor.kind === "boss" ? 110 : 48;
         g.fillColor = cc.color(15, 18, 18, 220); g.rect(-width / 2, height, width, 7); g.fill();

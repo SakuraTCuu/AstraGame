@@ -128,6 +128,11 @@ try {
     });
   }));
   await click(555, 223);
+  await delay(200);
+  const overviewOpened = await evaluate(() => cc.find("Canvas").getComponent("DemoBootstrap").renderer.overview.isOpen);
+  await click(672, 70);
+  await delay(100);
+  await evaluate(() => cc.find("Canvas").getComponent("DemoBootstrap").session.setAutoDestination(1200, 1400));
   await delay(1800);
   screenshots.afterPath = await capture("after-path");
   await mouse("mousePressed", 360, 1110, 1);
@@ -216,8 +221,8 @@ try {
   }
   screenshots.restarted = await capture("restarted");
   const controls = { paused, frozen: pausedTime === paused.time, resumed, resets: resetCounts };
-  const report = { runtime, hostPrefab, inputMode, bossInitiallyBlocked, progression, bossWarning, completion, resultSaved, controls, viewports, screenshots, consoleErrors,
-    passed: runtime.ready && inputMode === "resume_wait" && bossInitiallyBlocked && progression.reached && bossWarning.reached &&
+  const report = { runtime, hostPrefab, overviewOpened, inputMode, bossInitiallyBlocked, progression, bossWarning, completion, resultSaved, controls, viewports, screenshots, consoleErrors,
+    passed: runtime.ready && overviewOpened && inputMode === "resume_wait" && bossInitiallyBlocked && progression.reached && bossWarning.reached &&
       completion.reached && completion.report.state === "won" && resultSaved && paused.state === "paused" && controls.frozen &&
       resumed === "running" && resetCounts.every((entry) => entry.state === "running" && entry.zones.join(",") === "south") &&
       new Set(resetCounts.map((entry) => entry.nodes)).size === 1 && hostPrefab.valid && hostPrefab.name === "AstraExploreView" &&

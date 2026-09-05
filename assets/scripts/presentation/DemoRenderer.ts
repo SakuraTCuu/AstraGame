@@ -1,6 +1,7 @@
 import { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
 import { ReferenceArtLayer } from "./ReferenceArtLayer";
 import { FogRenderer } from "./FogRenderer";
+import { WorldOverview } from "./WorldOverview";
 
 interface WorldPoint {
     x: number;
@@ -21,6 +22,7 @@ const WORLD_SCALE = 0.82;
 const DEPTH_SCALE = 0.58;
 
 export class DemoRenderer {
+    readonly overview: WorldOverview;
     private readonly host: cc.Node;
     private readonly worldRoot: cc.Node;
     private readonly minimapSprite: cc.Sprite;
@@ -56,6 +58,12 @@ export class DemoRenderer {
     private depthScale = DEPTH_SCALE;
     private softFog: FogRenderer = null;
     private softFogReady = false;
+    private readonly interactionGraphics: cc.Graphics;
+    private readonly interactionLabel: cc.Label;
+    private interactionId: string = null;
+    private interactionPoint = cc.v2();
+    private interactionFeedback = "";
+    private interactionFeedbackTime = 0;
 
     constructor(host: cc.Node) {
         this.host = host;
@@ -92,6 +100,12 @@ export class DemoRenderer {
         this.bossLabel = this.createLabel("BossHealth", 19, cc.color(248, 181, 153), cc.v2(-100, 463), cc.Label.HorizontalAlign.LEFT);
         this.bossLabel.node.setContentSize(460, 32);
         this.bossLabel.node.active = false;
+        this.interactionGraphics = this.createGraphics("InteractionButton", 32);
+        this.interactionLabel = this.createLabel("InteractionCommand", 20, cc.color(242, 235, 207), cc.v2(), cc.Label.HorizontalAlign.CENTER);
+        this.interactionLabel.node.zIndex = 33;
+        this.interactionLabel.node.setContentSize(200, 48);
+        this.interactionLabel.node.active = false;
+        this.overview = new WorldOverview(host);
     }
 
     setLoading(message: string): void {
@@ -115,6 +129,8 @@ export class DemoRenderer {
         this.floatTexts.splice(0).forEach((entry) => this.recycleFloat(entry.node));
         this.actorLabels.forEach((label) => { label.node.active = false; });
         this.destination = null;
+        this.overview.close();
+        this.interactionId = null;
         this.setJoystick(cc.Vec2.ZERO, false);
     }
 
@@ -133,6 +149,24 @@ export class DemoRenderer {
     }
 
     isMinimapPoint(screen: cc.Vec2): boolean { return screen.x >= 170 && screen.x <= 338 && screen.y >= 370 && screen.y <= 515; }
+
+    centerOnLeader(snapshot: DemoSnapshot): void {
+        const leader = snapshot.actors.find((actor) => actor.id === snapshot.leaderId);
+        if (leader) { this.camera.set(cc.v2(leader.x, leader.y + 150)); this.cameraTarget.set(this.camera); }
+    }
+
+    openOverview(snapshot: DemoSnapshot): void { this.overview.open(snapshot, this.config); }
+
+    hitInteraction(point: cc.Vec2): string | null {
+        return this.interactionId && Math.abs(point.x - this.interactionPoint.x) <= 110 && Math.abs(point.y - this.interactionPoint.y) <= 26 ? this.interactionId : null;
+    }
+
+    showInteractionResult(result: string): void {
+        const messages = { completed: "\u5df2\u5b8c\u6210", insufficient_resources: "\u9999\u706b\u94b1\u4e0d\u8db3", requirements_not_met: "\u524d\u7f6e\u6761\u4ef6\u672a\u6ee1\u8db3",
+            out_of_range: "\u8ddd\u79bb\u8fc7\u8fdc", locked: "\u533a\u57df\u672a\u89e3\u9501", unavailable: "\u6682\u65f6\u4e0d\u53ef\u7528" };
+        this.interactionFeedback = messages[result] || "";
+        this.interactionFeedbackTime = 2;
+    }
 
     setDestination(destination: WorldPoint): void {
         this.destination = destination;
@@ -161,6 +195,8 @@ export class DemoRenderer {
     update(snapshot: DemoSnapshot, deltaSeconds: number): void {
         if (!this.config) return;
         this.snapshot = snapshot;
+        this.interactionFeedbackTime = Math.max(0, this.interactionFeedbackTime - deltaSeconds);
+        if (snapshot.exploration.events.some((event) => event.type === "teleported")) this.centerOnLeader(snapshot);
         this.navigationFeedback = Math.max(0, this.navigationFeedback - deltaSeconds);
         this.destination = snapshot.autoNavigation.destination;
         const leader = snapshot.actors.find((actor) => actor.id === snapshot.leaderId);
@@ -178,6 +214,8 @@ export class DemoRenderer {
         this.updateActorLabels(snapshot);
         this.updateHud(snapshot);
         this.drawResultAndControls(snapshot);
+        this.drawInteraction(snapshot);
+        this.overview.update(snapshot, this.referenceArt && this.referenceArt.overviewTexture());
     }
 
     pushCombatFeedback(snapshot: DemoSnapshot): void {
@@ -202,6 +240,7 @@ export class DemoRenderer {
     }
 
     destroy(): void {
+        this.overview.destroy();
         if (this.referenceArt) this.referenceArt.destroy();
         if (this.softFog) this.softFog.destroy();
         this.floatTexts.splice(0).forEach((entry) => entry.node.destroy());
@@ -491,6 +530,7 @@ export class DemoRenderer {
         const pois = this.config.world.pointsOfInterest || [];
         pois.forEach((poi: any) => {
             const discovered = snapshot.exploration.discoveredPoiIds.includes(poi.id);
+            if (this.referenceArt && !discovered && !snapshot.exploration.interactedPoiIds.includes(poi.id)) return;
             g.fillColor = discovered ? cc.color(115, 207, 161) : cc.color(228, 191, 82);
             g.circle(left + poi.x * scaleX, bottom + poi.y * scaleY, 3);
             g.fill();
@@ -544,13 +584,37 @@ export class DemoRenderer {
         const discovered = snapshot.discoveredFogCells.length;
         const total = snapshot.fog.width * snapshot.fog.height;
         this.statusLabel.string = `${this.config.world.name || "MIST VALLEY"}   ${Math.floor(snapshot.elapsedSeconds)}s\nSQUAD ${players.filter((actor) => actor.hp > 0).length}/${players.length}  HOSTILES ${enemies.length}  EXPLORED ${Math.round(discovered / total * 100)}%`;
-        this.objectiveLabel.string = this.navigationFeedback > 0 ? "PATH BLOCKED" : bossPhase
+        if (snapshot.exploration.resources.length) this.statusLabel.string = `${this.config.world.name}  Lv.${snapshot.exploration.level}\n${snapshot.exploration.resources.map((resource) => `${resource.name} ${resource.amount}`).join("   ")}`;
+        this.objectiveLabel.string = this.interactionFeedbackTime > 0 && this.interactionFeedback ? this.interactionFeedback : this.navigationFeedback > 0 ? "PATH BLOCKED" : bossPhase
             ? `BOSS - ${bossPhase.toUpperCase()}`
             : leader && leader.state === "attacking"
                 ? "ENGAGING"
                 : snapshot.autoNavigation.mode === "combat_hold" ? "ENGAGING"
                 : snapshot.autoNavigation.mode === "resume_wait" ? "ROUTE PAUSED"
                 : snapshot.autoNavigation.mode === "auto_path" ? "AUTO PATH ACTIVE" : "FREE EXPLORE";
+    }
+
+    private drawInteraction(snapshot: DemoSnapshot): void {
+        this.interactionGraphics.clear();
+        this.interactionLabel.node.active = false;
+        this.interactionId = null;
+        const leader = snapshot.actors.find((actor) => actor.id === snapshot.leaderId);
+        if (!leader || snapshot.runState !== "running") return;
+        const candidates = snapshot.exploration.pois.filter((poi) => poi.interaction && !poi.completed &&
+            Math.hypot(poi.x - leader.x, poi.y - leader.y) <= poi.interaction.radius + 100);
+        candidates.sort((a, b) => Math.hypot(a.x - leader.x, a.y - leader.y) - Math.hypot(b.x - leader.x, b.y - leader.y));
+        const poi = candidates[0];
+        if (!poi) return;
+        const p = this.project(poi);
+        this.interactionPoint.set(cc.v2(Math.max(-240, Math.min(240, p.x)), Math.max(-315, Math.min(360, p.y + 120))));
+        this.interactionId = poi.id;
+        const g = this.interactionGraphics, center = this.interactionPoint;
+        g.fillColor = poi.requirements.length || !poi.canAfford ? cc.color(69, 74, 75, 240) : cc.color(52, 103, 85, 245);
+        g.roundRect(center.x - 110, center.y - 26, 220, 52, 4); g.fill();
+        g.strokeColor = cc.color(184, 174, 116); g.lineWidth = 2; g.stroke();
+        this.interactionLabel.node.active = true;
+        this.interactionLabel.node.setPosition(center);
+        this.interactionLabel.string = `${poi.type === "portal" ? "\u4fee\u590d" : "\u9a71\u6563\u8ff7\u96fe"}${poi.interaction.cost ? `  ${poi.interaction.cost.amount}` : ""}`;
     }
 
     private updateFloatTexts(deltaSeconds: number): void {

@@ -52,7 +52,7 @@ CCProgram fs %{
     vec2 cell = world / grid.z;
     vec2 fogUv = cell / grid.xy;
     float explored = texture(fogTexture, fogUv).r;
-    float locked = texture(fogTexture, (floor(cell) + 0.5) / grid.xy).g;
+    float locked = texture(fogTexture, fogUv).g;
     vec2 offset = world - light.xy;
     float distanceToLight = length(offset);
     float radial = 1.0 - smoothstep(light.z * 0.65, light.z, distanceToLight);
@@ -61,7 +61,7 @@ CCProgram fs %{
     cone *= 1.0 - smoothstep(beam.z * 0.45, beam.z, distanceToLight);
     float visibility = max(radial, cone);
     float alpha = mix(mix(0.96, 0.5, explored), 0.02, visibility);
-    alpha = mix(alpha, 1.0, step(0.5, locked));
+    alpha = max(alpha, smoothstep(0.02, 0.5, locked));
     vec3 tint = mix(vec3(0.025, 0.035, 0.045), vec3(0.1, 0.1, 0.07), cone * 0.2);
     gl_FragColor = vec4(tint, alpha * texture(texture, v_uv).a);
   }

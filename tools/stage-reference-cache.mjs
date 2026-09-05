@@ -10,7 +10,7 @@ const cacheRoot = option("--cache");
 if (!cacheRoot) throw new Error("Usage: node tools/stage-reference-cache.mjs --cache <authorized cache directory> [--out build/web-mobile/reference-preview]");
 const output = inside(process.cwd(), option("--out", "build/web-mobile/reference-preview"));
 execFileSync("git", ["check-ignore", "--quiet", relative(process.cwd(), join(output, "manifest.json"))]);
-const cache = await openCache(resolve(cacheRoot));
+const cache = await openCache(resolve(cacheRoot), resolve(option("--supplement", "reference-private/downloads")));
 const specs = [
   ["resources", "reference-resources", [/^remote\/resources\/config\.[^_]+\.json$/, /^remote\/resources\/config\.[^_]+_1\.json$/]],
   ["map", "reference-map", [/^remote\/map\/config\.[^_]+\.json$/]],

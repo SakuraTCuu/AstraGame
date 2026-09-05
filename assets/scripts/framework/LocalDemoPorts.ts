@@ -6,6 +6,7 @@ import {
     RuntimeStoragePort,
     RuntimeTelemetryPort,
 } from "./RuntimePorts";
+import type { ExplorationSave } from "../core/demo/DemoSession";
 
 class CocosConfigPort implements RuntimeConfigPort {
     public load<T>(path: string): Promise<T> {
@@ -59,6 +60,23 @@ class LocalResultStoragePort implements RuntimeStoragePort {
         cc.sys.localStorage.removeItem(this.key);
         return Promise.resolve();
     }
+
+    public loadExploration(configId: string): Promise<ExplorationSave | null> {
+        const value = cc.sys.localStorage.getItem(this.progressKey(configId));
+        return Promise.resolve(value ? JSON.parse(value) : null);
+    }
+
+    public saveExploration(configId: string, save: ExplorationSave): Promise<void> {
+        cc.sys.localStorage.setItem(this.progressKey(configId), JSON.stringify(save));
+        return Promise.resolve();
+    }
+
+    public clearExploration(configId: string): Promise<void> {
+        cc.sys.localStorage.removeItem(this.progressKey(configId));
+        return Promise.resolve();
+    }
+
+    private progressKey(configId: string): string { return `astra.exploration.progress.v1:${encodeURIComponent(configId)}`; }
 }
 
 class LocalProtocolPort implements RuntimeProtocolPort {

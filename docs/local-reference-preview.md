@@ -12,6 +12,8 @@ node tools/stage-reference-cache.mjs --cache '<authorized gamecaches directory>'
 
 Serve `build/web-mobile`, and open `http://127.0.0.1:4174/?reference=1`. The reference mode is restricted to a localhost browser URL. The default URL continues to use the independent combat fixture. Restage after a Creator build or after visiting additional areas in the reference game.
 
+The optional `tools/fetch-reference-map.mjs` command accepts `--cache`, `--base-url`, and `--map`. It compares the remote map configuration with the supplied cache before downloading missing PNG tiles. Downloads and their SHA256 manifest remain in ignored `reference-private/downloads`; staging includes this supplement automatically. It never changes the WeChat cache.
+
 ## Asset Pipeline
 
 - `cacheList.json` resolves original import/native paths to cached files.
@@ -24,18 +26,24 @@ Serve `build/web-mobile`, and open `http://127.0.0.1:4174/?reference=1`. The ref
 
 ## Current Boundary
 
-The preview loads the actual first world map, available detailed map tiles, four Spine characters, and available enemy assets at configured spawn positions. The original collision grid is sampled into the independent navigation grid. All 224 source route points map to unblocked source cells; this validates the coordinate conversion, not every sampled boundary or gameplay restriction.
+The preview loads the actual first world map, four Spine characters, 135 enemy/resource templates and 2489 configured spawn points. Missing art no longer removes an encounter from the simulation. The original collision grid is sampled into a 40-unit navigation grid. All 224 source route points map to unblocked source cells; this validates the coordinate conversion, not every sampled boundary or gameplay restriction.
 
-The map thumbnail fills areas whose detailed slices have not yet entered the supplied cache. Missing detailed art remains an explicit limitation. The preview currently adapts a subset of enemy fields; hero progression, complete skill formulas, fog payment conditions, NPC state, occlusion polygons, and original world-map interactions still need implementation and comparison with live gameplay. It is not a claim of complete replication.
+The current first-map supplement fills 648 missing tiles from the verified resource base. All 844 required ground tiles are present, with zero missing paths. There are 845 texture entries including the thumbnail, which remains useful for the overview; detailed ground is loaded by viewport.
+
+The reference adapter includes 59 fog gates and 31 portals, source item costs, level/rank/defeat/quest/NPC conditions, and incense gathering probabilities. Fog rectangles are converted from the editor's 120-unit grid into convex world polygons. The overview supports panning, zooming, destination selection and repaired-portal travel. Opening it pauses the standalone simulation; this behavior still needs reference comparison.
+
+Exploration saves are isolated by configuration and, in Zhushen, by role. They preserve balances, flags, opened gates, explored cells, party positions/HP, the random state, permanent clears and respawn timers. Explicit restart clears this exploration save. In-progress enemy HP and cast/cooldown state are not yet resumed.
+
+The standalone comparison preset starts at level 1 with 20 incense, its home portal repaired and fog containing the spawn open. It does not reconstruct the user's live account. Hero/quest progression, full skill formulas, complete enemy art, foreground occlusion and exact overview styling remain incomplete.
 
 `node tools/reference-smoke.mjs` validates local assets, movement, a naturally reached battle, atlas animation frames, bounded visible tiles, and three restarts at desktop and mobile sizes. The ordinary `npm run smoke:web -- http://127.0.0.1:4174` continues to validate the independent deterministic combat fixture.
 
 ## Validation On 2026-09-05
 
-- 52 deterministic tests passed, including paid-interaction accounting and split-bundle dependency indexing.
+- 61 deterministic tests passed, including polygon gates, save validation, coalesced writes, portal travel and respawn persistence.
 - Creator 2.4.15 Web Mobile build succeeded.
-- Reference browser smoke reached combat by navigation, observed positive damage, loaded four hero SkeletonData assets and enemy animation sequences, and reported no console errors or failed resource requests.
-- Desktop 1280 x 800 and mobile 390 x 844 captures were inspected. Sampled screenshots contained 2033 or more distinct colors. Cached detail and thumbnail-only areas remain visually distinguishable.
+- Reference browser smoke opened the overview, selected a gate, navigated to it and clicked its unlock command. The balance changed from 20 to 15. Reload restored the same balance, position and 109 explored cells. Repaired-portal travel changed position without spending more incense. Combat, atlas animation, desktop/mobile views and three restarts passed without console errors or failed requests.
+- Desktop 1280 x 800 and mobile 390 x 844 captures were inspected. Detailed map coverage is recorded in `audit.json` as required and missing tile paths.
 - Three post-combat restarts retained five world-layer children and four character views. The damage-label pool remained bounded.
 - The independent fixture still completed its full navigation, unlock and Boss sequence in about 183 seconds of simulated time.
-- The Zhushen package exported 78 owned files. Host type checking reported zero module errors and 17 pre-existing host diagnostics. This does not replace a build or runtime test inside the host project.
+- The Zhushen package contains 84 owned files. Current host type checking reports zero module errors and 17 other host diagnostics. A runtime test inside the host remains outstanding; no reference assets or converted source tables are exported.

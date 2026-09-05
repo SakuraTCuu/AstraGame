@@ -37,8 +37,8 @@ export class GridNavigation {
     return point.x >= 0 && point.y >= 0 && point.x < this.width && point.y < this.height;
   }
 
-  isBlocked(point: GridPoint): boolean {
-    return !this.contains(point) || this.blocked[this.index(point)] === 1 || this.locked[this.index(point)] === 1;
+  isBlocked(point: GridPoint, ignoreLocks = false): boolean {
+    return !this.contains(point) || this.blocked[this.index(point)] === 1 || (!ignoreLocks && this.locked[this.index(point)] === 1);
   }
 
   setBlocked(point: GridPoint, value: boolean): void {
@@ -67,8 +67,8 @@ export class GridNavigation {
     return !this.isBlocked(this.worldToGrid(position));
   }
 
-  isSegmentWalkable(from: Vec2Like, to: Vec2Like): boolean {
-    if (!this.isWorldWalkable(from) || !this.isWorldWalkable(to)) return false;
+  isSegmentWalkable(from: Vec2Like, to: Vec2Like, ignoreLocks = false): boolean {
+    if (this.isBlocked(this.worldToGrid(from), ignoreLocks) || this.isBlocked(this.worldToGrid(to), ignoreLocks)) return false;
     let { x, y } = this.worldToGrid(from);
     const goal = this.worldToGrid(to);
     const dx = to.x - from.x;
@@ -82,7 +82,7 @@ export class GridNavigation {
     // Visit every crossed cell, including both sides of a grid corner.
     while (x !== goal.x || y !== goal.y) {
       if (Math.abs(nextX - nextY) < 1e-10) {
-        if (this.isBlocked({ x: x + stepX, y }) || this.isBlocked({ x, y: y + stepY })) return false;
+        if (this.isBlocked({ x: x + stepX, y }, ignoreLocks) || this.isBlocked({ x, y: y + stepY }, ignoreLocks)) return false;
         x += stepX;
         y += stepY;
         nextX += deltaX;
@@ -94,7 +94,7 @@ export class GridNavigation {
         y += stepY;
         nextY += deltaY;
       }
-      if (this.isBlocked({ x, y })) return false;
+      if (this.isBlocked({ x, y }, ignoreLocks)) return false;
     }
     return true;
   }

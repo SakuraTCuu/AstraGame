@@ -33,4 +33,9 @@ export class SeededRandom {
   snapshot(): number {
     return this.state;
   }
+
+  restore(state: number): void {
+    if (!Number.isInteger(state) || state <= 0 || state > 0xffffffff) throw new Error("Invalid saved random state");
+    this.state = state;
+  }
 }

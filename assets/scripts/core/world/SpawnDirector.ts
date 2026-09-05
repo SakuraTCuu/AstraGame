@@ -10,6 +10,7 @@ export interface SpawnSnapshot {
   readonly generation: number;
   readonly respawnIn: number | null;
 }
+export interface RespawnProgress { readonly id: string; readonly generation: number; readonly remaining: number; }
 
 interface SpawnState { status: SpawnSnapshot["status"]; spawnedIds: string[]; generation: number; respawnAt?: number; }
 
@@ -113,6 +114,41 @@ export class SpawnDirector {
       return { id: spawn.id, status: state.status, spawnedIds: [...state.spawnedIds], generation: state.generation,
         respawnIn: state.respawnAt === undefined ? null : Math.max(0, state.respawnAt - this.world.elapsedSeconds) };
     });
+  }
+
+  validateProgress(ids: readonly string[]): void {
+    if (!Array.isArray(ids) || ids.some((id) => !this.spawns.some((spawn) => spawn.id === id && !spawn.respawn))) throw new Error("Invalid saved spawn progress");
+  }
+
+  restoreCleared(ids: readonly string[]): void {
+    this.validateProgress(ids);
+    for (const id of ids) this.states.get(id)!.status = "cleared";
+  }
+
+  clearedPermanentIds(): string[] { return this.spawns.filter((spawn) => !spawn.respawn && this.states.get(spawn.id)!.status === "cleared").map((spawn) => spawn.id); }
+
+  respawnProgress(): RespawnProgress[] {
+    return this.spawns.filter((spawn) => spawn.respawn && this.states.get(spawn.id)!.respawnAt !== undefined).map((spawn) => {
+      const state = this.states.get(spawn.id)!;
+      return { id: spawn.id, generation: state.generation, remaining: Math.max(0, state.respawnAt! - this.world.elapsedSeconds) };
+    });
+  }
+
+  validateRespawns(entries: readonly RespawnProgress[]): void {
+    if (!Array.isArray(entries) || new Set(entries.map((entry) => entry.id)).size !== entries.length || entries.some((entry) =>
+      !this.spawns.some((spawn) => spawn.id === entry.id && spawn.respawn) || !Number.isInteger(entry.generation) || entry.generation < 0 || !Number.isFinite(entry.remaining) || entry.remaining < 0)) throw new Error("Invalid saved respawn timer");
+  }
+
+  restoreRespawns(entries: readonly RespawnProgress[], elapsedSeconds: number): void {
+    this.validateRespawns(entries);
+    for (const entry of entries) this.states.set(entry.id, { status: "cleared", spawnedIds: [], generation: entry.generation, respawnAt: elapsedSeconds + entry.remaining });
+  }
+
+  templateForActor(id: string): DemoActorConfig | undefined {
+    if (this.world.allActors.find((actor) => actor.id === id)?.summonerId) return undefined;
+    const spawnId = this.ownerSpawns.get(id);
+    const spawn = this.spawns.find((entry) => entry.id === spawnId);
+    return spawn && this.templates.get(spawn.enemyId);
   }
 
   private spawnActor(template: DemoActorConfig, id: string, x: number, y: number, radius: number): void {

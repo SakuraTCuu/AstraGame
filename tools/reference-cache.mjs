@@ -38,13 +38,22 @@ export function readTableArchive(buffer) {
   return tables;
 }
 
-export async function openCache(root) {
+export async function openCache(root, supplement) {
   const index = JSON.parse(await readFile(inside(root, "cacheList.json"), "utf8"));
   const entries = Object.entries(index.files).map(([key, value]) => {
     const prefix = "wxfile://usr/gamecaches/";
     if (!value.url.startsWith(prefix)) throw new Error("Unsupported cache location");
     return { key, file: inside(root, value.url.slice(prefix.length)), time: Number(value.lastTime || 0) };
   });
+  if (supplement) {
+    let manifest;
+    try { manifest = JSON.parse(await readFile(inside(supplement, "manifest.json"), "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    for (const [key, value] of Object.entries(manifest?.files || {})) {
+      if (!/^remote\/map\/native\/[a-f0-9]{2}\/[a-f0-9-]+\.[a-f0-9]+\.png$/.test(key)) throw new Error("Invalid supplemental map asset path");
+      if (!entries.some((entry) => entry.key === key)) entries.push({ key, file: inside(supplement, value.file), time: 0 });
+    }
+  }
   const latest = (pattern) => entries.filter((entry) => pattern.test(entry.key)).sort((a, b) => b.time - a.time)[0];
   const readConfig = async (entry) => JSON.parse(await readFile(entry.file, "utf8"));
   return { root, entries, latest, readConfig };

@@ -94,6 +94,17 @@ export class GameWorld {
 
   get facingDirection(): Vector2 { return this.facing; }
 
+  clearTravel(): void {
+    this.path.clear();
+    this.actorPaths.clear();
+    this.leaderTravelActive = this.autoTravelPaused = this.manualControlActive = false;
+    for (const actor of this.allActors) {
+      this.combat.cancelCaster(actor.id);
+      actor.targetId = undefined;
+      if (actor.alive) actor.setState("idle");
+    }
+  }
+
   update(deltaSeconds: number): void {
     if (deltaSeconds <= 0) return;
     this.elapsedSeconds += deltaSeconds;

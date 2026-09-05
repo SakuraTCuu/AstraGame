@@ -10,8 +10,8 @@ import type { GridPoint } from "../navigation/GridNavigation";
 import { GameWorld } from "../world/GameWorld";
 import { WorldMap } from "../world/WorldMap";
 import { SpawnDirector } from "../world/SpawnDirector";
-import type { SpawnSnapshot } from "../world/SpawnDirector";
-import type { ExplorationEvent, WorldObstacle, WorldPoi, WorldZone } from "../world/WorldMap";
+import type { RespawnProgress, SpawnSnapshot } from "../world/SpawnDirector";
+import type { ExplorationEvent, InteractionResult, MapProgress, WorldObstacle, WorldPoi, WorldProgression, WorldZone } from "../world/WorldMap";
 
 export interface DemoActorConfig {
   readonly id: string;
@@ -34,6 +34,8 @@ export interface DemoActorConfig {
   readonly collisionRadius?: number;
   readonly summonerId?: string;
   readonly healthBars?: number;
+  readonly defeatFlag?: string;
+  readonly defeatRewards?: readonly { readonly resource: string; readonly amount: number; readonly chance?: number }[];
 }
 
 export interface DemoSpawnConfig {
@@ -62,6 +64,8 @@ export interface DemoConfig {
     readonly obstacles?: readonly WorldObstacle[];
     readonly pointsOfInterest?: readonly WorldPoi[];
     readonly navigation?: { readonly manualResumeDelay?: number };
+    readonly zoneMode?: "partition" | "overlay";
+    readonly progression?: WorldProgression;
   };
   readonly fog: {
     readonly cellSize?: number;
@@ -82,7 +86,20 @@ export interface DemoConfig {
   };
   readonly spawns?: readonly DemoSpawnConfig[];
   readonly ticksPerSecond?: number;
-  readonly session?: { readonly completionEncounterId?: string; readonly autoStopForCombat?: boolean };
+  readonly session?: { readonly completionEncounterId?: string; readonly autoStopForCombat?: boolean; readonly persistExploration?: boolean };
+}
+
+export interface ExplorationSave {
+  readonly schema: 1;
+  readonly configId: string;
+  readonly configVersion: number;
+  readonly map: MapProgress;
+  readonly exploredCells: readonly number[];
+  readonly party: readonly { readonly id: string; readonly x: number; readonly y: number; readonly hp: number }[];
+  readonly elapsedSeconds: number;
+  readonly randomState: number;
+  readonly clearedSpawns: readonly string[];
+  readonly respawns?: readonly RespawnProgress[];
 }
 
 export type RunState = "running" | "paused" | "won" | "failed";
@@ -229,7 +246,7 @@ export class DemoSession {
       config.fog.cellSize ?? cellSize,
     );
     this.map = new WorldMap(navigation, this.fog, { x: 0, y: 0, width: config.world.width, height: config.world.height },
-      config.fog.unlockZones, config.world.pointsOfInterest, config.world.obstacles);
+      config.fog.unlockZones, config.world.pointsOfInterest, config.world.obstacles, config.world.progression, config.world.zoneMode);
     for (const player of players) {
       if (!navigation.isWorldWalkable(player.position)) throw new Error(`Player ${player.id} starts on blocked ground`);
     }
@@ -286,6 +303,80 @@ export class DemoSession {
   }
 
   get runState(): RunState { return this.state; }
+
+  interactWithPoi(id: string): InteractionResult {
+    const leader = this.world.leader;
+    if (this.state !== "running" || !leader) return "unavailable";
+    return this.map.interact(id, leader.position);
+  }
+
+  navigateToPoi(id: string): boolean {
+    const poi = this.map.pois.find((entry) => entry.id === id);
+    const leader = this.world.leader;
+    if (!poi || !leader || this.state !== "running") return false;
+    const radius = Math.max(this.world.options.navigation.cellSize, (poi.interaction?.radius ?? poi.discoverRadius) * 0.75);
+    const candidates = [new Vector2(poi.x, poi.y)];
+    for (let index = 0; index < 16; index++) candidates.push(new Vector2(poi.x + Math.cos(index * Math.PI / 8) * radius, poi.y + Math.sin(index * Math.PI / 8) * radius));
+    candidates.sort((a, b) => a.distanceSquared(leader.position) - b.distanceSquared(leader.position));
+    for (const point of candidates) if (this.world.options.navigation.isWorldWalkable(point) && this.setAutoDestination(point.x, point.y)) return true;
+    return false;
+  }
+
+  teleportToPoi(id: string): boolean {
+    if (this.state !== "running" || !this.world.leader || !this.map.isPortalActive(id)) return false;
+    const poi = this.map.pois.find((entry) => entry.id === id)!;
+    const navigation = this.world.options.navigation;
+    const destination = navigation.nearestWalkable(poi);
+    if (!destination || destination.distance(poi) > (poi.interaction?.radius ?? 200)) return false;
+    const positions = this.world.players.map((player, index) => navigation.nearestWalkable(destination.add(this.config.squad.formationOffsets?.[index] ?? Vector2.ZERO)));
+    if (positions.some((position) => !position)) return false;
+    this.world.clearTravel();
+    this.setAutoDestination(null, null);
+    this.setMoveIntent(0, 0);
+    this.world.players.forEach((player, index) => { if (player.alive) player.position = positions[index]!; });
+    this.map.discoverAt(this.world.leader.position);
+    this.fog.reveal(this.world.leader.position, this.config.fog.revealRadius);
+    this.map.recordTeleport(id);
+    return true;
+  }
+
+  saveExploration(): ExplorationSave {
+    return { schema: 1, configId: this.config.meta?.id ?? "default", configVersion: this.config.meta?.schemaVersion ?? 1,
+      map: this.map.saveProgress(), exploredCells: this.fog.exploredIndices(),
+      party: this.world.players.map((actor) => ({ id: actor.id, x: actor.position.x, y: actor.position.y, hp: actor.health })),
+      elapsedSeconds: this.world.elapsedSeconds, randomState: this.world.random.snapshot(), clearedSpawns: this.spawns.clearedPermanentIds(), respawns: this.spawns.respawnProgress() };
+  }
+
+  restoreExploration(save: ExplorationSave): void {
+    if (save.schema !== 1 || save.configId !== (this.config.meta?.id ?? "default") || save.configVersion !== (this.config.meta?.schemaVersion ?? 1)) throw new Error("Saved exploration uses another configuration");
+    if (this.world.elapsedSeconds !== 0 || !Number.isFinite(save.elapsedSeconds) || save.elapsedSeconds < 0 ||
+        !Number.isInteger(save.randomState) || save.randomState <= 0 || save.randomState > 0xffffffff) throw new Error("Invalid exploration clock or random state");
+    if (save.party.length !== this.world.players.length || new Set(save.party.map((entry) => entry.id)).size !== save.party.length) throw new Error("Saved party does not match configuration");
+    for (const entry of save.party) {
+      const actor = this.world.players.find((actor) => actor.id === entry.id);
+      if (!actor || ![entry.x, entry.y, entry.hp].every(Number.isFinite) || entry.hp < 0 || entry.hp > actor.stats.maxHealth ||
+          entry.x < 0 || entry.y < 0 || entry.x >= this.config.world.width || entry.y >= this.config.world.height) throw new Error("Invalid saved party member");
+    }
+    this.map.validateProgress(save.map);
+    this.fog.validateProgress(save.exploredCells);
+    this.spawns.validateProgress(save.clearedSpawns);
+    this.spawns.validateRespawns(save.respawns ?? []);
+    this.map.restoreProgress(save.map);
+    this.spawns.restoreCleared(save.clearedSpawns);
+    this.spawns.restoreRespawns(save.respawns ?? [], save.elapsedSeconds);
+    this.fog.restore(save.exploredCells);
+    for (const entry of save.party) {
+      const actor = this.world.players.find((actor) => actor.id === entry.id)!;
+      actor.position = this.world.options.navigation.nearestWalkable(entry) ?? actor.position;
+      actor.health = entry.hp;
+      if (!actor.alive) actor.setState("dead");
+    }
+    this.world.random.restore(save.randomState);
+    this.world.elapsedSeconds = save.elapsedSeconds;
+    const leader = this.world.leader;
+    if (leader) this.fog.reveal(leader.position, this.config.fog.revealRadius);
+    else this.finish("failed");
+  }
 
   pause(): boolean {
     if (this.state !== "running") return false;
@@ -374,6 +465,14 @@ export class DemoSession {
       const enemyIds = new Set(this.world.enemies.map((actor) => actor.id));
       this.spawns.afterTick();
       const events = this.world.combat.drainEvents();
+      for (const event of events) {
+        if (event.type !== "death" || !enemyIds.has(event.targetId)) continue;
+        const template = this.spawns.templateForActor(event.targetId);
+        if (template?.defeatFlag) this.map.grantFlag(template.defeatFlag);
+        const grants: Record<string, number> = {};
+        for (const reward of template?.defeatRewards ?? []) if (this.world.random.next() < (reward.chance ?? 1)) grants[reward.resource] = (grants[reward.resource] ?? 0) + reward.amount;
+        if (Object.keys(grants).length) this.map.grantResources(grants);
+      }
       this.defeatedEnemies += events.filter((event) => event.type === "death" && enemyIds.has(event.targetId)).length;
       this.frameEvents.push(...events);
       this.explorationEvents.push(...this.map.drainEvents());

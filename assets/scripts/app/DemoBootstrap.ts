@@ -21,6 +21,7 @@ export default class DemoBootstrap extends cc.Component {
     private joystickTouch = false;
     private controlTouch: "pause" | "restart" | null = null;
     private resumeOnShow = false;
+    private resumeAfterOverview = false;
 
     get session(): DemoSession { return this.runtime && this.runtime.session; }
 
@@ -31,11 +32,12 @@ export default class DemoBootstrap extends cc.Component {
 
     async open(ports: RuntimePorts = createLocalDemoPorts(), configPath = "config/auto_explore/world_demo"): Promise<boolean> {
         this.initializeView();
-        if (this.runtime) this.runtime.dispose();
+        if (this.runtime) { await this.runtime.flushProgress(); this.runtime.dispose(); }
         this.runtime = new ExploreRuntime(ports);
         this.runtime.events.on("loading", () => this.renderer.setLoading("LOADING WORLD..."));
         this.runtime.events.on<SessionReady>("ready", ({ config, session }) => {
             this.renderer.initialize(config);
+            this.renderer.centerOnLeader(session.getSnapshot());
             this.renderer.update(session.getSnapshot(), 0);
         });
         this.runtime.events.on<Error>("error", (error) => {
@@ -68,6 +70,7 @@ export default class DemoBootstrap extends cc.Component {
         this.node.off(cc.Node.EventType.TOUCH_CANCEL, this.onTouchCancel, this);
         this.node.off(cc.Node.EventType.MOUSE_MOVE, this.onMouseMove, this);
         this.node.off(cc.Node.EventType.MOUSE_LEAVE, this.onMouseLeave, this);
+        this.node.off(cc.Node.EventType.MOUSE_WHEEL, this.onMouseWheel, this);
         cc.game.off(cc.game.EVENT_HIDE, this.onGameHide, this);
         cc.game.off(cc.game.EVENT_SHOW, this.onGameShow, this);
         if (this.runtime) this.runtime.dispose();
@@ -89,6 +92,7 @@ export default class DemoBootstrap extends cc.Component {
         this.node.on(cc.Node.EventType.TOUCH_CANCEL, this.onTouchCancel, this);
         this.node.on(cc.Node.EventType.MOUSE_MOVE, this.onMouseMove, this);
         this.node.on(cc.Node.EventType.MOUSE_LEAVE, this.onMouseLeave, this);
+        this.node.on(cc.Node.EventType.MOUSE_WHEEL, this.onMouseWheel, this);
         cc.game.on(cc.game.EVENT_HIDE, this.onGameHide, this);
         cc.game.on(cc.game.EVENT_SHOW, this.onGameShow, this);
     }
@@ -104,16 +108,21 @@ export default class DemoBootstrap extends cc.Component {
     }
 
     private onMouseMove(event: cc.Event.EventMouse): void {
-        if (this.renderer) this.renderer.setHoveredControl(this.renderer.hitControl(this.node.convertToNodeSpaceAR(event.getLocation())));
+        if (!this.renderer) return;
+        const point = this.node.convertToNodeSpaceAR(event.getLocation());
+        if (this.renderer.overview.isOpen) this.renderer.overview.hover(point);
+        else this.renderer.setHoveredControl(this.renderer.hitControl(point));
     }
 
-    private onMouseLeave(): void { if (this.renderer) this.renderer.setHoveredControl(null); }
+    private onMouseLeave(): void { if (this.renderer) { this.renderer.setHoveredControl(null); this.renderer.overview.hover(null); } }
+    private onMouseWheel(event: cc.Event.EventMouse): void { if (this.renderer.overview.isOpen) this.renderer.overview.zoom(event.getScrollY() > 0 ? 1 : -1); }
 
     private onTouchStart(event: cc.Event.EventTouch): void {
         if (this.touchId !== -1) return;
         this.touchId = event.getID();
         this.touchStart = this.toCanvas(event);
         this.touchCurrent = this.touchStart;
+        if (this.renderer.overview.isOpen) { this.renderer.overview.beginDrag(this.touchStart); return; }
         this.controlTouch = this.renderer.hitControl(this.touchStart);
         this.joystickTouch = !this.controlTouch && this.touchStart.sub(JOYSTICK_CENTER).mag() <= JOYSTICK_RADIUS;
         this.joystickOrigin = JOYSTICK_CENTER;
@@ -123,6 +132,7 @@ export default class DemoBootstrap extends cc.Component {
     private onTouchMove(event: cc.Event.EventTouch): void {
         if (event.getID() !== this.touchId || this.controlTouch) return;
         this.touchCurrent = this.toCanvas(event);
+        if (this.renderer.overview.isOpen) { if (this.touchStart.y < 470 && this.touchStart.y > -425) this.renderer.overview.drag(this.touchCurrent); return; }
         if (!this.joystickTouch && this.touchStart.y < 470 && !this.renderer.isMinimapPoint(this.touchStart) &&
             this.touchCurrent.sub(this.touchStart).mag() >= 12) {
             this.joystickTouch = true;
@@ -134,7 +144,18 @@ export default class DemoBootstrap extends cc.Component {
     private onTouchEnd(event: cc.Event.EventTouch): void {
         if (event.getID() !== this.touchId) return;
         const end = this.toCanvas(event);
-        if (this.controlTouch) {
+        if (this.renderer.overview.isOpen) {
+            const action = end.sub(this.touchStart).mag() < 18 ? this.renderer.overview.hit(end) : null;
+            if (action) {
+                this.renderer.overview.close();
+                if (this.resumeAfterOverview) this.resume();
+                this.resumeAfterOverview = false;
+                if (action.kind === "travel") {
+                    if (this.session.teleportToPoi(action.id)) this.renderer.centerOnLeader(this.session.getSnapshot());
+                    else this.renderer.showInteractionResult("unavailable");
+                } else if (action.kind === "navigate" && !this.session.navigateToPoi(action.id)) this.renderer.rejectDestination();
+            }
+        } else if (this.controlTouch) {
             if (this.renderer.hitControl(end) === this.controlTouch) {
                 if (this.controlTouch === "restart") void this.restart();
                 else if (this.session && this.session.runState === "paused") this.resume();
@@ -143,9 +164,17 @@ export default class DemoBootstrap extends cc.Component {
         } else if (this.joystickTouch) {
             this.stopJoystick();
         } else if (this.session && end.sub(this.touchStart).mag() < 18 && end.y < 535) {
-            const destination = this.renderer.navigationTarget(end);
-            if (this.session.setAutoDestination(destination.x, destination.y)) this.renderer.setDestination(destination);
-            else this.renderer.rejectDestination();
+            const interaction = this.renderer.hitInteraction(end);
+            if (interaction) this.renderer.showInteractionResult(this.session.interactWithPoi(interaction));
+            else if (this.renderer.isMinimapPoint(end)) {
+                this.resumeAfterOverview = this.session.runState === "running";
+                this.pause();
+                this.renderer.openOverview(this.session.getSnapshot());
+            } else {
+                const destination = this.renderer.navigationTarget(end);
+                if (this.session.setAutoDestination(destination.x, destination.y)) this.renderer.setDestination(destination);
+                else this.renderer.rejectDestination();
+            }
         }
         this.resetTouch();
     }

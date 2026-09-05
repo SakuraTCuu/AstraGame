@@ -1,6 +1,9 @@
 import type { FogGrid } from "../fog/FogGrid";
 import type { Vec2Like } from "../math/Vector2";
 import type { GridNavigation } from "../navigation/GridNavigation";
+import type { ProgressCondition } from "./ProgressConditions";
+import { meetsCondition, unmetConditions, validateCondition } from "./ProgressConditions";
+import { pointInPolygon, polygonIntersectsRect, validateConvexPolygon } from "./WorldGeometry";
 
 export interface WorldRect { readonly x: number; readonly y: number; readonly width: number; readonly height: number; }
 export type WorldObstacle =
@@ -9,13 +12,13 @@ export type WorldObstacle =
 export interface ResourceCost { readonly resource: string; readonly amount: number; }
 export interface WorldPoi extends Vec2Like {
   readonly id: string; readonly name?: string; readonly type: string; readonly discoverRadius: number;
-  readonly interaction?: { readonly radius: number; readonly cost?: ResourceCost; readonly grants?: Readonly<Record<string, number>>; readonly initiallyCompleted?: boolean };
+  readonly interaction?: { readonly radius: number; readonly cost?: ResourceCost; readonly grants?: Readonly<Record<string, number>>; readonly initiallyCompleted?: boolean; readonly condition?: ProgressCondition; readonly allowLockedApproach?: boolean };
 }
-export interface WorldZone { readonly id: string; readonly name?: string; readonly rect: WorldRect; readonly unlock: string; readonly minimumLevel?: number; }
-export interface WorldProgression { readonly level: number; readonly resources: Readonly<Record<string, { readonly name: string; readonly initial: number }>>; }
-export interface MapProgress { readonly level: number; readonly resources: Readonly<Record<string, number>>; readonly discoveredPoiIds: readonly string[]; readonly interactedPoiIds: readonly string[]; readonly completedEncounterIds: readonly string[]; }
-export type InteractionResult = "completed" | "already_completed" | "out_of_range" | "insufficient_resources" | "locked" | "unavailable";
-export interface ExplorationEvent { readonly type: "poi_discovered" | "poi_interacted" | "zone_unlocked" | "encounter_completed"; readonly id: string; }
+export interface WorldZone { readonly id: string; readonly name?: string; readonly rect: WorldRect; readonly unlock: string; readonly minimumLevel?: number; readonly polygon?: readonly Vec2Like[]; }
+export interface WorldProgression { readonly level: number; readonly rank?: number; readonly initialFlags?: readonly string[]; readonly resources: Readonly<Record<string, { readonly name: string; readonly initial: number }>>; }
+export interface MapProgress { readonly level: number; readonly rank?: number; readonly flags?: readonly string[]; readonly resources: Readonly<Record<string, number>>; readonly discoveredPoiIds: readonly string[]; readonly interactedPoiIds: readonly string[]; readonly completedEncounterIds: readonly string[]; }
+export type InteractionResult = "completed" | "already_completed" | "out_of_range" | "insufficient_resources" | "requirements_not_met" | "locked" | "unavailable";
+export interface ExplorationEvent { readonly type: "poi_discovered" | "poi_interacted" | "zone_unlocked" | "encounter_completed" | "progress_changed" | "resource_changed" | "teleported"; readonly id: string; }
 
 function contains(rect: WorldRect, point: Vec2Like): boolean {
   return point.x >= rect.x && point.y >= rect.y && point.x < rect.x + rect.width && point.y < rect.y + rect.height;
@@ -38,7 +41,10 @@ export class WorldMap {
   private readonly interacted = new Set<string>();
   private readonly balances = new Map<string, number>();
   private readonly resourceNames = new Map<string, string>();
-  private level: number;
+  level: number;
+  rank: number;
+  private readonly flags = new Set<string>();
+  private readonly zoneMode: "partition" | "overlay";
   revision = 0;
   private readonly events: ExplorationEvent[] = [];
 
@@ -50,6 +56,7 @@ export class WorldMap {
     pois: readonly WorldPoi[] = [],
     obstacles: readonly WorldObstacle[] = [],
     progression: WorldProgression = { level: 1, resources: {} },
+    zoneMode: "partition" | "overlay" = "partition",
   ) {
     this.navigation = navigation;
     this.fog = fog;
@@ -57,6 +64,10 @@ export class WorldMap {
     this.zones = zones;
     this.pois = pois;
     this.level = progression.level;
+    this.rank = progression.rank ?? 0;
+    this.zoneMode = zoneMode;
+    if (!Number.isSafeInteger(this.rank) || this.rank < 0) throw new Error("Invalid exploration rank");
+    for (const flag of progression.initialFlags ?? []) { if (!flag || typeof flag !== "string") throw new Error("Invalid initial flag"); this.flags.add(flag); }
     if (!Number.isSafeInteger(this.level) || this.level < 1) throw new Error("Invalid exploration level");
     for (const id of Object.keys(progression.resources)) {
       const resource = progression.resources[id];
@@ -70,6 +81,7 @@ export class WorldMap {
       ids.add(poi.id);
       if (poi.interaction) {
         if (!(poi.interaction.radius > 0)) throw new Error(`Invalid interaction radius ${poi.id}`);
+        if (poi.interaction.condition) validateCondition(poi.interaction.condition);
         if (poi.interaction.cost) this.validateResourceAmount(poi.interaction.cost.resource, poi.interaction.cost.amount);
         for (const id of Object.keys(poi.interaction.grants ?? {})) this.validateResourceAmount(id, poi.interaction.grants![id]);
         if (poi.interaction.initiallyCompleted) this.interacted.add(poi.id);
@@ -77,11 +89,12 @@ export class WorldMap {
     }
     ids.clear();
     for (const zone of zones) {
-      if (ids.has(zone.id) || !(zone.rect.width > 0 && zone.rect.height > 0) ||
-          overlapArea(bounds, zone.rect) !== zone.rect.width * zone.rect.height) throw new Error(`Invalid zone ${zone.id}`);
+      if (ids.has(zone.id) || !(zone.rect.width > 0 && zone.rect.height > 0) || zone.rect.x < bounds.x || zone.rect.y < bounds.y ||
+          zone.rect.x + zone.rect.width > bounds.x + bounds.width + 1e-6 || zone.rect.y + zone.rect.height > bounds.y + bounds.height + 1e-6) throw new Error(`Invalid zone ${zone.id}`);
       ids.add(zone.id);
+      if (zone.polygon) validateConvexPolygon(zone.polygon);
       for (const other of zones) {
-        if (other !== zone && overlapArea(zone.rect, other.rect) > 0) throw new Error(`Overlapping zones ${zone.id} and ${other.id}`);
+        if (zoneMode === "partition" && other !== zone && overlapArea(zone.rect, other.rect) > 0) throw new Error(`Overlapping zones ${zone.id} and ${other.id}`);
       }
       if (zone.minimumLevel !== undefined && (!Number.isInteger(zone.minimumLevel) || zone.minimumLevel < 1)) throw new Error(`Invalid zone level ${zone.id}`);
       if (zone.unlock === "initial") { if ((zone.minimumLevel ?? 1) <= this.level) this.unlocked.add(zone.id); }
@@ -108,6 +121,26 @@ export class WorldMap {
   isPoiDiscovered(id: string): boolean { return this.discovered.has(id); }
   isEncounterCompleted(id: string): boolean { return this.completed.has(id); }
   isPoiInteracted(id: string): boolean { return this.interacted.has(id); }
+  hasFlag(id: string): boolean { return this.flags.has(id) || (id.startsWith("poi:") && this.interacted.has(id.slice(4))); }
+  isConditionMet(condition?: ProgressCondition): boolean { return meetsCondition(condition, this); }
+  grantFlag(id: string): void {
+    if (!id || this.flags.has(id)) return;
+    this.flags.add(id); this.revision += 1;
+    this.events.push({ type: "progress_changed", id });
+  }
+  setRank(rank: number): void {
+    if (!Number.isSafeInteger(rank) || rank < this.rank) throw new Error("Exploration rank cannot decrease");
+    this.rank = rank; this.revision += 1;
+  }
+  recordTeleport(id: string): void { this.revision += 1; this.events.push({ type: "teleported", id }); }
+  grantResources(grants: Readonly<Record<string, number>>): void {
+    for (const id of Object.keys(grants)) {
+      this.validateResourceAmount(id, grants[id]);
+      if (!Number.isSafeInteger(this.balances.get(id)! + grants[id])) throw new Error(`Resource overflow: ${id}`);
+    }
+    for (const id of Object.keys(grants)) { this.balances.set(id, this.balances.get(id)! + grants[id]); this.events.push({ type: "resource_changed", id }); }
+    this.revision += 1;
+  }
 
   isPortalActive(id: string): boolean {
     const poi = this.pois.find((entry) => entry.id === id);
@@ -117,9 +150,10 @@ export class WorldMap {
   interact(id: string, position: Vec2Like): InteractionResult {
     const poi = this.pois.find((entry) => entry.id === id);
     if (!poi?.interaction) return "unavailable";
-    if (!this.isPositionUnlocked(poi)) return "locked";
+    if (!this.isPositionUnlocked(position) || (!poi.interaction.allowLockedApproach && !this.isPositionUnlocked(poi))) return "locked";
     if (this.interacted.has(id)) return "already_completed";
-    if (Math.hypot(position.x - poi.x, position.y - poi.y) > poi.interaction.radius || !this.navigation.isSegmentWalkable(position, poi)) return "out_of_range";
+    if (!this.isConditionMet(poi.interaction.condition)) return "requirements_not_met";
+    if (Math.hypot(position.x - poi.x, position.y - poi.y) > poi.interaction.radius || !this.navigation.isSegmentWalkable(position, poi, Boolean(poi.interaction.allowLockedApproach))) return "out_of_range";
     const cost = poi.interaction.cost;
     if (cost && this.balances.get(cost.resource)! < cost.amount) return "insufficient_resources";
     const next = new Map(this.balances);
@@ -146,6 +180,7 @@ export class WorldMap {
 
   isPositionUnlocked(point: Vec2Like): boolean {
     if (!contains(this.bounds, point)) return false;
+    if (this.zoneMode === "overlay") return !this.zones.some((zone) => !this.unlocked.has(zone.id) && contains(zone.rect, point) && (!zone.polygon || pointInPolygon(point, zone.polygon)));
     return this.zones.length === 0 || this.zones.some((zone) => contains(zone.rect, point) && this.unlocked.has(zone.id));
   }
 
@@ -179,26 +214,38 @@ export class WorldMap {
       completedEncounterIds: [...this.completed],
       interactedPoiIds: [...this.interacted],
       level: this.level,
+      rank: this.rank,
+      flags: [...this.flags],
       resources: [...this.balances].map(([id, amount]) => ({ id, name: this.resourceNames.get(id)!, amount })),
       pois: this.pois.map((poi) => ({ ...poi, discovered: this.discovered.has(poi.id), completed: this.interacted.has(poi.id),
-        unlocked: this.isPositionUnlocked(poi), canAfford: !poi.interaction?.cost || this.balances.get(poi.interaction.cost.resource)! >= poi.interaction.cost.amount })),
+        unlocked: this.isPositionUnlocked(poi), requirements: this.interacted.has(poi.id) ? [] : unmetConditions(poi.interaction?.condition, this),
+        canAfford: !poi.interaction?.cost || this.balances.get(poi.interaction.cost.resource)! >= poi.interaction.cost.amount })),
     };
   }
 
   saveProgress(): MapProgress {
     const resources: Record<string, number> = {};
     for (const [id, amount] of this.balances) resources[id] = amount;
-    return { level: this.level, resources, discoveredPoiIds: [...this.discovered],
+    return { level: this.level, rank: this.rank, flags: [...this.flags], resources, discoveredPoiIds: [...this.discovered],
       interactedPoiIds: [...this.interacted], completedEncounterIds: [...this.completed] };
   }
 
-  restoreProgress(progress: MapProgress): void {
+  validateProgress(progress: MapProgress): void {
     if (!Number.isSafeInteger(progress.level) || progress.level < 1) throw new Error("Invalid saved level");
     for (const [id, amount] of Object.entries(progress.resources)) this.validateResourceAmount(id, amount);
     if (Object.keys(progress.resources).length !== this.balances.size) throw new Error("Saved resources do not match configuration");
     for (const id of progress.discoveredPoiIds) if (!this.pois.some((poi) => poi.id === id)) throw new Error(`Unknown saved POI ${id}`);
     for (const id of progress.interactedPoiIds) if (!this.pois.some((poi) => poi.id === id && poi.interaction)) throw new Error(`Unknown saved interaction ${id}`);
+    if (!Number.isSafeInteger(progress.rank ?? 0) || (progress.rank ?? 0) < 0) throw new Error("Invalid saved rank");
+    for (const id of progress.flags ?? []) if (!id || typeof id !== "string") throw new Error("Invalid saved progression flag");
+    for (const id of progress.completedEncounterIds) if (!id || typeof id !== "string") throw new Error("Invalid saved encounter");
+  }
+
+  restoreProgress(progress: MapProgress): void {
+    this.validateProgress(progress);
     this.level = Math.max(this.level, progress.level);
+    this.rank = Math.max(this.rank, progress.rank ?? 0);
+    for (const id of progress.flags ?? []) this.flags.add(id);
     for (const [id, amount] of Object.entries(progress.resources)) this.balances.set(id, amount);
     for (const id of progress.discoveredPoiIds) this.discovered.add(id);
     for (const id of progress.interactedPoiIds) this.interacted.add(id);
@@ -228,6 +275,23 @@ export class WorldMap {
   }
 
   private refreshLocks(): void {
+    if (this.zoneMode === "overlay") {
+      this.forEachCell(this.navigation.width, this.navigation.height, this.navigation.cellSize, (x, y) => this.navigation.setLocked({ x, y }, false));
+      this.forEachCell(this.fog.width, this.fog.height, this.fog.cellSize, (x, y) => this.fog.setLocked(x, y, false));
+      for (const zone of this.zones) {
+        if (this.unlocked.has(zone.id)) continue;
+        const mark = (width: number, height: number, size: number, setter: (x: number, y: number) => void) => {
+          for (let y = Math.max(0, Math.floor(zone.rect.y / size)); y < Math.min(height, Math.ceil((zone.rect.y + zone.rect.height) / size)); y++) {
+            for (let x = Math.max(0, Math.floor(zone.rect.x / size)); x < Math.min(width, Math.ceil((zone.rect.x + zone.rect.width) / size)); x++) {
+              if (!zone.polygon || polygonIntersectsRect(zone.polygon, { x: x * size, y: y * size, width: size, height: size })) setter(x, y);
+            }
+          }
+        };
+        mark(this.navigation.width, this.navigation.height, this.navigation.cellSize, (x, y) => this.navigation.setLocked({ x, y }, true));
+        mark(this.fog.width, this.fog.height, this.fog.cellSize, (x, y) => this.fog.setLocked(x, y, true));
+      }
+      return;
+    }
     this.forEachCell(this.navigation.width, this.navigation.height, this.navigation.cellSize,
       (x, y, rect) => this.navigation.setLocked({ x, y }, !this.isAreaUnlocked(rect)));
     this.forEachCell(this.fog.width, this.fog.height, this.fog.cellSize,

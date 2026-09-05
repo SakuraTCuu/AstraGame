@@ -12,4 +12,5 @@ export * from "./random/SeededRandom";
 export * from "./squad/SquadFormation";
 export * from "./world/GameWorld";
 export * from "./world/WorldMap";
+export * from "./world/ProgressConditions";
 export * from "./world/SpawnDirector";

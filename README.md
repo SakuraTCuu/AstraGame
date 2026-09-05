@@ -10,13 +10,14 @@ Minimal Cocos Creator 2.4.15 frontend prototype for a portrait 2.5D squad explor
 - rectangle/circle obstacles respected by the leader, followers and enemies
 - player-centered flashlight cone
 - pointer navigation and automatic path following
-- minimap navigation and delayed route resumption after manual input
+- world-map overview, POI navigation and delayed route resumption after manual input
 - four-character squad formation
 - autonomous target acquisition
 - attacks, skills, healing, damage numbers, enemies, and a boss
 - timed area skills, shields, projectiles, summons, enemy return and respawn
 - pause, restart, party defeat and encounter victory
 - explicit actor, navigation, combat, and boss state machines
+- paid polygon fog gates, repaired-portal travel and persistent exploration
 - deterministic core tests independent of Cocos
 
 The tracked project uses original placeholder visuals and tuning. A separate localhost mode can stage an explicitly authorized resource cache for temporary visual comparison; cached content and generated profiles remain untracked. See [local reference preview](docs/local-reference-preview.md).

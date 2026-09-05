@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deflateSync } from "node:zlib";
 import { decodeUuid, inside, mergeBundleParts, readTableArchive, tableRow } from "../tools/reference-cache.mjs";
+import { compileReferenceCondition, parseReferenceItem, referenceFogPolygon } from "../tools/reference-rules.mjs";
 
 test("cache paths cannot escape the authorized root", () => {
   assert.throws(() => inside("C:/cache", "../outside.png"), /escapes/);
@@ -36,4 +37,21 @@ test("table references resolve by field index and reject cycles", () => {
   const table = { __KEY_MAP__: { id: 0, name: 1 }, 1: { datas: [[1, "original"]] }, 2: { datas: [[2, "$1"]] }, 3: { datas: [[3, "$3"]] } };
   assert.deepEqual(tableRow(table, 2), { id: 2, name: "original" });
   assert.throws(() => tableRow(table, 3), /Circular/);
+});
+
+test("source progression expressions preserve combined gates and reject unsupported syntax", () => {
+  const condition = compileReferenceCondition("AndCondition|[HisKillMonsterCondition|id:12,PlayerLevel|minLevel:3]", () => ({ name: "Warden" }));
+  assert.equal(condition.kind, "all");
+  assert.equal(condition.conditions[0].id, "defeat:12");
+  assert.equal(condition.conditions[1].value, 3);
+  assert.equal(compileReferenceCondition("TriggerNpcCondition|{npcSpawnId:15}", () => null).id, "poi:reference_npc_15");
+  assert.throws(() => compileReferenceCondition("UnknownCondition|id:12", () => null), /Unsupported/);
+  assert.throws(() => compileReferenceCondition("AndCondition|[PlayerLevel|minLevel:3", () => null), /Invalid compound/);
+});
+
+test("resource probabilities and fog coordinates retain the source data contract", () => {
+  assert.deepEqual(parseReferenceItem("item|id:4_num:2_prob:500/1000"), { itemId: 4, amount: 2, chance: 0.5 });
+  assert.throws(() => parseReferenceItem("item|id:4_num:2_prob:1/0"), /Invalid/);
+  const corners = referenceFogPolygon({ x: 1200, y: -2400, w: 120, h: 120 }, (x, y) => ({ x, y }));
+  assert.deepEqual(corners, [{ x: 3000, y: 600 }, { x: 3100, y: 540 }, { x: 3000, y: 480 }, { x: 2900, y: 540 }]);
 });

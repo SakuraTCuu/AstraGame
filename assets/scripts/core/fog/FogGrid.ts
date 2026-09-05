@@ -77,6 +77,23 @@ export class FogGrid {
     return Array.from(this.discovered);
   }
 
+  exploredIndices(): number[] {
+    const indices: number[] = [];
+    for (let index = 0; index < this.discovered.length; index++) if (this.discovered[index]) indices.push(index);
+    return indices;
+  }
+
+  validateProgress(indices: readonly number[]): void {
+    if (!Array.isArray(indices) || indices.length > this.discovered.length || indices.some((index) => !Number.isInteger(index) || index < 0 || index >= this.discovered.length)) throw new Error("Invalid saved fog cells");
+  }
+
+  restore(indices: readonly number[]): void {
+    this.validateProgress(indices);
+    this.discovered.fill(0);
+    this.visible.fill(0);
+    for (const index of indices) if (!this.locked[index]) this.discovered[index] = 1;
+  }
+
   discoveredCells(): ReadonlyArray<{ x: number; y: number }> {
     const cells: Array<{ x: number; y: number }> = [];
     for (let index = 0; index < this.discovered.length; index += 1) {
