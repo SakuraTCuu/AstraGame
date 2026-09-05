@@ -10,7 +10,7 @@ import {
 class CocosConfigPort implements RuntimeConfigPort {
     public load<T>(path: string): Promise<T> {
         return new Promise<T>((resolve, reject) => {
-            cc.loader.loadRes(path, cc.JsonAsset, (error: Error, asset: cc.JsonAsset) => {
+            cc.resources.load(path, cc.JsonAsset, (error: Error, asset: cc.JsonAsset) => {
                 if (error) {
                     reject(error);
                     return;
@@ -21,27 +21,29 @@ class CocosConfigPort implements RuntimeConfigPort {
     }
 }
 
-class MemoryStoragePort implements RuntimeStoragePort {
-    private checkpoint: RunCheckpoint | null = null;
+class LocalResultStoragePort implements RuntimeStoragePort {
+    private readonly key = "astra.exploration.last-result.v1";
 
     public loadCheckpoint(): Promise<RunCheckpoint | null> {
-        return Promise.resolve(this.checkpoint);
+        const value = cc.sys.localStorage.getItem(this.key);
+        return Promise.resolve(value ? JSON.parse(value) as RunCheckpoint : null);
     }
 
     public saveCheckpoint(checkpoint: RunCheckpoint): Promise<void> {
-        this.checkpoint = checkpoint;
+        cc.sys.localStorage.setItem(this.key, JSON.stringify(checkpoint));
         return Promise.resolve();
     }
 
     public clearCheckpoint(): Promise<void> {
-        this.checkpoint = null;
+        cc.sys.localStorage.removeItem(this.key);
         return Promise.resolve();
     }
 }
 
 class LocalProtocolPort implements RuntimeProtocolPort {
-    public startRun(request: unknown): Promise<unknown> {
-        return Promise.resolve({ ok: true, request, runId: "local-demo" });
+    private sequence = 0;
+    public startRun(request: unknown): Promise<{ runId: string }> {
+        return Promise.resolve({ runId: `local-${Date.now()}-${++this.sequence}` });
     }
 
     public submitCheckpoint(checkpoint: RunCheckpoint): Promise<unknown> {
@@ -62,9 +64,8 @@ class ConsoleTelemetryPort implements RuntimeTelemetryPort {
 export function createLocalDemoPorts(): RuntimePorts {
     return {
         config: new CocosConfigPort(),
-        storage: new MemoryStoragePort(),
+        storage: new LocalResultStoragePort(),
         protocol: new LocalProtocolPort(),
         telemetry: new ConsoleTelemetryPort(),
     };
 }
-

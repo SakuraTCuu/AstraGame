@@ -1,7 +1,7 @@
 {
   "meta": {
-    "id": "auto_explore_demo_v2",
-    "schemaVersion": 2,
+    "id": "auto_explore_demo_v3",
+    "schemaVersion": 3,
     "contentStatus": "ORIGINAL_PLACEHOLDER",
     "notice": "All names, geometry and numeric values are original adjustable placeholders for engineering validation. They were not extracted from Zhen Xie Ren or any other game.",
     "designResolution": {
@@ -12,6 +12,7 @@
     "coordinateSystem": "world_x_right_y_up"
   },
   "seed": 20260904,
+  "session": { "completionEncounterId": "boss_final", "autoStopForCombat": true },
   "world": {
     "id": "mist_valley_demo",
     "name": "Mist Valley Demo",
@@ -106,12 +107,12 @@
   "squad": {
     "leaderId": "hero_guard",
     "formationRotationMode": "movement_direction",
-    "teleportCatchupDistance": 720,
+    "followLeashDistance": 720,
     "formationOffsets": [
       { "x": 0, "y": 0 },
-      { "x": -105, "y": -120 },
-      { "x": 105, "y": -135 },
-      { "x": 0, "y": -230 }
+      { "x": -55, "y": -60 },
+      { "x": 55, "y": -65 },
+      { "x": 0, "y": -115 }
     ],
     "actors": [
       {
@@ -138,9 +139,9 @@
         "kind": "hero",
         "team": "player",
         "role": "melee",
-        "x": 415,
-        "y": 400,
-        "formation": { "x": -105, "y": -120 },
+        "x": 465,
+        "y": 460,
+        "formation": { "x": -55, "y": -60 },
         "hp": 1050,
         "maxHp": 1050,
         "attack": 128,
@@ -156,9 +157,9 @@
         "kind": "hero",
         "team": "player",
         "role": "ranged",
-        "x": 625,
-        "y": 385,
-        "formation": { "x": 105, "y": -135 },
+        "x": 575,
+        "y": 455,
+        "formation": { "x": 55, "y": -65 },
         "hp": 820,
         "maxHp": 820,
         "attack": 145,
@@ -175,8 +176,8 @@
         "team": "player",
         "role": "support",
         "x": 520,
-        "y": 290,
-        "formation": { "x": 0, "y": -230 },
+        "y": 405,
+        "formation": { "x": 0, "y": -115 },
         "hp": 900,
         "maxHp": 900,
         "attack": 74,
@@ -228,6 +229,7 @@
     {
       "id": "boss_gate_guard",
       "name": "Stone Gate Warden",
+      "healthBars": 20,
       "kind": "boss",
       "team": "enemy",
       "x": 4000,
@@ -249,19 +251,19 @@
     "player": { "id": "guard_strike", "range": 105, "cooldown": 1.25, "power": 1.0, "target": "nearest_enemy" },
     "enemy": { "id": "husk_claw", "range": 85, "cooldown": 1.8, "power": 1.0, "target": "nearest_hero" },
     "definitions": [
-    { "id": "guard_strike", "type": "damage", "coefficient": 1.0, "cooldown": 1.25, "range": 105, "target": "nearest_enemy", "maxTargets": 1 },
-    { "id": "iron_bell", "type": "shield", "coefficient": 2.2, "cooldown": 8.0, "range": 0, "target": "self", "maxTargets": 1, "duration": 3.0 },
-    { "id": "blade_cut", "type": "damage", "coefficient": 1.05, "cooldown": 0.9, "range": 115, "target": "nearest_enemy", "maxTargets": 1 },
-    { "id": "crescent_arc", "type": "damage", "coefficient": 1.65, "cooldown": 5.5, "range": 190, "target": "enemy_cluster", "maxTargets": 3 },
-    { "id": "paper_dart", "type": "damage", "coefficient": 1.0, "cooldown": 1.35, "range": 430, "target": "nearest_enemy", "maxTargets": 1 },
-    { "id": "seal_burst", "type": "damage", "coefficient": 1.8, "cooldown": 6.5, "range": 480, "target": "lowest_hp_enemy", "maxTargets": 1 },
-    { "id": "herb_shot", "type": "damage", "coefficient": 0.85, "cooldown": 1.6, "range": 350, "target": "nearest_enemy", "maxTargets": 1 },
-    { "id": "green_mist", "type": "heal", "coefficient": 1.7, "cooldown": 7.0, "range": 360, "target": "lowest_hp_ally", "maxTargets": 2 },
-    { "id": "husk_claw", "type": "damage", "coefficient": 1.0, "cooldown": 1.8, "range": 85, "target": "nearest_hero", "maxTargets": 1 },
-    { "id": "wisp_bolt", "type": "damage", "coefficient": 1.0, "cooldown": 2.2, "range": 330, "target": "nearest_hero", "maxTargets": 1 },
-    { "id": "warden_slam", "type": "damage", "coefficient": 1.35, "cooldown": 2.4, "range": 165, "target": "nearest_hero", "maxTargets": 2 },
-    { "id": "warden_shockwave", "type": "telegraph_damage", "coefficient": 1.8, "cooldown": 7.5, "range": 420, "target": "hero_cluster", "maxTargets": 4, "telegraph": 1.2 },
-      { "id": "warden_summon", "type": "summon", "coefficient": 0, "cooldown": 12.0, "range": 320, "target": "self", "maxTargets": 3, "summonEnemyId": "mob_husk" }
+      { "id": "guard_strike", "type": "damage", "coefficient": 1.0, "cooldown": 1.25, "range": 105, "target": "nearest_enemy", "maxTargets": 1, "windup": 0.18, "recovery": 0.15 },
+      { "id": "iron_bell", "type": "shield", "coefficient": 2.2, "cooldown": 8.0, "range": 0, "target": "self", "maxTargets": 1, "duration": 3.0, "windup": 0.15, "recovery": 0.2, "priority": 40 },
+      { "id": "blade_cut", "type": "damage", "coefficient": 1.05, "cooldown": 0.9, "range": 115, "target": "nearest_enemy", "maxTargets": 1, "windup": 0.15, "recovery": 0.15 },
+      { "id": "crescent_arc", "type": "damage", "coefficient": 1.65, "cooldown": 5.5, "range": 190, "target": "enemy_cluster", "maxTargets": 3, "windup": 0.35, "recovery": 0.25, "priority": 20, "area": { "shape": "cone", "radius": 190, "angleDegrees": 120 } },
+      { "id": "paper_dart", "type": "damage", "coefficient": 1.0, "cooldown": 1.35, "range": 430, "target": "nearest_enemy", "maxTargets": 1, "windup": 0.2, "recovery": 0.2, "projectileSpeed": 900 },
+      { "id": "seal_burst", "type": "damage", "coefficient": 1.8, "cooldown": 6.5, "range": 480, "target": "lowest_hp_enemy", "maxTargets": 1, "windup": 0.45, "recovery": 0.2, "projectileSpeed": 1000, "priority": 20 },
+      { "id": "herb_shot", "type": "damage", "coefficient": 0.85, "cooldown": 1.6, "range": 350, "target": "nearest_enemy", "maxTargets": 1, "windup": 0.2, "recovery": 0.15, "projectileSpeed": 800 },
+      { "id": "green_mist", "type": "heal", "coefficient": 1.7, "cooldown": 7.0, "range": 360, "target": "lowest_hp_ally", "maxTargets": 2, "windup": 0.3, "recovery": 0.2, "priority": 100 },
+      { "id": "husk_claw", "type": "damage", "coefficient": 1.0, "cooldown": 1.8, "range": 85, "target": "nearest_hero", "maxTargets": 1, "windup": 0.22, "recovery": 0.2 },
+      { "id": "wisp_bolt", "type": "damage", "coefficient": 1.0, "cooldown": 2.2, "range": 330, "target": "nearest_hero", "maxTargets": 1, "windup": 0.3, "recovery": 0.2, "projectileSpeed": 700 },
+      { "id": "warden_slam", "type": "damage", "coefficient": 1.35, "cooldown": 2.4, "range": 165, "target": "nearest_hero", "maxTargets": 2, "windup": 0.45, "recovery": 0.45, "area": { "shape": "cone", "radius": 165, "angleDegrees": 130 } },
+      { "id": "warden_shockwave", "type": "telegraph_damage", "coefficient": 1.8, "cooldown": 7.5, "range": 420, "target": "hero_cluster", "maxTargets": 4, "telegraph": 1.2, "recovery": 0.6, "minimumPhase": 2, "priority": 30, "area": { "shape": "circle", "radius": 220 } },
+      { "id": "warden_summon", "type": "summon", "coefficient": 0, "cooldown": 12.0, "range": 320, "target": "self", "maxTargets": 3, "summonEnemyId": "mob_husk", "summonRadius": 140, "summonLimit": 3, "windup": 0.8, "recovery": 0.5, "minimumPhase": 3, "priority": 20 }
     ]
   },
   "spawns": [

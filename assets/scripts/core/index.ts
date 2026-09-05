@@ -1,6 +1,7 @@
 export * from "./actor/Actor";
 export * from "./ai/BossAI";
 export * from "./ai/EnemyAI";
+export * from "./ai/PlayerAI";
 export * from "./combat/Combat";
 export * from "./demo/DemoSession";
 export * from "./fog/FogGrid";
@@ -11,3 +12,4 @@ export * from "./random/SeededRandom";
 export * from "./squad/SquadFormation";
 export * from "./world/GameWorld";
 export * from "./world/WorldMap";
+export * from "./world/SpawnDirector";

@@ -15,7 +15,7 @@ export interface RuntimeStoragePort {
 }
 
 export interface RuntimeProtocolPort {
-    startRun(request: unknown): Promise<unknown>;
+    startRun(request: unknown): Promise<{ runId: string }>;
     submitCheckpoint(checkpoint: RunCheckpoint): Promise<unknown>;
     settleRun(request: unknown): Promise<unknown>;
 }
@@ -30,4 +30,3 @@ export interface RuntimePorts {
     protocol: RuntimeProtocolPort;
     telemetry: RuntimeTelemetryPort;
 }
-

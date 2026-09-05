@@ -37,4 +37,4 @@ Spawn positions are projected onto walkable ground when random scatter intersect
 
 `tests/world.test.ts` covers collision, corners, sliding, fog transitions, input override, invalid zone references, reachable shipped POIs and an end-to-end small encounter. That encounter uses normal movement and combat to open a region, clear two guard spawns, unlock the boss and defeat it.
 
-The Web Mobile smoke test separately verifies the shipped map's exploration route and controlled boss phase rendering. This increment does not claim reference-game parity, production combat balance, complete run settlement or WeChat device validation.
+The Web Mobile smoke test now verifies the shipped map's complete exploration/combat route and natural victory through normal movement and telegraph dodges. See [combat validation](validation-combat.md) for the current evidence and remaining parity work.

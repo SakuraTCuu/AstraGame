@@ -3,7 +3,7 @@ import type { CombatSystem, SkillDefinition } from "../combat/Combat";
 import { EnemyAI } from "./EnemyAI";
 import type { Vec2Like } from "../math/Vector2";
 
-export type BossPhase = "phase1" | "phase2" | "enraged" | "dead";
+export type BossPhase = string;
 
 export interface BossPhaseChange {
   readonly from: BossPhase;
@@ -15,14 +15,17 @@ export class BossAI {
   private phaseValue: BossPhase = "phase1";
   private readonly regularAI: EnemyAI;
   readonly phaseChanges: BossPhaseChange[] = [];
-  private readonly phase2Threshold: number;
-  private readonly enragedThreshold: number;
+  private readonly thresholds: readonly number[];
+  private readonly skills: readonly SkillDefinition[];
+  private stage = 0;
 
   constructor(skills: SkillDefinition | readonly SkillDefinition[], phaseThresholds: readonly number[] = [0.7, 0.3]) {
-    this.regularAI = new EnemyAI(skills);
-    const sorted = [...phaseThresholds].sort((a, b) => b - a);
-    this.phase2Threshold = sorted[0] ?? 0.7;
-    this.enragedThreshold = sorted[1] ?? 0.3;
+    this.skills = Array.isArray(skills) ? skills : [skills as SkillDefinition];
+    this.regularAI = new EnemyAI(this.skills);
+    this.thresholds = [...phaseThresholds].sort((a, b) => b - a);
+    if (this.thresholds.some((value) => value <= 0 || value >= 1) || new Set(this.thresholds).size !== this.thresholds.length) {
+      throw new Error("Boss phase thresholds must be unique ratios between zero and one");
+    }
   }
 
   get phase(): BossPhase {
@@ -32,11 +35,19 @@ export class BossAI {
   update(boss: Actor, targets: readonly Actor[], combat: CombatSystem, deltaSeconds: number,
     move?: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void): void {
     const ratio = boss.health / boss.stats.maxHealth;
-    const next: BossPhase = !boss.alive ? "dead" : ratio <= this.enragedThreshold ? "enraged" : ratio <= this.phase2Threshold ? "phase2" : "phase1";
-    if (next !== this.phaseValue) {
-      this.phaseChanges.push({ from: this.phaseValue, to: next, healthRatio: ratio });
-      this.phaseValue = next;
+    if (!boss.alive) {
+      if (this.phaseValue !== "dead") this.changePhase("dead", ratio);
+      return;
     }
-    if (boss.alive) this.regularAI.update(boss, targets, combat, deltaSeconds, move);
+    while (this.stage < this.thresholds.length && ratio <= this.thresholds[this.stage]) {
+      this.stage += 1;
+      this.changePhase(this.stage === this.thresholds.length ? "enraged" : `phase${this.stage + 1}`, ratio);
+    }
+    this.regularAI.update(boss, targets, combat, deltaSeconds, move, this.skills.filter((skill) => (skill.minimumPhase ?? 1) <= this.stage + 1));
+  }
+
+  private changePhase(next: BossPhase, healthRatio: number): void {
+    this.phaseChanges.push({ from: this.phaseValue, to: next, healthRatio });
+    this.phaseValue = next;
   }
 }

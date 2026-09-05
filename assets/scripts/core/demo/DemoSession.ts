@@ -1,7 +1,7 @@
 import { Actor } from "../actor/Actor";
 import type { ActorOptions, ActorStats, Faction } from "../actor/Actor";
 import type { BossPhase } from "../ai/BossAI";
-import type { CombatEvent, SkillDefinition } from "../combat/Combat";
+import type { CastSnapshot, CombatEvent, ProjectileSnapshot, SkillArea, SkillDefinition } from "../combat/Combat";
 import { FogGrid } from "../fog/FogGrid";
 import type { FogCellState } from "../fog/FogGrid";
 import { Vector2 } from "../math/Vector2";
@@ -9,10 +9,13 @@ import { GridNavigation } from "../navigation/GridNavigation";
 import type { GridPoint } from "../navigation/GridNavigation";
 import { GameWorld } from "../world/GameWorld";
 import { WorldMap } from "../world/WorldMap";
+import { SpawnDirector } from "../world/SpawnDirector";
+import type { SpawnSnapshot } from "../world/SpawnDirector";
 import type { ExplorationEvent, WorldObstacle, WorldPoi, WorldZone } from "../world/WorldMap";
 
 export interface DemoActorConfig {
   readonly id: string;
+  readonly name?: string;
   readonly kind: string;
   readonly team?: Faction;
   readonly x: number;
@@ -27,6 +30,10 @@ export interface DemoActorConfig {
   readonly tags?: readonly string[];
   readonly skillIds?: readonly string[];
   readonly phaseThresholds?: readonly number[];
+  readonly leashRange?: number;
+  readonly collisionRadius?: number;
+  readonly summonerId?: string;
+  readonly healthBars?: number;
 }
 
 export interface DemoSpawnConfig {
@@ -41,9 +48,11 @@ export interface DemoSpawnConfig {
   readonly respawn?: boolean;
   readonly encounterId?: string;
   readonly zoneId?: string;
+  readonly respawnDelay?: number;
 }
 
 export interface DemoConfig {
+  readonly meta?: { readonly id: string; readonly schemaVersion: number };
   readonly seed: number;
   readonly world: {
     readonly width: number;
@@ -63,6 +72,7 @@ export interface DemoConfig {
   readonly squad: {
     readonly actors: readonly DemoActorConfig[];
     readonly formationOffsets?: ReadonlyArray<{ readonly x: number; readonly y: number }>;
+    readonly followLeashDistance?: number;
   };
   readonly enemies: readonly DemoActorConfig[] | { readonly actors: readonly DemoActorConfig[] };
   readonly skills: {
@@ -72,7 +82,11 @@ export interface DemoConfig {
   };
   readonly spawns?: readonly DemoSpawnConfig[];
   readonly ticksPerSecond?: number;
+  readonly session?: { readonly completionEncounterId?: string; readonly autoStopForCombat?: boolean };
 }
+
+export type RunState = "running" | "paused" | "won" | "failed";
+export interface RunResult { readonly outcome: "won" | "failed"; readonly elapsedSeconds: number; readonly defeatedEnemies: number; }
 
 export interface DemoSkillConfig {
   readonly id: string;
@@ -91,22 +105,40 @@ export interface DemoSkillDefinitionConfig {
   readonly target: string;
   readonly maxTargets?: number;
   readonly telegraph?: number;
+  readonly windup?: number;
+  readonly recovery?: number;
+  readonly duration?: number;
+  readonly area?: SkillArea;
+  readonly projectileSpeed?: number;
+  readonly projectileLifetime?: number;
+  readonly summonEnemyId?: string;
+  readonly summonRadius?: number;
+  readonly summonLimit?: number;
+  readonly priority?: number;
+  readonly minimumPhase?: number;
 }
 
 export interface ActorSnapshot {
   readonly id: string;
+  readonly name: string;
   readonly kind: string;
   readonly team: Faction;
   readonly x: number;
   readonly y: number;
   readonly hp: number;
   readonly maxHp: number;
+  readonly shield: number;
+  readonly healthBars: number;
   readonly state: string;
   readonly targetId?: string;
 }
 
 export interface DemoSnapshot {
   readonly elapsedSeconds: number;
+  readonly runState: RunState;
+  readonly result: RunResult | null;
+  readonly partyIds: readonly string[];
+  readonly leaderId?: string;
   readonly actors: readonly ActorSnapshot[];
   readonly discoveredFogCells: ReadonlyArray<{ x: number; y: number }>;
   readonly fog: { readonly width: number; readonly height: number; readonly cellSize: number; readonly states: readonly FogCellState[] };
@@ -119,21 +151,18 @@ export interface DemoSnapshot {
     readonly radius: number;
     readonly coneAngleDegrees: number;
   };
-  readonly projectiles: readonly never[];
+  readonly projectiles: readonly ProjectileSnapshot[];
+  readonly casts: readonly CastSnapshot[];
   readonly effects: ReadonlyArray<{ readonly type: string; readonly sourceId: string; readonly targetId: string; readonly value?: number }>;
   readonly events: readonly CombatEvent[];
   readonly bossPhases: Readonly<Record<string, BossPhase>>;
   readonly autoNavigation: {
     readonly active: boolean;
-    readonly mode: "idle" | "auto_path" | "manual" | "resume_wait" | "blocked";
+    readonly mode: "idle" | "auto_path" | "manual" | "resume_wait" | "combat_hold" | "blocked";
     readonly destination: { readonly x: number; readonly y: number } | null;
     readonly remainingWaypoints: ReadonlyArray<{ readonly x: number; readonly y: number }>;
   };
-  readonly spawns: ReadonlyArray<{
-    readonly id: string;
-    readonly status: "pending" | "spawned" | "cleared";
-    readonly spawnedIds: readonly string[];
-  }>;
+  readonly spawns: readonly SpawnSnapshot[];
   readonly worldBounds: { readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number };
 }
 
@@ -164,9 +193,9 @@ const DEFAULT_CONFIG: DemoConfig = {
 export class DemoSession {
   readonly world: GameWorld;
   readonly map: WorldMap;
+  readonly spawns: SpawnDirector;
   private readonly config: DemoConfig;
   private readonly fog: FogGrid;
-  private readonly kinds = new Map<string, string>();
   private readonly fixedStep: number;
   private accumulator = 0;
   private moveIntent = Vector2.ZERO;
@@ -177,12 +206,14 @@ export class DemoSession {
   private resumeRemaining = 0;
   private navigationMode: DemoSnapshot["autoNavigation"]["mode"] = "idle";
   private readonly enemyTemplates = new Map<string, DemoActorConfig>();
-  private readonly spawnStates = new Map<string, { status: "pending" | "spawned" | "cleared"; spawnedIds: string[] }>();
+  private state: RunState = "running";
+  private result: RunResult | null = null;
+  private defeatedEnemies = 0;
 
   constructor(config: DemoConfig = DEFAULT_CONFIG) {
     this.config = config;
     const players = config.squad.actors.map((entry) => this.createActor(entry, "player"));
-    const enemyConfigs = Array.isArray(config.enemies) ? config.enemies : config.enemies.actors;
+    const enemyConfigs = "actors" in config.enemies ? config.enemies.actors : config.enemies;
     for (const enemy of enemyConfigs) this.enemyTemplates.set(enemy.id, enemy);
     const enemies = config.spawns ? [] : enemyConfigs.map((entry) => this.createActor(entry, "enemy"));
     const cellSize = config.world.cellSize ?? 1;
@@ -220,7 +251,11 @@ export class DemoSession {
     const skillDefinitions: Record<string, SkillDefinition> = {};
     for (const definition of config.skills.definitions ?? []) {
       const normalized = this.normalizeDefinition(definition);
-      if (normalized) skillDefinitions[normalized.id] = normalized;
+      if (skillDefinitions[normalized.id]) throw new Error(`Duplicate skill ${normalized.id}`);
+      skillDefinitions[normalized.id] = normalized;
+    }
+    for (const actor of [...config.squad.actors, ...enemyConfigs]) {
+      for (const id of actor.skillIds ?? []) if (!skillDefinitions[id]) throw new Error(`Actor ${actor.id} references missing skill ${id}`);
     }
     this.world = new GameWorld({
       seed: config.seed,
@@ -233,12 +268,13 @@ export class DemoSession {
       skillDefinitions,
       revealRadius: config.fog.revealRadius,
       formationOffsets: config.squad.formationOffsets,
+      followLeashDistance: config.squad.followLeashDistance,
     });
     const ticksPerSecond = config.ticksPerSecond ?? 20;
     if (ticksPerSecond <= 0) throw new RangeError("ticksPerSecond must be positive");
     this.fixedStep = 1 / ticksPerSecond;
-    for (const spawn of config.spawns ?? []) this.spawnStates.set(spawn.id, { status: "pending", spawnedIds: [] });
-    const leader = players[0];
+    this.spawns = new SpawnDirector(this.world, this.map, config.spawns ?? [], this.enemyTemplates, (entry) => this.createActor(entry, "enemy"));
+    const leader = this.world.leader;
     if (leader) {
       this.map.discoverAt(leader.position);
       this.fog.reveal(leader.position, config.fog.revealRadius);
@@ -249,11 +285,29 @@ export class DemoSession {
     return new DemoSession(config);
   }
 
+  get runState(): RunState { return this.state; }
+
+  pause(): boolean {
+    if (this.state !== "running") return false;
+    this.setMoveIntent(0, 0);
+    this.state = "paused";
+    return true;
+  }
+
+  resume(): boolean {
+    if (this.state !== "paused") return false;
+    this.state = "running";
+    return true;
+  }
+
   setMoveIntent(x: number, y: number): void {
+    if (this.state !== "running") return;
     const wasMoving = this.moveIntent.lengthSquared() > 0;
     const intent = new Vector2(x, y);
     this.moveIntent = intent.lengthSquared() > 1 ? intent.normalized() : intent;
     if (this.moveIntent.lengthSquared() > 0) {
+      const leader = this.world.leader;
+      if (leader && this.world.combat.isWindingUp(leader)) this.world.combat.cancelCaster(leader.id);
       this.world.path.clear();
       this.flashlightDirection = this.moveIntent.normalized();
       this.world.setFacing(this.flashlightDirection);
@@ -265,6 +319,7 @@ export class DemoSession {
   }
 
   setAutoDestination(x: number | null, y: number | null): boolean {
+    if (this.state !== "running") return false;
     if (x === null || y === null) {
       this.world.path.clear();
       this.autoDestination = null;
@@ -277,7 +332,7 @@ export class DemoSession {
     this.autoDestination = new Vector2(x, y);
     this.resumeRemaining = 0;
     this.navigationMode = "auto_path";
-    const leader = this.world.players[0];
+    const leader = this.world.leader;
     if (leader) {
       const direction = new Vector2(x, y).subtract(leader.position);
       if (direction.lengthSquared() > 0) this.flashlightDirection = direction.normalized();
@@ -286,12 +341,13 @@ export class DemoSession {
   }
 
   update(deltaSeconds: number): number {
-    this.accumulator += Math.max(0, deltaSeconds);
     this.frameEvents = [];
     this.explorationEvents = [];
+    if (this.state !== "running") return 0;
+    this.accumulator += Math.max(0, deltaSeconds);
     let ticks = 0;
-    while (this.accumulator + Number.EPSILON >= this.fixedStep) {
-      const leader = this.world.players[0];
+    while (this.state === "running" && this.accumulator + Number.EPSILON >= this.fixedStep) {
+      const leader = this.world.leader;
       if (leader?.alive && this.moveIntent.lengthSquared() > 0) {
         leader.position = this.world.options.navigation.moveWithCollision(leader.position,
           this.moveIntent.scale(leader.stats.moveSpeed * this.fixedStep));
@@ -302,23 +358,39 @@ export class DemoSession {
           this.navigationMode = resumed ? "auto_path" : "blocked";
         }
       }
-      this.world.leaderTravelActive = this.moveIntent.lengthSquared() > 0 || !this.world.path.complete;
+      const hold = this.config.session?.autoStopForCombat && this.autoDestination && this.moveIntent.lengthSquared() === 0 && this.spawns.hasBlockingEncounter();
+      if (hold && this.navigationMode === "auto_path") this.navigationMode = "combat_hold";
+      if (!hold && this.navigationMode === "combat_hold") {
+        this.navigationMode = this.autoDestination && this.world.navigateTo(this.autoDestination) ? "auto_path" : "blocked";
+      }
+      this.world.autoTravelPaused = this.navigationMode === "combat_hold";
+      this.world.manualControlActive = this.moveIntent.lengthSquared() > 0;
+      this.world.leaderTravelActive = this.moveIntent.lengthSquared() > 0 || (!this.world.path.complete && !this.world.autoTravelPaused);
       if (leader?.alive) this.map.discoverAt(leader.position);
-      this.updateSpawns();
+      this.spawns.beforeTick();
       this.world.update(this.fixedStep);
-      if (leader?.alive) this.map.discoverAt(leader.position);
-      this.updateClearedSpawns();
-      this.frameEvents.push(...this.world.combat.drainEvents());
+      const currentLeader = this.world.leader;
+      if (currentLeader) this.map.discoverAt(currentLeader.position);
+      const enemyIds = new Set(this.world.enemies.map((actor) => actor.id));
+      this.spawns.afterTick();
+      const events = this.world.combat.drainEvents();
+      this.defeatedEnemies += events.filter((event) => event.type === "death" && enemyIds.has(event.targetId)).length;
+      this.frameEvents.push(...events);
       this.explorationEvents.push(...this.map.drainEvents());
+      if (leader?.id !== currentLeader?.id && currentLeader && this.autoDestination && this.moveIntent.lengthSquared() === 0) {
+        this.navigationMode = this.world.navigateTo(this.autoDestination) ? "auto_path" : "blocked";
+      }
       if (this.navigationMode === "auto_path" && this.world.path.complete) {
         this.navigationMode = "idle";
         this.autoDestination = null;
       }
-      if (leader?.alive) {
+      if (currentLeader) {
         this.flashlightDirection = this.world.facingDirection;
-        const target = this.world.enemies.find((actor) => actor.id === leader.targetId && actor.alive);
-        if (target && this.moveIntent.lengthSquared() === 0) this.flashlightDirection = target.position.subtract(leader.position).normalized();
+        const target = this.world.enemies.find((actor) => actor.id === currentLeader.targetId && actor.alive);
+        if (target && this.moveIntent.lengthSquared() === 0) this.flashlightDirection = target.position.subtract(currentLeader.position).normalized();
       }
+      if (!currentLeader) this.finish("failed");
+      else if (this.config.session?.completionEncounterId && this.map.isEncounterCompleted(this.config.session.completionEncounterId)) this.finish("won");
       this.accumulator -= this.fixedStep;
       ticks += 1;
     }
@@ -326,22 +398,29 @@ export class DemoSession {
   }
 
   getSnapshot(): DemoSnapshot {
-    const actors = [...this.world.players, ...this.world.enemies].map((entry): ActorSnapshot => ({
+    const actors = this.world.allActors.map((entry): ActorSnapshot => ({
       id: entry.id,
-      kind: this.kinds.get(entry.id) ?? "actor",
+      name: entry.displayName,
+      kind: entry.kind,
       team: entry.faction,
       x: entry.position.x,
       y: entry.position.y,
       hp: entry.health,
       maxHp: entry.stats.maxHealth,
+      shield: entry.shield,
+      healthBars: entry.healthBars,
       state: entry.fsm.state,
       targetId: entry.targetId,
     }));
-    const leader = this.world.players[0];
+    const leader = this.world.leader;
     const bossPhases: Record<string, BossPhase> = {};
     for (const [id, ai] of this.world.bosses) bossPhases[id] = ai.phase;
     return {
       elapsedSeconds: this.world.elapsedSeconds,
+      runState: this.state,
+      result: this.result,
+      partyIds: this.world.players.map((actor) => actor.id),
+      leaderId: leader?.id,
       actors,
       discoveredFogCells: this.fog.discoveredCells(),
       fog: { width: this.fog.width, height: this.fog.height, cellSize: this.fog.cellSize, states: this.fog.states() },
@@ -354,7 +433,8 @@ export class DemoSession {
         radius: this.config.flashlight?.range ?? this.config.fog.revealRadius,
         coneAngleDegrees: this.config.flashlight?.outerAngleDeg ?? 70,
       },
-      projectiles: [],
+      projectiles: this.world.combat.projectileSnapshots(),
+      casts: this.world.combat.castSnapshots(),
       effects: this.frameEvents.map((event) => ({ type: event.type, sourceId: event.sourceId, targetId: event.targetId, value: event.value })),
       events: [...this.frameEvents],
       bossPhases,
@@ -364,16 +444,12 @@ export class DemoSession {
         destination: this.autoDestination ? { x: this.autoDestination.x, y: this.autoDestination.y } : null,
         remainingWaypoints: this.world.path.remainingWaypoints().map((point) => ({ x: point.x, y: point.y })),
       },
-      spawns: (this.config.spawns ?? []).map((spawn) => {
-        const state = this.spawnStates.get(spawn.id)!;
-        return { id: spawn.id, status: state.status, spawnedIds: [...state.spawnedIds] };
-      }),
+      spawns: this.spawns.snapshot(),
       worldBounds: { minX: 0, minY: 0, maxX: this.config.world.width, maxY: this.config.world.height },
     };
   }
 
   private createActor(config: DemoActorConfig, fallbackTeam: Faction): Actor {
-    this.kinds.set(config.id, config.kind);
     const stats: ActorStats = {
       maxHealth: config.maxHp ?? config.hp,
       attack: config.attack,
@@ -381,6 +457,8 @@ export class DemoSession {
       moveSpeed: config.moveSpeed,
       attackRange: config.attackRange,
       aggroRange: config.aggroRange,
+      leashRange: config.leashRange,
+      collisionRadius: config.collisionRadius,
     };
     const options: ActorOptions = {
       id: config.id,
@@ -389,6 +467,11 @@ export class DemoSession {
       stats,
       tags: config.kind === "boss" ? [...(config.tags ?? []), "boss"] : config.tags,
       skillIds: config.skillIds,
+      initialHealth: config.hp,
+      summonerId: config.summonerId,
+      kind: config.kind,
+      name: config.name,
+      healthBars: config.healthBars,
     };
     return new Actor(options);
   }
@@ -403,64 +486,58 @@ export class DemoSession {
     };
   }
 
-  private normalizeDefinition(config: DemoSkillDefinitionConfig): SkillDefinition | undefined {
-    if (config.type !== "damage" && config.type !== "heal" && config.type !== "telegraph_damage") return undefined;
+  private normalizeDefinition(config: DemoSkillDefinitionConfig): SkillDefinition {
+    const types = ["damage", "heal", "telegraph_damage", "shield", "summon"];
+    if (!types.includes(config.type)) throw new Error(`Unknown skill type ${config.type}`);
+    const targets = ["enemy", "ally", "self", "nearest_enemy", "nearest_hero", "nearest_ally", "lowest_hp_enemy", "lowest_hp_ally", "enemy_cluster", "hero_cluster", "ally_cluster"];
+    if (!targets.includes(config.target)) throw new Error(`Unknown skill target ${config.target}`);
+    if (![config.range, config.cooldown, config.coefficient].every((value) => Number.isFinite(value) && value >= 0)) throw new Error(`Invalid skill values for ${config.id}`);
+    for (const value of [config.windup, config.recovery, config.telegraph, config.summonRadius]) {
+      if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new Error(`Invalid timing or radius for ${config.id}`);
+    }
+    for (const value of [config.maxTargets, config.minimumPhase, config.summonLimit]) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 1)) throw new Error(`Invalid target or phase count for ${config.id}`);
+    }
+    for (const value of [config.projectileSpeed, config.projectileLifetime]) {
+      if (value !== undefined && (!Number.isFinite(value) || value <= 0)) throw new Error(`Invalid projectile for ${config.id}`);
+    }
+    if (config.type === "shield" && !(config.duration > 0)) throw new Error(`Shield ${config.id} requires a duration`);
+    if (config.type === "summon" && !this.enemyTemplates.has(config.summonEnemyId)) throw new Error(`Summon ${config.id} references a missing template`);
+    if (config.area && (!Number.isFinite(config.area.radius) || config.area.radius <= 0 || !["circle", "cone", "line"].includes(config.area.shape))) throw new Error(`Invalid skill area ${config.id}`);
+    if (config.area?.shape === "line" && !(config.area.width > 0)) throw new Error(`Line skill ${config.id} requires width`);
+    if (config.area?.shape === "cone" && !(config.area.angleDegrees > 0 && config.area.angleDegrees <= 360)) throw new Error(`Cone skill ${config.id} requires angleDegrees`);
     return {
       id: config.id,
       range: config.range,
       cooldown: config.cooldown,
       power: config.coefficient,
-      target: config.target.includes("ally") || config.target === "self" ? "ally" : "enemy",
-      type: config.type,
+      target: config.target === "self" ? "self" : config.target.includes("ally") ? "ally" : "enemy",
+      targetRule: config.target.includes("lowest_hp") ? "lowest_hp" : config.target.includes("cluster") ? "cluster" : "nearest",
+      type: config.type as SkillDefinition["type"],
       telegraph: config.telegraph,
       maxTargets: config.maxTargets,
+      windup: config.windup,
+      recovery: config.recovery,
+      duration: config.duration,
+      area: config.area,
+      projectileSpeed: config.projectileSpeed,
+      projectileLifetime: config.projectileLifetime,
+      summonEnemyId: config.summonEnemyId,
+      summonRadius: config.summonRadius,
+      summonLimit: config.summonLimit,
+      priority: config.priority,
+      minimumPhase: config.minimumPhase,
     };
   }
 
-  private updateSpawns(): void {
-    const leader = this.world.players[0];
-    if (!leader?.alive) return;
-    for (const spawn of this.config.spawns ?? []) {
-      const state = this.spawnStates.get(spawn.id)!;
-      if (state.status !== "pending") continue;
-      if (!this.map.isPositionUnlocked(spawn)) continue;
-      if (spawn.zoneId && !this.map.isZoneUnlocked(spawn.zoneId)) continue;
-      if (leader.position.distance({ x: spawn.x, y: spawn.y }) > spawn.triggerRadius) continue;
-      const template = this.enemyTemplates.get(spawn.enemyId);
-      if (!template) throw new Error(`Spawn ${spawn.id} references missing enemy template ${spawn.enemyId}`);
-      for (let index = 0; index < spawn.count; index += 1) {
-        const angle = this.world.random.next() * Math.PI * 2;
-        const radius = Math.sqrt(this.world.random.next()) * spawn.spawnRadius;
-        const id = `${spawn.id}:${index + 1}`;
-        const position = this.world.options.navigation.nearestWalkable({
-          x: spawn.x + Math.cos(angle) * radius,
-          y: spawn.y + Math.sin(angle) * radius,
-        });
-        if (!position) throw new Error(`No walkable spawn position for ${spawn.id}`);
-        const instance = this.createActor({
-          ...template,
-          id,
-          x: position.x,
-          y: position.y,
-        }, "enemy");
-        this.world.addEnemy(instance, template.phaseThresholds);
-        state.spawnedIds.push(id);
-      }
-      state.status = "spawned";
-    }
-  }
-
-  private updateClearedSpawns(): void {
-    for (const state of this.spawnStates.values()) {
-      if (state.status === "spawned" && state.spawnedIds.every((id) => !this.world.enemies.find((enemy) => enemy.id === id)?.alive)) {
-        state.status = "cleared";
-      }
-    }
-    const encounters = new Set((this.config.spawns ?? []).map((spawn) => spawn.encounterId).filter((id): id is string => Boolean(id)));
-    for (const id of encounters) {
-      if ((this.config.spawns ?? []).filter((spawn) => spawn.encounterId === id)
-        .every((spawn) => this.spawnStates.get(spawn.id)!.status === "cleared")) this.map.completeEncounter(id);
-    }
+  private finish(outcome: RunResult["outcome"]): void {
+    if (this.result) return;
+    this.result = { outcome, elapsedSeconds: this.world.elapsedSeconds, defeatedEnemies: this.defeatedEnemies };
+    this.state = outcome;
+    this.world.path.clear();
+    this.autoDestination = null;
+    this.moveIntent = Vector2.ZERO;
+    this.navigationMode = "idle";
   }
 }
 

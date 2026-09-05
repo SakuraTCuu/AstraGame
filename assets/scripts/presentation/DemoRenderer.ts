@@ -10,6 +10,7 @@ interface FloatText {
     world: WorldPoint;
     age: number;
     duration: number;
+    height: number;
 }
 
 const VIEW_WIDTH = 720;
@@ -22,8 +23,15 @@ export class DemoRenderer {
     private readonly worldGraphics: cc.Graphics;
     private readonly overlayGraphics: cc.Graphics;
     private readonly minimapGraphics: cc.Graphics;
+    private readonly resultGraphics: cc.Graphics;
+    private readonly controlGraphics: cc.Graphics;
+    private readonly resultLabel: cc.Label;
+    private readonly tooltipLabel: cc.Label;
+    private readonly bossLabel: cc.Label;
+    private readonly ownedNodes: cc.Node[] = [];
     private readonly actorLabels = new Map<string, cc.Label>();
     private readonly floatTexts: FloatText[] = [];
+    private readonly floatPool: cc.Label[] = [];
     private readonly statusLabel: cc.Label;
     private readonly objectiveLabel: cc.Label;
     private readonly loadingLabel: cc.Label;
@@ -33,6 +41,9 @@ export class DemoRenderer {
     private snapshot: DemoSnapshot = null;
     private joystick = cc.v2(0, 0);
     private joystickActive = false;
+    private joystickCenter = cc.v2(0, -470);
+    private hoveredControl: "pause" | "restart" | null = null;
+    private feedbackLane = 0;
     private destination: WorldPoint = null;
     private navigationFeedback = 0;
 
@@ -41,10 +52,21 @@ export class DemoRenderer {
         this.worldGraphics = this.createGraphics("WorldGraphics", 0);
         this.overlayGraphics = this.createGraphics("OverlayGraphics", 10);
         this.minimapGraphics = this.createGraphics("MinimapGraphics", 20);
+        this.resultGraphics = this.createGraphics("ResultGraphics", 35);
+        this.controlGraphics = this.createGraphics("ControlGraphics", 40);
         this.statusLabel = this.createLabel("Status", 24, cc.color(226, 238, 232), cc.v2(0, 565), cc.Label.HorizontalAlign.LEFT);
         this.objectiveLabel = this.createLabel("Objective", 21, cc.color(246, 215, 133), cc.v2(0, 505), cc.Label.HorizontalAlign.CENTER);
         this.loadingLabel = this.createLabel("Loading", 28, cc.color(235, 228, 207), cc.v2(0, 0), cc.Label.HorizontalAlign.CENTER);
         this.loadingLabel.string = "ENTERING MIST VALLEY...";
+        this.resultLabel = this.createLabel("Result", 34, cc.color(239, 222, 167), cc.v2(0, 80), cc.Label.HorizontalAlign.CENTER);
+        this.resultLabel.node.zIndex = 45;
+        this.resultLabel.node.active = false;
+        this.tooltipLabel = this.createLabel("ControlTooltip", 18, cc.color(226, 231, 221), cc.v2(0, -605), cc.Label.HorizontalAlign.CENTER);
+        this.tooltipLabel.node.zIndex = 45;
+        this.tooltipLabel.node.active = false;
+        this.bossLabel = this.createLabel("BossHealth", 19, cc.color(248, 181, 153), cc.v2(-100, 463), cc.Label.HorizontalAlign.LEFT);
+        this.bossLabel.node.setContentSize(460, 32);
+        this.bossLabel.node.active = false;
     }
 
     setLoading(message: string): void {
@@ -58,12 +80,27 @@ export class DemoRenderer {
         this.camera.set(cc.v2(start.x, start.y));
         this.cameraTarget.set(cc.v2(start.x, start.y));
         this.loadingLabel.node.active = false;
+        this.floatTexts.splice(0).forEach((entry) => this.recycleFloat(entry.node));
+        this.actorLabels.forEach((label) => { label.node.active = false; });
+        this.destination = null;
+        this.setJoystick(cc.Vec2.ZERO, false);
     }
 
-    setJoystick(value: cc.Vec2, active: boolean): void {
+    setJoystick(value: cc.Vec2, active: boolean, center: cc.Vec2 = cc.v2(0, -470)): void {
         this.joystick = value;
         this.joystickActive = active;
+        this.joystickCenter = center;
     }
+
+    setHoveredControl(control: "pause" | "restart" | null): void { this.hoveredControl = control; }
+
+    hitControl(point: cc.Vec2): "pause" | "restart" | null {
+        if (point.sub(cc.v2(305, -555)).mag() <= 36) return "pause";
+        if (point.sub(cc.v2(-305, -555)).mag() <= 36) return "restart";
+        return null;
+    }
+
+    isMinimapPoint(screen: cc.Vec2): boolean { return screen.x >= 170 && screen.x <= 338 && screen.y >= 370 && screen.y <= 515; }
 
     setDestination(destination: WorldPoint): void {
         this.destination = destination;
@@ -77,7 +114,7 @@ export class DemoRenderer {
     }
 
     navigationTarget(screen: cc.Vec2): WorldPoint {
-        if (this.snapshot && screen.x >= 170 && screen.x <= 338 && screen.y >= 370 && screen.y <= 515) {
+        if (this.snapshot && this.isMinimapPoint(screen)) {
             const bounds = this.snapshot.worldBounds;
             return {
                 x: bounds.minX + (screen.x - 170) / 168 * (bounds.maxX - bounds.minX),
@@ -94,7 +131,7 @@ export class DemoRenderer {
         this.snapshot = snapshot;
         this.navigationFeedback = Math.max(0, this.navigationFeedback - deltaSeconds);
         this.destination = snapshot.autoNavigation.destination;
-        const leader = snapshot.actors.find((actor) => actor.team === "player");
+        const leader = snapshot.actors.find((actor) => actor.id === snapshot.leaderId);
         if (leader) {
             this.cameraTarget.set(cc.v2(leader.x, leader.y + 150));
             const follow = 1 - Math.pow(0.001, Math.min(deltaSeconds, 0.1));
@@ -106,26 +143,34 @@ export class DemoRenderer {
         this.drawOverlay(snapshot);
         this.updateActorLabels(snapshot);
         this.updateHud(snapshot);
+        this.drawResultAndControls(snapshot);
     }
 
     pushCombatFeedback(snapshot: DemoSnapshot): void {
         const actors = new Map<string, ActorSnapshot>();
         snapshot.actors.forEach((actor) => actors.set(actor.id, actor));
         snapshot.events.forEach((event) => {
-            if (event.type !== "damage" && event.type !== "heal") return;
+            if (!["damage", "heal", "absorb"].includes(event.type) || !(event.value > 0)) return;
             const actor = actors.get(event.targetId);
             if (!actor) return;
-            const label = this.createLabel("FloatText", event.type === "heal" ? 27 : 30,
-                event.type === "heal" ? cc.color(100, 241, 148) : cc.color(255, 104, 89), cc.Vec2.ZERO, cc.Label.HorizontalAlign.CENTER);
+            const color = event.type === "heal" ? cc.color(100, 241, 148) : event.type === "absorb" ? cc.color(111, 210, 244) : cc.color(255, 104, 89);
+            const label = this.floatPool.pop() || this.createLabel("FloatText", 23, color, cc.Vec2.ZERO, cc.Label.HorizontalAlign.CENTER);
+            label.node.active = true;
+            label.node.color = color;
+            label.node.opacity = 255;
+            label.node.setContentSize(140, 32);
             label.string = `${event.type === "heal" ? "+" : "-"}${Math.round(event.value || 0)}`;
             label.node.zIndex = 30;
-            this.floatTexts.push({ node: label.node, world: { x: actor.x, y: actor.y }, age: 0, duration: 0.72 });
+            const lane = (this.feedbackLane++ % 3) - 1;
+            this.floatTexts.push({ node: label.node, world: { x: actor.x + lane * 24, y: actor.y + Math.abs(lane) * 16 },
+                age: 0, duration: 0.72, height: actor.kind === "boss" ? 110 : 80 });
         });
     }
 
     destroy(): void {
         this.floatTexts.splice(0).forEach((entry) => entry.node.destroy());
-        this.actorLabels.forEach((label) => label.node.destroy());
+        this.floatPool.splice(0).forEach((label) => label.node.destroy());
+        this.ownedNodes.splice(0).forEach((node) => node.destroy());
         this.actorLabels.clear();
     }
 
@@ -134,6 +179,7 @@ export class DemoRenderer {
         node.setContentSize(VIEW_WIDTH, VIEW_HEIGHT);
         node.zIndex = zIndex;
         this.host.addChild(node);
+        this.ownedNodes.push(node);
         return node.addComponent(cc.Graphics);
     }
 
@@ -144,6 +190,7 @@ export class DemoRenderer {
         node.color = color;
         node.zIndex = 25;
         this.host.addChild(node);
+        if (name !== "FloatText") this.ownedNodes.push(node);
         const label = node.addComponent(cc.Label);
         label.fontSize = size;
         label.lineHeight = size + 5;
@@ -170,7 +217,9 @@ export class DemoRenderer {
         this.drawGround(g);
         this.drawObstacles(g);
         this.drawPathMarker(g);
+        this.drawCastAreas(g, snapshot);
         this.drawActors(g, snapshot);
+        this.drawProjectiles(g, snapshot);
         this.drawFog(g, snapshot);
     }
 
@@ -262,7 +311,15 @@ export class DemoRenderer {
                 g.circle(p.x, p.y + 12, 27);
                 g.stroke();
             }
-            const barWidth = boss ? 110 : 68;
+            if (actor.shield > 0 && alive) {
+                g.fillColor = cc.color(91, 191, 234, 30);
+                g.ellipse(p.x, p.y + 14, boss ? 49 : 33, boss ? 65 : 43);
+                g.fill();
+                g.strokeColor = cc.color(111, 210, 244, 190);
+                g.lineWidth = 2;
+                g.stroke();
+            }
+            const barWidth = boss ? 110 : 40;
             const hpRatio = Math.max(0, actor.hp / actor.maxHp);
             g.fillColor = cc.color(29, 28, 30, 220);
             g.rect(p.x - barWidth / 2, p.y + (boss ? 70 : 48), barWidth, 8);
@@ -334,7 +391,17 @@ export class DemoRenderer {
         g.fillColor = cc.color(9, 17, 22, 190);
         g.rect(-360, 548, 720, 92);
         g.fill();
-        const center = cc.v2(0, -470);
+        const center = this.joystickCenter;
+        const boss = snapshot.actors.find((actor) => actor.kind === "boss" && actor.hp > 0);
+        this.bossLabel.node.active = Boolean(boss);
+        if (boss) {
+            const segmentHp = boss.maxHp / boss.healthBars;
+            const segments = Math.ceil(boss.hp / segmentHp);
+            const fraction = (boss.hp - (segments - 1) * segmentHp) / segmentHp;
+            this.bossLabel.string = `${boss.name}  x${segments}  ${Math.ceil(boss.hp / boss.maxHp * 100)}%`;
+            g.fillColor = cc.color(48, 35, 39, 230); g.rect(-330, 433, 460, 12); g.fill();
+            g.fillColor = cc.color(227, 91, 70); g.rect(-328, 435, 456 * fraction, 8); g.fill();
+        }
         g.fillColor = cc.color(12, 23, 29, 145);
         g.circle(center.x, center.y, 92);
         g.fill();
@@ -392,8 +459,12 @@ export class DemoRenderer {
     }
 
     private updateActorLabels(snapshot: DemoSnapshot): void {
+        if (!this.config.debug || !this.config.debug.displayActorStates) {
+            this.actorLabels.forEach((label) => { label.node.active = false; });
+            return;
+        }
         const active = new Set<string>();
-        const leaderId = snapshot.actors.find((actor) => actor.team === "player")?.id;
+        const leaderId = snapshot.leaderId;
         snapshot.actors.forEach((actor) => {
             const showState = actor.id === leaderId;
             if (!showState) {
@@ -418,9 +489,9 @@ export class DemoRenderer {
     }
 
     private updateHud(snapshot: DemoSnapshot): void {
-        const players = snapshot.actors.filter((actor) => actor.team === "player");
+        const players = snapshot.actors.filter((actor) => snapshot.partyIds.includes(actor.id));
         const enemies = snapshot.actors.filter((actor) => actor.team === "enemy" && actor.hp > 0);
-        const leader = players[0];
+        const leader = players.find((actor) => actor.id === snapshot.leaderId);
         const boss = enemies.find((actor) => actor.kind === "boss");
         const bossPhase = boss ? snapshot.bossPhases[boss.id] : null;
         const discovered = snapshot.discoveredFogCells.length;
@@ -430,6 +501,7 @@ export class DemoRenderer {
             ? `BOSS - ${bossPhase.toUpperCase()}`
             : leader && leader.state === "attacking"
                 ? "ENGAGING"
+                : snapshot.autoNavigation.mode === "combat_hold" ? "ENGAGING"
                 : snapshot.autoNavigation.mode === "resume_wait" ? "ROUTE PAUSED"
                 : snapshot.autoNavigation.mode === "auto_path" ? "AUTO PATH ACTIVE" : "FREE EXPLORE";
     }
@@ -439,14 +511,118 @@ export class DemoRenderer {
             const entry = this.floatTexts[index];
             entry.age += deltaSeconds;
             if (entry.age >= entry.duration) {
-                entry.node.destroy();
+                this.recycleFloat(entry.node);
                 this.floatTexts.splice(index, 1);
                 continue;
             }
             const p = this.project(entry.world);
-            entry.node.setPosition(p.x, p.y + 70 + entry.age * 80);
+            entry.node.setPosition(p.x, p.y + entry.height + entry.age * 65);
             entry.node.opacity = Math.round(255 * (1 - entry.age / entry.duration));
         }
+    }
+
+    private recycleFloat(node: cc.Node): void {
+        node.active = false;
+        if (this.floatPool.length < 80) this.floatPool.push(node.getComponent(cc.Label));
+        else node.destroy();
+    }
+
+    private drawCastAreas(g: cc.Graphics, snapshot: DemoSnapshot): void {
+        snapshot.casts.forEach((cast) => {
+            if (cast.phase !== "windup" || !cast.area) return;
+            const source = snapshot.actors.find((actor) => actor.id === cast.sourceId);
+            if (!source) return;
+            const enemy = source.team === "enemy";
+            const progress = 1 - cast.remaining / Math.max(0.001, cast.duration);
+            g.fillColor = enemy ? cc.color(222, 66, 62, 35 + Math.round(progress * 60)) : cc.color(100, 207, 178, 45);
+            g.strokeColor = enemy ? cc.color(255, 120, 91, 220) : cc.color(153, 238, 195, 170);
+            g.lineWidth = 3;
+            const area = cast.area;
+            if (area.shape === "circle") {
+                const point = this.project(cast.point);
+                g.ellipse(point.x, point.y, area.radius * WORLD_SCALE, area.radius * WORLD_SCALE * DEPTH_SCALE);
+            } else {
+                const angle = Math.atan2(cast.point.y - cast.origin.y, cast.point.x - cast.origin.x);
+                const origin = this.project(cast.origin);
+                if (area.shape === "cone") {
+                    const half = (area.angleDegrees || 90) * Math.PI / 360;
+                    g.moveTo(origin.x, origin.y);
+                    for (let index = 0; index <= 20; index += 1) {
+                        const current = angle - half + 2 * half * index / 20;
+                        const point = this.project({ x: cast.origin.x + Math.cos(current) * area.radius, y: cast.origin.y + Math.sin(current) * area.radius });
+                        g.lineTo(point.x, point.y);
+                    }
+                } else {
+                    const halfWidth = (area.width || 1) / 2;
+                    const offsets = [[0, -halfWidth], [area.radius, -halfWidth], [area.radius, halfWidth], [0, halfWidth]];
+                    offsets.forEach(([along, side], index) => {
+                        const point = this.project({ x: cast.origin.x + Math.cos(angle) * along - Math.sin(angle) * side,
+                            y: cast.origin.y + Math.sin(angle) * along + Math.cos(angle) * side });
+                        if (index === 0) g.moveTo(point.x, point.y); else g.lineTo(point.x, point.y);
+                    });
+                }
+                g.close();
+            }
+            g.fill();
+            g.stroke();
+        });
+    }
+
+    private drawProjectiles(g: cc.Graphics, snapshot: DemoSnapshot): void {
+        snapshot.projectiles.forEach((projectile) => {
+            const point = this.project(projectile);
+            if (!this.isVisible(point, 30)) return;
+            const source = snapshot.actors.find((actor) => actor.id === projectile.sourceId);
+            g.fillColor = source && source.team === "player" ? cc.color(233, 215, 119) : cc.color(245, 126, 89);
+            g.circle(point.x, point.y + 14, 6);
+            g.fill();
+        });
+    }
+
+    private drawResultAndControls(snapshot: DemoSnapshot): void {
+        const result = this.resultGraphics;
+        result.clear();
+        this.resultLabel.node.active = snapshot.runState !== "running";
+        if (this.resultLabel.node.active) {
+            result.fillColor = cc.color(5, 12, 15, 190);
+            result.rect(-360, -640, 720, 1280);
+            result.fill();
+            this.resultLabel.string = snapshot.runState === "paused" ? "PAUSED" : snapshot.runState === "won" ? "AREA CLEARED" : "SQUAD DEFEATED";
+        }
+        const g = this.controlGraphics;
+        g.clear();
+        for (const control of ["restart", "pause"]) {
+            const x = control === "pause" ? 305 : -305;
+            g.fillColor = cc.color(18, 35, 39, 230);
+            g.circle(x, -555, 31);
+            g.fill();
+            g.strokeColor = this.hoveredControl === control ? cc.color(240, 200, 118) : cc.color(133, 171, 160);
+            g.lineWidth = 2;
+            g.stroke();
+            g.fillColor = cc.color(224, 229, 205);
+            g.strokeColor = cc.color(224, 229, 205);
+            if (control === "pause") {
+                if (snapshot.runState === "paused") {
+                    g.moveTo(x - 8, -569); g.lineTo(x - 8, -541); g.lineTo(x + 14, -555); g.close();
+                } else { g.rect(x - 11, -568, 7, 26); g.rect(x + 4, -568, 7, 26); }
+                g.fill();
+            } else {
+                g.lineWidth = 3;
+                const end = Math.PI * 1.9;
+                g.arc(x, -555, 14, Math.PI * 0.3, end, true);
+                g.stroke();
+                const px = x + Math.cos(end) * 14;
+                const py = -555 + Math.sin(end) * 14;
+                const tx = -Math.sin(end);
+                const ty = Math.cos(end);
+                g.moveTo(px + tx * 5, py + ty * 5);
+                g.lineTo(px - tx * 4 + ty * 5, py - ty * 4 - tx * 5);
+                g.lineTo(px - tx * 4 - ty * 5, py - ty * 4 + tx * 5);
+                g.close(); g.fill();
+            }
+        }
+        this.tooltipLabel.node.active = Boolean(this.hoveredControl);
+        this.tooltipLabel.string = this.hoveredControl === "restart" ? "Restart" : snapshot.runState === "paused" ? "Resume" : "Pause";
     }
 
     private isVisible(point: cc.Vec2, margin: number): boolean {

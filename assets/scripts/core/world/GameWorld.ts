@@ -1,7 +1,8 @@
 import type { Actor } from "../actor/Actor";
 import { BossAI } from "../ai/BossAI";
 import { EnemyAI } from "../ai/EnemyAI";
-import { CombatSystem, selectNearestTarget } from "../combat/Combat";
+import { PlayerAI } from "../ai/PlayerAI";
+import { CombatSystem } from "../combat/Combat";
 import type { SkillDefinition } from "../combat/Combat";
 import type { FogGrid } from "../fog/FogGrid";
 import { Vector2 } from "../math/Vector2";
@@ -22,6 +23,7 @@ export interface WorldOptions {
   readonly skillDefinitions?: Readonly<Record<string, SkillDefinition>>;
   readonly revealRadius?: number;
   readonly formationOffsets?: readonly Vec2Like[];
+  readonly followLeashDistance?: number;
 }
 
 export class GameWorld {
@@ -29,11 +31,16 @@ export class GameWorld {
   readonly combat = new CombatSystem();
   readonly players: Actor[];
   readonly enemies: Actor[];
+  readonly alliedSummons: Actor[] = [];
   readonly path = new AutoPath();
   readonly formation: SquadFormation;
   readonly bosses = new Map<string, BossAI>();
   elapsedSeconds = 0;
   leaderTravelActive = false;
+  autoTravelPaused = false;
+  manualControlActive = false;
+  private readonly playerAI = new PlayerAI();
+  private previousLeaderId?: string;
   private readonly enemyAIs = new Map<string, EnemyAI>();
   private facing = new Vector2(0, 1);
   private readonly revealRadius: number;
@@ -47,6 +54,7 @@ export class GameWorld {
     this.enemies = [...options.enemies].sort((a, b) => a.id.localeCompare(b.id));
     this.formation = new SquadFormation(this.players, options.formationOffsets);
     this.revealRadius = options.revealRadius ?? 3;
+    this.previousLeaderId = this.leader?.id;
     for (const enemy of this.enemies) this.registerEnemyAI(enemy);
   }
 
@@ -57,8 +65,22 @@ export class GameWorld {
     this.registerEnemyAI(enemy, phaseThresholds);
   }
 
+  removeEnemy(id: string): void {
+    const index = this.enemies.findIndex((actor) => actor.id === id);
+    if (index >= 0) this.enemies.splice(index, 1);
+    const summonIndex = this.alliedSummons.findIndex((actor) => actor.id === id);
+    if (summonIndex >= 0) this.alliedSummons.splice(summonIndex, 1);
+    this.enemyAIs.delete(id);
+    this.bosses.delete(id);
+    this.actorPaths.delete(id);
+    this.combat.cancelCaster(id);
+  }
+
+  get leader(): Actor | undefined { return this.players.find((player) => player.alive); }
+  get allActors(): readonly Actor[] { return [...this.players, ...this.alliedSummons, ...this.enemies]; }
+
   navigateTo(destination: Vec2Like): boolean {
-    const leader = this.players[0];
+    const leader = this.leader;
     if (!leader?.alive) return false;
     const path = this.options.navigation.findWorldPath(leader.position, destination);
     if (path.length === 0) return false;
@@ -75,16 +97,20 @@ export class GameWorld {
   update(deltaSeconds: number): void {
     if (deltaSeconds <= 0) return;
     this.elapsedSeconds += deltaSeconds;
-    this.combat.update(deltaSeconds, [...this.players, ...this.enemies]);
-    const leader = this.players[0];
+    this.combat.update(deltaSeconds, this.allActors);
+    const leader = this.leader;
+    if (leader?.id !== this.previousLeaderId) {
+      this.path.clear();
+      this.previousLeaderId = leader?.id;
+    }
     if (leader?.alive) {
       const previous = leader.position;
-      leader.position = this.path.update(leader.position, leader.stats.moveSpeed, deltaSeconds);
+      if (!this.autoTravelPaused) leader.position = this.path.update(leader.position, leader.stats.moveSpeed, deltaSeconds);
       const movement = leader.position.subtract(previous);
       if (movement.lengthSquared() > 0) this.facing = movement.normalized();
       this.options.fog.reveal(leader.position, this.revealRadius);
       this.updatePlayers(deltaSeconds);
-      this.formation.update(leader.position, this.facing, deltaSeconds, this.moveActor);
+      this.formation.update(leader.position, this.facing, deltaSeconds, this.moveActor, leader);
     }
     for (const enemy of this.enemies) {
       const bossAI = this.bosses.get(enemy.id);
@@ -94,44 +120,15 @@ export class GameWorld {
   }
 
   private updatePlayers(deltaSeconds: number): void {
-    for (const player of this.players) {
-      if (!player.alive) continue;
-      const skills = this.skillsFor(player, this.options.playerSkill);
-      let usedSkill = false;
-      for (const skill of skills) {
-        if (skill.target !== "ally" || !this.combat.canUse(player, skill)) continue;
-        const ally = this.players
-          .filter((candidate) => candidate.alive && candidate.health < candidate.stats.maxHealth && player.position.distance(candidate.position) <= skill.range)
-          .sort((left, right) => left.health / left.stats.maxHealth - right.health / right.stats.maxHealth || left.id.localeCompare(right.id))[0];
-        if (ally && this.combat.use(player, ally, skill)) {
-          player.fsm.force("attacking");
-          usedSkill = true;
-          break;
-        }
-      }
-      if (usedSkill) continue;
-      const target = selectNearestTarget(player, this.enemies, player.stats.aggroRange);
-      if (!target) {
-        player.targetId = undefined;
-        if (player.fsm.state === "chasing" || player.fsm.state === "attacking") player.fsm.force("idle");
-        continue;
-      }
-      player.targetId = target.id;
-      for (const skill of skills) {
-        if (skill.target !== "enemy" || !this.combat.canUse(player, skill)) continue;
-        if (player.position.distance(target.position) <= skill.range && this.combat.use(player, target, skill)) {
-          player.fsm.force("attacking");
-          usedSkill = true;
-          break;
-        }
-      }
-      if (!usedSkill) {
-        const damageSkills = skills.filter((skill) => skill.target === "enemy");
-        const maximumRange = damageSkills.reduce((maximum, skill) => Math.max(maximum, skill.range), player.stats.attackRange);
-        if (player.position.distance(target.position) > maximumRange && !(player === this.players[0] && this.leaderTravelActive)) {
-          player.fsm.force("chasing");
-          this.moveActor(player, target.position, deltaSeconds);
-        }
+    const leader = this.leader;
+    if (!leader) return;
+    const allies = [...this.players, ...this.alliedSummons];
+    for (const player of allies) {
+      this.playerAI.update(player, leader, allies, this.enemies, this.skillsFor(player, this.options.playerSkill),
+        this.combat, deltaSeconds, this.leaderTravelActive, this.manualControlActive, this.options.followLeashDistance ?? Infinity, this.moveActor);
+      if (player.summonerId && player.alive && player.fsm.state === "idle" && player.position.distance(leader.position) > player.stats.attackRange) {
+        player.setState("moving");
+        this.moveActor(player, leader.position, deltaSeconds);
       }
     }
   }
@@ -160,7 +157,7 @@ export class GameWorld {
   };
 
   private registerEnemyAI(enemy: Actor, phaseThresholds?: readonly number[]): void {
-    const skills = this.skillsFor(enemy, this.options.enemySkill).filter((skill) => skill.target === "enemy");
+    const skills = this.skillsFor(enemy, this.options.enemySkill);
     if (enemy.tags.has("boss")) this.bosses.set(enemy.id, new BossAI(skills, phaseThresholds));
     else this.enemyAIs.set(enemy.id, new EnemyAI(skills));
   }
@@ -170,7 +167,8 @@ export class GameWorld {
     const skills: SkillDefinition[] = [];
     for (const id of actor.skillIds) {
       const skill = definitions?.[id];
-      if (skill) skills.push(skill);
+      if (!skill) throw new Error(`Actor ${actor.id} references missing skill ${id}`);
+      skills.push(skill);
     }
     return skills.length > 0 ? skills : [fallback];
   }

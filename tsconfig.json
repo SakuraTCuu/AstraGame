@@ -24,7 +24,7 @@
     "temp",
     "build",
     "settings",
-    "tests"
+    "tests",
+    "integrations"
   ]
 }
-

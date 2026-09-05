@@ -14,10 +14,13 @@ The configuration is loaded from `assets/resources/config/auto_explore/world_dem
 | Release the joystick | After a short delay, rejoin the route and resume auto path |
 | Tap the world or minimap | Select a reachable auto-path destination; blocked requests preserve the previous route |
 | Reload the preview | Recreate the same deterministic demo from initial state |
+| Pause/resume icon | Freeze or resume simulation |
+| Restart icon | Begin a fresh run with the same configured content |
+| Drag on free world ground | Use a floating joystick from the drag origin |
 
 The current phase intentionally has no manual attack button. Heroes and enemies acquire targets and release skills through their state machines.
 
-Pause and in-game reset controls remain planned. Region rules and implemented validation are recorded in [world-rules.md](world-rules.md).
+Region rules and implemented validation are recorded in [world-rules.md](world-rules.md). Actor debug labels are opt-in through `debug.displayActorStates`.
 
 ## What to Observe
 

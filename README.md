@@ -14,13 +14,17 @@ Minimal Cocos Creator 2.4.15 frontend prototype for a portrait 2.5D squad explor
 - four-character squad formation
 - autonomous target acquisition
 - attacks, skills, healing, damage numbers, enemies, and a boss
+- timed area skills, shields, projectiles, summons, enemy return and respawn
+- pause, restart, party defeat and encounter victory
 - explicit actor, navigation, combat, and boss state machines
 - deterministic core tests independent of Cocos
 
 All visuals and tuning values are original placeholders. No third-party game assets or extracted code are included.
 
 See [world rules](docs/world-rules.md) for region conditions, geometry conventions and the current verification boundary.
-The latest scoped results are in [world rules validation](docs/validation-world-rules.md).
+The latest scoped results are in [combat validation](docs/validation-combat.md).
+The full target and remaining evidence are tracked in [replica requirements](docs/replica-requirements.md).
+For the reusable host module, see [Zhushen H5 integration](docs/zhushen-integration.md).
 
 ## Open in Creator
 

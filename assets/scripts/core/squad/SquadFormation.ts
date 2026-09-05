@@ -31,16 +31,17 @@ export class SquadFormation {
   }
 
   update(anchor: Vec2Like, facing: Vec2Like, deltaSeconds: number,
-    move?: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void): void {
-    for (let index = 0; index < this.members.length; index += 1) {
-      const actor = this.members[index]!;
+    move?: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void, leader?: Actor): void {
+    const members = leader ? [leader, ...this.members.filter((actor) => actor !== leader && actor.alive)] : this.members;
+    for (let index = 0; index < members.length; index += 1) {
+      const actor = members[index]!;
       if (move && index === 0) continue;
-      if (!actor.alive || actor.fsm.state === "attacking" || actor.fsm.state === "chasing") continue;
+      if (!actor.alive || !["idle", "moving"].includes(actor.fsm.state)) continue;
       const target = this.slotPosition(index, anchor, facing);
       const blend = Math.min(1, this.followStrength * deltaSeconds);
       if (move) move(actor, target, deltaSeconds);
       else actor.position = actor.position.add(target.subtract(actor.position).scale(blend));
-      actor.fsm.force(actor.position.distanceSquared(target) < 0.0025 ? "idle" : "moving");
+      actor.setState(actor.position.distanceSquared(target) < 0.0025 ? "idle" : "moving");
     }
   }
 }
