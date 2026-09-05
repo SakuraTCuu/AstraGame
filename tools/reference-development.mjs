@@ -2,6 +2,14 @@ import { compileReferenceCondition, parseReferenceItem } from "./reference-rules
 
 const attributes = (source = {}) => ({ attack: source.atk || 0, defense: source.def || 0, maxHealth: source.maxhp || 0 });
 
+export function referenceEnergy(source = {}) {
+  const maxEnergy = source.ultraEnegyMax || 0;
+  // The live character panels show a 2% baseline; explicit table values take precedence.
+  return { maxEnergy, energyPerSecond: source.ultraEnegyRecoverRate || 0,
+    energyOnNormal: maxEnergy * (source.ultraEnegyNormalHit ?? 200) / 10000,
+    energyOnSkill: maxEnergy * (source.ultraEnegySkillHit || 0) / 10000, energyOnDamage: source.ultraEnegyBeHit || 0 };
+}
+
 export function buildReferenceDevelopment(lookup, ids, config, rewards, issues) {
   const heroRows = ids("HeroLevel").map((id) => lookup("HeroLevel", id));
   const levelTables = {};
@@ -17,8 +25,7 @@ export function buildReferenceDevelopment(lookup, ids, config, rewards, issues) 
           const item = parseReferenceItem(entry); cost[rewards.resource(item.itemId)] = (cost[rewards.resource(item.itemId)] || 0) + item.amount;
         }
       } catch (error) { issues.push({ owner: row.id, kind: "hero_cost", source: row.cost }); condition = { kind: "flag", id: `external:hero_cost:${row.id}`, label: "\u7a81\u7834\u6761\u4ef6\u672a\u6ee1\u8db3" }; }
-      const energy = { maxEnergy: row.attr.ultraEnegyMax || 0, energyPerSecond: row.attr.ultraEnegyRecoverRate || 0,
-        energyOnSkill: row.attr.ultraEnegySkillHit || 0, energyOnDamage: row.attr.ultraEnegyBeHit || 0 };
+      const energy = referenceEnergy(row.attr);
       const key = JSON.stringify(energy), changed = key !== previousEnergy; previousEnergy = key;
       return { level: row.level, attributes: attributes(row.attr), energy: changed ? energy : undefined, cost, condition };
       });

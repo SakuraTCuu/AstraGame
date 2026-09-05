@@ -4,7 +4,7 @@ import { tableRow } from "./reference-cache.mjs";
 import { compileReferenceCondition, parseReferenceItem, referenceFogPolygon } from "./reference-rules.mjs";
 import { createReferenceSkillCompiler } from "./reference-skills.mjs";
 import { createReferenceRewardCompiler, buildReferenceJournal } from "./reference-progression.mjs";
-import { buildReferenceDevelopment } from "./reference-development.mjs";
+import { buildReferenceDevelopment, referenceEnergy } from "./reference-development.mjs";
 import { buildReferenceRoster } from "./reference-roster.mjs";
 import { buildReferenceRecruitment } from "./reference-recruitment.mjs";
 
@@ -99,10 +99,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     actor.attack = attributes.atk;
     actor.defense = attributes.def;
     actor.modifiers = compiled.modifiers;
-    actor.maxEnergy = attributes.ultraEnegyMax || 0;
-    actor.energyPerSecond = attributes.ultraEnegyRecoverRate || 0;
-    actor.energyOnSkill = attributes.ultraEnegySkillHit || 0;
-    actor.energyOnDamage = attributes.ultraEnegyBeHit || 0;
+    Object.assign(actor, referenceEnergy(attributes));
     actor.energy = 0;
     actor.skillIds = compiled.ids;
     actor.attackRange = row("Skill", Number(hero.attack.split("_")[0])).firstSelector[0];

@@ -21,6 +21,7 @@ export interface StatModifiers {
   readonly soulReduction?: number;
   readonly maxHealthRate?: number;
   readonly pveDamageReduction?: number;
+  readonly energyGainRate?: number;
 }
 
 export interface StatusDefinition {

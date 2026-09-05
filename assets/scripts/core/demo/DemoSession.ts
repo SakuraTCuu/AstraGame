@@ -52,6 +52,7 @@ export interface DemoActorConfig {
   readonly energy?: number;
   readonly energyPerSecond?: number;
   readonly energyOnSkill?: number;
+  readonly energyOnNormal?: number;
   readonly energyOnDamage?: number;
   readonly criticalMultiplier?: number;
   readonly defeatFlag?: string;
@@ -767,6 +768,7 @@ export class DemoSession {
       maxEnergy: config.maxEnergy,
       energyPerSecond: config.energyPerSecond,
       energyOnSkill: config.energyOnSkill,
+      energyOnNormal: config.energyOnNormal,
       energyOnDamage: config.energyOnDamage,
       criticalMultiplier: config.criticalMultiplier,
     };

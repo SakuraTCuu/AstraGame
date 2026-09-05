@@ -5,7 +5,7 @@ import { validateCondition } from "./ProgressConditions";
 import type { WorldMap } from "./WorldMap";
 
 export interface GrowthAttributes { readonly attack: number; readonly defense: number; readonly maxHealth: number; }
-export interface HeroEnergyAttributes { readonly maxEnergy: number; readonly energyPerSecond: number; readonly energyOnSkill: number; readonly energyOnDamage: number; }
+export interface HeroEnergyAttributes { readonly maxEnergy: number; readonly energyPerSecond: number; readonly energyOnSkill: number; readonly energyOnNormal?: number; readonly energyOnDamage: number; }
 export interface HeroLevelDefinition { readonly level: number; readonly attributes: GrowthAttributes; readonly energy?: HeroEnergyAttributes; readonly cost?: Readonly<Record<string, number>>; readonly condition?: ProgressCondition; }
 export interface EquipmentDefinition {
   readonly id: string; readonly resource: string; readonly name: string; readonly type: number; readonly quality: number;
@@ -55,6 +55,7 @@ export class PartyDevelopment {
         for (const level of source) {
           if (!Number.isSafeInteger(level.level) || level.level < 1 || parsed.has(level.level) || !this.validAttributes(level.attributes, true)) throw new Error("Invalid hero level");
           if (level.energy && ["maxEnergy", "energyPerSecond", "energyOnSkill", "energyOnDamage"].some((key) => !Number.isFinite(level.energy![key]) || level.energy![key] < 0)) throw new Error("Invalid hero energy growth");
+          if (level.energy?.energyOnNormal !== undefined && (!Number.isFinite(level.energy.energyOnNormal) || level.energy.energyOnNormal < 0)) throw new Error("Invalid normal-attack energy growth");
           parsed.set(level.level, level);
           for (const [resource, amount] of Object.entries(level.cost ?? {})) map.validateReward({ resource, amount });
           if (level.condition) validateCondition(level.condition);

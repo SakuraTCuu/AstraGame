@@ -77,6 +77,7 @@ interface Cast {
   actionIndex: number;
   readonly primaryIds: readonly string[];
   readonly speed: number;
+  readonly energyAward: { readonly amount: number; awarded: boolean };
 }
 
 interface Projectile { readonly cast: Cast; readonly expiresAt: number; position: Vector2; lastUpdate: number; impactAt?: number; impactCast?: Cast; actionIndex: number; }
@@ -203,12 +204,13 @@ export class CombatSystem {
       origin: actor.position, point: target.position, startedAt: this.time,
       hitAt: this.time + windup, readyAt: this.time + (skill.actions || skill.castDuration ? end / speed : windup + (skill.recovery ?? 0)), resolved: false,
       actionIndex: 0, primaryIds: primary.map((actor) => actor.id), speed,
+      energyAward: { amount: skill.blockEnergyGain || skill.energyCost || skill.category === "ultimate" ? 0 :
+        skill.category === "normal" ? actor.stats.energyOnNormal ?? actor.stats.energyOnSkill ?? 0 : actor.stats.energyOnSkill ?? 0, awarded: false },
     };
     this.cooldowns.set(this.cooldownKey(actor, skill), skill.cooldown);
     if (skill.publicCooldown) this.publicCooldowns.set(this.publicKey(actor, skill), skill.publicCooldown);
     for (const linked of skill.linkedCooldowns ?? []) this.cooldowns.set(`${actor.id}:${linked.id}`, linked.duration);
     actor.gainEnergy(-(skill.energyCost ?? 0));
-    if (!skill.blockEnergyGain && !skill.energyCost) actor.gainEnergy(actor.stats.energyOnSkill ?? 0);
     this.casts.set(actor.id, cast);
     this.events.push({ type: "skill", sourceId: actor.id, targetId: target.id, skillId: skill.id });
     if (windup > 0) {
@@ -274,6 +276,7 @@ export class CombatSystem {
     const { source, skill } = cast;
     if (skill.type === "summon") {
       if (!source.alive || !skill.summonEnemyId) return;
+      this.awardEnergy(cast);
       this.summons.push({ sourceId: source.id, enemyId: skill.summonEnemyId, count: skill.maxTargets ?? 1, limit: skill.summonLimit ?? skill.maxTargets ?? 1,
         radius: skill.summonRadius ?? 0, position: source.position });
       this.events.push({ type: "summon", sourceId: source.id, targetId: source.id, value: skill.maxTargets ?? 1, skillId: skill.id });
@@ -287,6 +290,7 @@ export class CombatSystem {
     if (targets.length === 0) this.events.push({ type: "miss", sourceId: source.id, targetId: cast.targetId, skillId: skill.id });
     for (const target of targets) {
       if (!target.alive) continue;
+      this.awardEnergy(cast);
       if (action?.type === "status") {
         if (action.status) { target.addStatus(action.status, source, skill.id); this.events.push({ type: "status", sourceId: source.id, targetId: target.id, skillId: skill.id }); }
       } else if (skill.type === "shield" && !action) {
@@ -309,6 +313,12 @@ export class CombatSystem {
           this.applyDamage(tick.source, target, skill.id, tick.power, tick.damageType, false, tick.statusId);
       }
     }
+  }
+
+  private awardEnergy(cast: Cast): void {
+    if (cast.energyAward.awarded) return;
+    cast.energyAward.awarded = true;
+    if (cast.source.alive && this.actors.includes(cast.source)) cast.source.gainEnergy(cast.energyAward.amount);
   }
 
   private applyDamage(source: Actor, target: Actor, skillId: string, power: number, type: DamageType, critical = false, statusId?: string): number {

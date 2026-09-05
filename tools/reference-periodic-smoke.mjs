@@ -22,6 +22,22 @@ for (const sourceId of [2, 26]) {
   const target = new Actor({ id: "periodic_probe", faction: "enemy", position: { x: source.position.x + 20, y: source.position.y },
     stats: { maxHealth: 100000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 0, aggroRange: 0 } });
   const combat = new CombatSystem(() => 0.99), actors = [source, target], events = [];
+  let energyProbe;
+  if (sourceId === 26) {
+    const caster = new Actor({ id: "energy_source", faction: "player", position: source.position, stats: source.baseStats });
+    const receiver = new Actor({ id: "energy_target", faction: "enemy", position: target.position, stats: target.baseStats });
+    const energyCombat = new CombatSystem(() => 0.99), participants = [caster, receiver];
+    assert.equal(energyCombat.use(caster, receiver, session.world.options.skillDefinitions.reference_skill_10260001, participants), true);
+    assert.equal(caster.energy, 0);
+    for (let index = 0; index < 60; index++) energyCombat.update(0.05, participants);
+    const afterNormal = caster.energy;
+    assert.equal(afterNormal - 3 * caster.stats.energyPerSecond, 200);
+    assert.equal(energyCombat.use(caster, receiver, session.world.options.skillDefinitions.reference_skill_10260201, participants), true);
+    for (let index = 0; index < 60; index++) energyCombat.update(0.05, participants);
+    const afterTactical = caster.energy;
+    assert.equal(afterTactical - afterNormal - 3 * caster.stats.energyPerSecond, 1000);
+    energyProbe = { afterNormal, afterTactical, normalAward: 200, tacticalAward: 1000, passivePerSecond: caster.stats.energyPerSecond };
+  }
   let elapsed = 0;
   const advance = (seconds) => {
     while (elapsed + 1e-9 < seconds) {
@@ -52,7 +68,7 @@ for (const sourceId of [2, 26]) {
     assert.equal(target.statusSnapshots()[0].stacks, 2);
     assert.ok(events.some((event) => event.type === "damage" && !event.periodic && event.damageType === "physical"));
   }
-  reports.push({ sourceId, name: source.displayName, attack: source.attackPower, healthLost: target.stats.maxHealth - target.health,
+  reports.push({ sourceId, name: source.displayName, attack: source.attackPower, healthLost: target.stats.maxHealth - target.health, energyProbe,
     statuses: target.statusSnapshots(), damage: events.filter((event) => event.type === "damage").map(({ at, value, skillId, damageType, periodic }) => ({ at, value, skillId, damageType, periodic: Boolean(periodic) })) });
 }
 console.log(JSON.stringify({ setup: "Source heroes upgraded to level 10 using fixture ownership/rank/materials, then tested against a stationary durable target with prefilled energy; no live-account changes", reports }, null, 2));

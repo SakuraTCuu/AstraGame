@@ -40,7 +40,7 @@ const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", 
   finalDmgReduction: "finalDamageReduction", ultraDmgBonus: "physicalBonus", magicDmgBonus: "magicBonus",
   ultraDmgReduction: "physicalReduction", magicDmgReduction: "magicReduction", skillCriticalRate: "criticalChance", healReduction: "healReduction",
   dotDmgBonus: "dotDamageBonus", dotDmgReduction: "dotDamageReduction", normalDmgBonus: "soulBonus", normalDmgReduction: "soulReduction",
-  craftDmgBonus: "magicBonus", craftDmgReduction: "magicReduction", maxhpRate: "maxHealthRate", pveFinalDmgRecution: "pveDamageReduction" };
+  craftDmgBonus: "magicBonus", craftDmgReduction: "magicReduction", maxhpRate: "maxHealthRate", pveFinalDmgRecution: "pveDamageReduction", ultraEnegyRate: "energyGainRate" };
 const list = (source) => source ? splitSkillExpression(source, "|").map(skillTuple) : [];
 const skillId = (id) => `reference_skill_${id}`;
 

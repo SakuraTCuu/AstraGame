@@ -1,4 +1,5 @@
 import { compileReferenceCondition } from "./reference-rules.mjs";
+import { referenceEnergy } from "./reference-development.mjs";
 
 export function buildReferenceRoster(lookup, ids, config, skills, art, binding, assets, rewards, issues) {
   const initial = new Map([13, 1, 9, 8].map((id, index) => [id, config.squad.actors[index]]));
@@ -18,8 +19,7 @@ export function buildReferenceRoster(lookup, ids, config, skills, art, binding, 
         hp: level.attr.maxhp, maxHp: level.attr.maxhp, attack: level.attr.atk || 0, defense: level.attr.def || 0,
         moveSpeed: config.squad.actors[0].moveSpeed, attackRange: lookup("Skill", Number(String(hero.attack || "").split("_")[0]))?.firstSelector?.[0] || 50,
         aggroRange: hero.searchRange || 250, collisionRadius: hero.volume || 20, skillIds: compiled?.ids || [], modifiers: compiled?.modifiers || {},
-        maxEnergy: level.attr.ultraEnegyMax || 0, energyPerSecond: level.attr.ultraEnegyRecoverRate || 0,
-        energyOnSkill: level.attr.ultraEnegySkillHit || 0, energyOnDamage: level.attr.ultraEnegyBeHit || 0 };
+        ...referenceEnergy(level.attr) };
       art.bindings[actor.id] = binding(hero.display);
       if (art.bindings[actor.id]) {
         const definitions = [...skills.definitions.values()].filter((skill) => actor.skillIds.includes(skill.id));

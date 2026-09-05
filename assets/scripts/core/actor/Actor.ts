@@ -35,6 +35,7 @@ export interface ActorStats {
   readonly maxEnergy?: number;
   readonly energyPerSecond?: number;
   readonly energyOnSkill?: number;
+  readonly energyOnNormal?: number;
   readonly energyOnDamage?: number;
   readonly criticalMultiplier?: number;
 }
@@ -145,7 +146,9 @@ export class Actor {
     }
     return ticks;
   }
-  gainEnergy(amount: number): void { if (this.alive) this.energy = Math.max(0, Math.min(this.stats.maxEnergy ?? 0, this.energy + amount)); }
+  gainEnergy(amount: number): void {
+    if (this.alive) this.energy = Math.max(0, Math.min(this.stats.maxEnergy ?? 0, this.energy + (amount > 0 ? amount * Math.max(0, 1 + this.modifier("energyGainRate")) : amount)));
+  }
 
   recoverAt(position: Vec2Like): void {
     if (![position.x, position.y].every(Number.isFinite)) throw new Error("Invalid recovery position");
