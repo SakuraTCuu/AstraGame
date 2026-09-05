@@ -834,8 +834,9 @@ export class DemoSession {
     let previous = -1;
     for (const trigger of config.onRelease ?? []) if (!trigger.skillId || !Number.isFinite(trigger.chance ?? 1) || (trigger.chance ?? 1) < 0 || (trigger.chance ?? 1) > 1) throw new Error(`Invalid skill trigger for ${config.id}`);
     for (const action of config.actions ?? []) {
-      if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
+      if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
       if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
+      if (action.type === "remove_state" && (typeof action.stateId !== "string" || !action.stateId)) throw new Error(`Invalid state removal for ${config.id}`);
       if (action.healFromDamage !== undefined && (action.type !== "damage" || !Number.isFinite(action.healFromDamage) || action.healFromDamage < 0)) throw new Error(`Invalid damage healing for ${config.id}`);
       if (action.healFromDamageRecipient !== undefined && !["self", "allies"].includes(action.healFromDamageRecipient)) throw new Error(`Invalid damage healing recipient for ${config.id}`);
       if (action.knockback && (action.type !== "damage" || ![action.knockback.distance, action.knockback.duration].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid knockback for ${config.id}`);
@@ -856,6 +857,8 @@ export class DemoSession {
         for (const state of status.states ?? []) {
           if (!state.id || !Number.isFinite(state.duration) || (state.duration <= 0 && state.duration !== -1) || (state.control && !controls.includes(state.control)) ||
               state.controlImmunity?.some((kind) => !controls.includes(kind))) throw new Error(`Invalid status state for ${config.id}`);
+          if ([state.invulnerable, state.preventDeath, state.untargetable, state.healingBlocked].some((value) => value !== undefined && typeof value !== "boolean") ||
+              (state.damageCap !== undefined && (!Number.isSafeInteger(state.damageCap) || state.damageCap < 0))) throw new Error(`Invalid defensive state for ${config.id}`);
           if (state.lift && (state.control !== "airborne" || ![state.lift.height, state.lift.rise, state.lift.fall].every((value) => Number.isFinite(value) && value > 0) ||
               state.duration < state.lift.rise + state.lift.fall - 1e-9)) throw new Error(`Invalid airborne motion for ${config.id}`);
           if (state.wander && (state.control !== "fear" || ![state.wander.speed, state.wander.turnInterval].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid fear motion for ${config.id}`);

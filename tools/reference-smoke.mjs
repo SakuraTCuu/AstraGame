@@ -671,6 +671,34 @@ try {
     boot.renderer.update(boot.session.getSnapshot(), 0.1); delete boot.projectileProbe; boot.enabled = true;
     return boot.renderer.referenceArt.projectileViews.size;
   }), 0);
+  const defense = await evaluate(() => {
+    const boot = window.__referenceBoot, target = boot.session.roster.actor("reference_hero_10"); boot.enabled = false;
+    const source = new target.constructor({ id: "defense_probe", faction: "enemy", position: target.position.add({ x: 10, y: 0 }),
+      stats: { maxHealth: 1000, attack: 1000, defense: 0, moveSpeed: 0, attackRange: 50, aggroRange: 50 } });
+    const combat = new boot.session.world.combat.constructor(), skill = { id: "defense_probe", target: "enemy", range: 50, cooldown: 0, power: 1 };
+    boot.defenseProbe = { source, target, combat, skill, hp: target.health, energy: target.energy };
+    target.addStatus({ id: "browser_invulnerability", duration: 2, states: [{ id: "browser_invulnerable", duration: 2, invulnerable: true }] });
+    combat.use(source, target, skill, [source, target]); const events = combat.drainEvents();
+    const snapshot = { ...boot.session.getSnapshot(), events }; boot.renderer.pushCombatFeedback(snapshot); boot.renderer.update(snapshot, 0.1);
+    const feedback = boot.renderer.floatTexts.find((entry) => entry.node.getComponent(cc.Label)?.string === "\u514d\u75ab");
+    if (!feedback || feedback.height < boot.renderer.referenceArt.feedbackHeight(target.id) + 32) throw new Error("Immunity feedback overlaps its actor");
+    return { protected: target.health === boot.defenseProbe.hp, immune: events.some((event) => event.immune), feedback: Boolean(feedback) };
+  });
+  assert.deepEqual(defense, { protected: true, immune: true, feedback: true });
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-immunity`);
+  }
+  defense.cappedDamage = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat, skill } = boot.defenseProbe;
+    target.removeState("browser_invulnerable");
+    const status = Object.values(boot.session.world.options.skillDefinitions).flatMap((skill) => skill.actions || []).find((action) => action.status?.id === "reference_buff_501301").status;
+    target.addStatus(status); combat.use(source, target, skill, [source, target]);
+    const damage = combat.drainEvents().find((event) => event.type === "damage").value;
+    combat.update(3.05, [source, target]); combat.resetEngagement(); target.health = boot.defenseProbe.hp; target.energy = boot.defenseProbe.energy;
+    boot.renderer.update(boot.session.getSnapshot(), 1); delete boot.defenseProbe; boot.enabled = true;
+    return damage;
+  });
+  assert.equal(defense.cappedDamage, 1);
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -701,7 +729,7 @@ try {
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
     periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
-    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, resetCounts, viewports, errors, failures };
+    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

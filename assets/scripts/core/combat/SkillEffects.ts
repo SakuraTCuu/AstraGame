@@ -9,6 +9,11 @@ export interface StatusState {
   readonly controlImmunity?: readonly ControlKind[];
   readonly displacementImmunity?: boolean;
   readonly interruptionImmunity?: boolean;
+  readonly invulnerable?: boolean;
+  readonly preventDeath?: boolean;
+  readonly untargetable?: boolean;
+  readonly healingBlocked?: boolean;
+  readonly damageCap?: number;
   readonly lift?: { readonly height: number; readonly rise: number; readonly fall: number };
   readonly wander?: { readonly speed: number; readonly turnInterval: number };
 }
@@ -72,7 +77,7 @@ export interface SkillTrigger { readonly skillId: string; readonly chance?: numb
 
 export interface SkillAction {
   readonly at: number;
-  readonly type: "damage" | "heal" | "status" | "cleanse";
+  readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state";
   readonly power?: number;
   readonly damageType?: DamageType;
   readonly forceCritical?: boolean;
@@ -80,6 +85,7 @@ export interface SkillAction {
   readonly targetCount?: number;
   readonly globalTargets?: boolean;
   readonly status?: StatusDefinition;
+  readonly stateId?: string;
   readonly randomStatuses?: readonly StatusDefinition[];
   readonly healFromDamage?: number;
   readonly healFromDamageRecipient?: "self" | "allies";

@@ -14,8 +14,8 @@ export class EnemyAI {
     move?: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void, skills: readonly SkillDefinition[] = this.skills): void {
     if (!enemy.alive || combat.isDisplaced(enemy) || enemy.hardControlled) return;
     const leash = enemy.stats.leashRange ?? Infinity;
-    const eligible = targets.filter((actor) => actor.alive && actor.position.distance(enemy.homePosition) <= leash);
-    const current = targets.find((target) => target.id === enemy.targetId && target.alive);
+    const eligible = targets.filter((actor) => actor.targetable && actor.position.distance(enemy.homePosition) <= leash);
+    const current = targets.find((target) => target.id === enemy.targetId && target.targetable);
     const target = current && eligible.includes(current) && enemy.position.distance(current.position) <= enemy.stats.aggroRange
       ? current
       : selectNearestTarget(enemy, eligible, enemy.stats.aggroRange);

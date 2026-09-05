@@ -112,6 +112,11 @@ export function createReferenceSkillCompiler(lookup) {
         else if (stateId === "ignoreBreakSkill") state.interruptionImmunity = true;
         else if (stateId === "unForzen") state.controlImmunity = ["freeze"];
         else if (stateId === "unFlyUp") state.controlImmunity = ["airborne"];
+        else if (stateId === "invincible") state.invulnerable = true;
+        else if (stateId === "notDead") state.preventDeath = true;
+        else if (stateId === "unselected") state.untargetable = true;
+        else if (stateId === "unHeal") state.healingBlocked = true;
+        else if (stateId === "fixOneDmg") state.damageCap = 1;
         else report(id, "state_behavior", stateId);
         if (state.control === "fear") {
           state.wander = { speed: action[3] ?? 350, turnInterval: (action[4] ?? 1000) / 1000 };
@@ -146,7 +151,7 @@ export function createReferenceSkillCompiler(lookup) {
     if (definition.maxStacks > 1 && row.overlieRefreshFirst !== 1) report(id, "stack_expiry", "shared expiry currently refreshes on reapplication");
     definition.dispellable = row.dispel !== -1;
     definition.harmful = Boolean(definition.periodicDamage || Object.entries(definition.modifiers).some(([key, value]) => key === "healReduction" ? value > 0 : value < 0) ||
-      Object.values(definition.targetCountBonuses || {}).some((value) => value < 0) || definition.states?.some((state) => state.control));
+      Object.values(definition.targetCountBonuses || {}).some((value) => value < 0) || definition.states?.some((state) => state.control || state.healingBlocked));
     const value = { definition, immediate, row };
     statuses.set(id, value);
     return value;
@@ -221,6 +226,8 @@ export function createReferenceSkillCompiler(lookup) {
           report(id, "knockback_parity", { durationMilliseconds: action[1], distance: action[2], interpretation: "linear displacement; timing, immunity and interruption require live comparison" });
         } else if (action[0] === "healByDmgAction" && damageStep && action.length === 2 && action[1] >= 0) {
           damageStep.healFromDamage = action[1] / 10000; damageStep.healFromDamageRecipient = "self";
+        } else if (action[0] === "removeStateAction" && action[1] === 1 && action.length >= 3 && action.slice(2).every((id) => typeof id === "string")) {
+          for (const stateId of action.slice(2)) actions.push({ at, type: "remove_state", stateId, recipient: "self" });
         }
         else if (action[0] === "addBuffAction") {
           const buff = status(action[1]);

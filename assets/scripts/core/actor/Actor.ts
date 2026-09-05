@@ -127,6 +127,11 @@ export class Actor {
   }
 
   get shield(): number { return this.shields.reduce((sum, layer) => sum + layer.amount, 0); }
+  get invulnerable(): boolean { return this.states.some((state) => state.definition.invulnerable); }
+  get preventsDeath(): boolean { return this.states.some((state) => state.definition.preventDeath); }
+  get targetable(): boolean { return this.alive && !this.states.some((state) => state.definition.untargetable); }
+  get healingBlocked(): boolean { return this.states.some((state) => state.definition.healingBlocked); }
+  get incomingDamageCap(): number { return this.states.reduce((cap, state) => Math.min(cap, state.definition.damageCap ?? Infinity), Infinity); }
   get attackPower(): number { return Math.max(0, this.stats.attack * (1 + this.modifier("attackRate"))); }
   get movementSpeed(): number { return Math.max(0, this.stats.moveSpeed + this.modifier("movementBonus")); }
   modifier(key: keyof StatModifiers): number { return (this.currentStats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0) * status.stacks, 0); }
@@ -143,6 +148,11 @@ export class Actor {
   }
   controlSnapshots(): Array<{ kind: ControlKind; remaining: number }> { return this.states.filter((entry) => entry.definition.control).map((entry) => ({ kind: entry.definition.control!, remaining: entry.remaining })); }
   stateSnapshots(): Array<{ id: string; remaining: number }> { return this.states.map((entry) => ({ id: entry.definition.id, remaining: entry.remaining })); }
+  removeState(id: string): number {
+    let removed = 0;
+    for (let index = this.states.length - 1; index >= 0; index--) if (this.states[index].definition.id === id) { this.states.splice(index, 1); removed++; }
+    return removed;
+  }
   get controlElevation(): number {
     return this.states.reduce((height, state) => {
       const lift = state.definition.lift;
@@ -297,7 +307,7 @@ export class Actor {
   }
 
   receiveDamage(rawDamage: number, type: DamageType = "physical", periodic = false, pve = true): number {
-    if (!this.alive || rawDamage <= 0) return 0;
+    if (!this.alive || rawDamage <= 0 || this.invulnerable) return 0;
     const elementReduction = type === "soul" ? this.modifier("soulReduction") : type === "magic" ? this.modifier("magicReduction") : type === "physical" ? this.modifier("physicalReduction") : 0;
     const reduction = (1 - this.modifier("damageReduction")) * (1 - this.modifier("finalDamageReduction")) *
       (1 - elementReduction) *
@@ -305,12 +315,13 @@ export class Actor {
       (periodic ? Math.max(0, 1 - this.modifier("dotDamageReduction")) : 1);
     if (reduction <= 0) return 0;
     let actualDamage = Math.max(1, Math.floor((rawDamage - this.stats.defense) * Math.max(0, reduction) + 1e-9));
+    actualDamage = Math.min(actualDamage, this.incomingDamageCap);
     for (const layer of this.shields) {
       const absorbed = Math.min(layer.amount, actualDamage);
       layer.amount -= absorbed;
       actualDamage -= absorbed;
     }
-    actualDamage = Math.min(this.health, actualDamage);
+    actualDamage = Math.min(Math.max(0, this.health - (this.preventsDeath ? 1 : 0)), actualDamage);
     this.health = Math.max(0, this.health - actualDamage);
     if (actualDamage > 0) this.gainEnergy(this.stats.energyOnDamage ?? 0);
     if (!this.alive) {
@@ -325,7 +336,7 @@ export class Actor {
   }
 
   heal(amount: number): number {
-    if (!this.alive || amount <= 0) return 0;
+    if (!this.alive || amount <= 0 || this.healingBlocked) return 0;
     const previous = this.health;
     this.health = Math.min(this.stats.maxHealth, this.health + Math.floor(amount * Math.max(0, 1 - this.modifier("healReduction"))));
     return this.health - previous;

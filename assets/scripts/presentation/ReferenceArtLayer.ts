@@ -45,6 +45,10 @@ export class ReferenceArtLayer {
     }
 
     hasActor(id: string): boolean { return this.views.has(id); }
+    feedbackHeight(id: string): number | undefined {
+        const key = this.config.bindings[id] ? id : id.split(":")[0].replace(/@\d+$/, "");
+        return this.config.bindings[key]?.height;
+    }
     hasProjectile(id: number): boolean { return this.projectileViews.has(id); }
     overviewTexture(): cc.Texture2D { return this.loaded.get(`${this.config.mapName}/thumb`) as cc.Texture2D; }
 

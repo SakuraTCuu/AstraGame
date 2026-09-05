@@ -128,6 +128,14 @@ READY -> WINDUP -> HIT -> RECOVERY -> COOLDOWN -> READY
 - Projectile snapshots use distinct projectile IDs and simulation age. Reference atlas frames follow that age and are released when the shot disappears or the view is destroyed.
 - Circular hitbox interpretation, terrain collision, target replacement during windup, special projectile check modes, offsets, multi-shot patterns and complete effect orientation still require source/live comparison. Collision currently samples actor positions at each simulation step.
 
+### Defensive States
+
+- Invulnerability rejects incoming damage before shield consumption and exposes immunity feedback. A per-hit cap applies after damage modifiers and before shields. Death protection limits health loss to leave one HP; it neither restores health nor revives a dead actor.
+- Untargetable actors are excluded from non-self target selection, retained enemy targets and new area/projectile contacts. Homing shots lose their lock, straight shots do not consume their hit budget on these actors, and pending targeted contact actions are cancelled. Self-directed effects remain available.
+- Already attached periodic effects do not perform target selection again. They still obey invulnerability, per-hit caps and death protection. Healing prohibition blocks direct healing and damage-based recovery until its state ends.
+- Explicit state removal clears named states across their owners while retaining other states and Buff modifiers. Source caster-directed `removeStateAction` can remove several names in one frame.
+- Friendly/global-effect treatment of untargetability, exceptional damage types, source percentage limits, shield-break mechanics and exact live expiry ordering remain comparison work. These flags do not establish complete parity for the skills that grant them.
+
 ## Fog and Discovery
 
 Each fog cell is one of:

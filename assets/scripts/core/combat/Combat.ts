@@ -53,7 +53,7 @@ export interface SkillDefinition {
 }
 
 export interface CombatEvent {
-  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback";
+  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback" | "state_removed";
   readonly sourceId: string;
   readonly targetId: string;
   readonly value?: number;
@@ -65,6 +65,7 @@ export interface CombatEvent {
   readonly periodic?: boolean;
   readonly statusId?: string;
   readonly triggered?: boolean;
+  readonly immune?: boolean;
 }
 
 interface Cast {
@@ -108,9 +109,11 @@ function circleContactInterval(from: Vector2, to: Vector2, center: Vector2, radi
 }
 
 export function selectNearestTarget(source: Actor, candidates: readonly Actor[], range: number): Actor | undefined {
-  return candidates.filter((actor) => actor.alive && actor.id !== source.id && source.position.distance(actor.position) <= range)
+  return candidates.filter((actor) => actor.targetable && actor.id !== source.id && source.position.distance(actor.position) <= range)
     .sort((left, right) => source.position.distanceSquared(left.position) - source.position.distanceSquared(right.position) || left.id.localeCompare(right.id))[0];
 }
+
+function validTarget(source: Actor, target: Actor): boolean { return target.alive && (source === target || target.targetable); }
 
 function targetHealthAllowed(target: Actor, skill: SkillDefinition): boolean {
   const limit = skill.conditions?.targetHpBelow ?? (skill.type === "heal" ? 1 : undefined);
@@ -118,8 +121,8 @@ function targetHealthAllowed(target: Actor, skill: SkillDefinition): boolean {
 }
 
 export function selectSkillTarget(source: Actor, candidates: readonly Actor[], skill: SkillDefinition): Actor | undefined {
-  if (skill.target === "self") return targetHealthAllowed(source, skill) ? source : undefined;
-  const eligible = candidates.filter((actor) => actor.alive &&
+  if (skill.target === "self") return source.alive && targetHealthAllowed(source, skill) ? source : undefined;
+  const eligible = candidates.filter((actor) => validTarget(source, actor) &&
     (skill.target === "enemy" ? actor.faction !== source.faction : actor.faction === source.faction) &&
     source.position.distance(actor.position) <= skill.range &&
     targetHealthAllowed(actor, skill));
@@ -182,7 +185,7 @@ export class CombatSystem {
       for (const tick of actor.updateEffects(deltaSeconds)) this.applyDamage(tick.source, actor, tick.skillId, tick.power, tick.damageType, false, tick.statusId);
       this.synchronizeControl(actor);
       const target = actor.targetId && byId.get(actor.targetId);
-      if (actor.alive && target && target.alive && target.faction !== actor.faction && actor.fsm.state !== "returning") this.combatTimes.set(actor.id, (this.combatTimes.get(actor.id) ?? 0) + deltaSeconds);
+      if (actor.alive && target?.targetable && target.faction !== actor.faction && actor.fsm.state !== "returning") this.combatTimes.set(actor.id, (this.combatTimes.get(actor.id) ?? 0) + deltaSeconds);
       else this.combatTimes.delete(actor.id);
     }
     for (const [id, displacement] of this.displacements) {
@@ -216,7 +219,7 @@ export class CombatSystem {
     }
     for (const [id, projectile] of this.projectiles) {
       if (projectile.directional) { this.advanceDirectionalProjectile(id, projectile); continue; }
-      const target = actors.find((actor) => actor.id === projectile.cast.targetId && actor.alive);
+      const target = actors.find((actor) => actor.id === projectile.cast.targetId && validTarget(projectile.cast.source, actor));
       if (projectile.impactAt === undefined) {
         if ((!target && (!projectile.cast.skill.area || projectile.cast.skill.projectileHoming)) || this.time >= projectile.expiresAt) { this.projectiles.delete(id); continue; }
         const travel = (this.time - projectile.lastUpdate) * projectile.cast.skill.projectileSpeed!;
@@ -235,7 +238,7 @@ export class CombatSystem {
     for (let index = this.projectileImpacts.length - 1; index >= 0; index--) {
       const impact = this.projectileImpacts[index];
       this.advanceProjectileImpact(impact);
-      if (!impact.target.alive || !this.actors.includes(impact.target) || impact.actionIndex >= (impact.cast.skill.actions?.length ?? 1)) this.projectileImpacts.splice(index, 1);
+      if (!validTarget(impact.cast.source, impact.target) || !this.actors.includes(impact.target) || impact.actionIndex >= (impact.cast.skill.actions?.length ?? 1)) this.projectileImpacts.splice(index, 1);
     }
   }
 
@@ -253,7 +256,7 @@ export class CombatSystem {
   use(actor: Actor, target: Actor, skill: SkillDefinition, candidates: readonly Actor[] = this.actors): boolean {
     this.actors = [...new Map([...candidates, actor, target].map((entry) => [entry.id, entry])).values()];
     this.synchronizeControl(actor);
-    if (!this.canUse(actor, skill) || !target.alive || !targetHealthAllowed(target, skill) || actor.position.distance(target.position) > skill.range) return false;
+    if (!this.canUse(actor, skill) || !validTarget(actor, target) || !targetHealthAllowed(target, skill) || actor.position.distance(target.position) > skill.range) return false;
     if (skill.target === "enemy" ? actor.faction === target.faction : actor.faction !== target.faction) return false;
     if (skill.target === "self" && target !== actor) return false;
     const cast = this.makeCast(actor, target, skill);
@@ -299,7 +302,7 @@ export class CombatSystem {
       remaining: Math.max(0, (cast.resolved ? cast.readyAt : cast.hitAt) - this.time),
       duration: cast.resolved ? cast.readyAt - cast.hitAt : cast.hitAt - cast.startedAt,
       origin: !cast.resolved && cast.skill.directionalProjectile ? cast.source.position : cast.origin,
-      point: !cast.resolved && cast.skill.directionalProjectile ? this.actors.find((actor) => actor.id === cast.targetId && actor.alive)?.position ?? cast.point : cast.point, area: cast.skill.area,
+      point: !cast.resolved && cast.skill.directionalProjectile ? this.actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor))?.position ?? cast.point : cast.point, area: cast.skill.area,
       playbackRate: cast.speed,
       elevation: cast.skill.motion?.kind === "jump" ? Math.sin(Math.PI * Math.max(0, Math.min(1, (this.time - cast.hitAt) * cast.speed / cast.skill.motion.duration))) * (cast.skill.motion.height ?? 160) : 0,
     }));
@@ -330,7 +333,8 @@ export class CombatSystem {
     if (condition?.casterHpAtMost !== undefined && source.health / source.stats.maxHealth > condition.casterHpAtMost) return false;
     if (target && condition?.targetHpBelow !== undefined && target.health / target.stats.maxHealth >= condition.targetHpBelow) return false;
     if (condition?.combatTimeAtLeast && (this.combatTimes.get(source.id) ?? 0) < condition.combatTimeAtLeast) return false;
-    if (condition?.inCombat && !source.targetId && !this.actors.some((other) => other.alive && other.faction !== source.faction && source.position.distance(other.position) <= source.stats.aggroRange)) return false;
+    if (condition?.inCombat && !this.actors.some((other) => other.targetable && other.faction !== source.faction &&
+        (other.id === source.targetId || source.position.distance(other.position) <= source.stats.aggroRange))) return false;
     return true;
   }
 
@@ -382,7 +386,7 @@ export class CombatSystem {
     if (cast.skill.projectileSpeed && cast.skill.projectileSpeed > 0) {
       const expiresAt = cast.hitAt + (cast.skill.projectileLifetime ?? Math.max(1, cast.skill.range / cast.skill.projectileSpeed * 3));
       if (cast.skill.directionalProjectile) {
-        const target = this.actors.find((actor) => actor.id === cast.targetId && actor.alive);
+        const target = this.actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor));
         const origin = cast.source.position, point = target?.position ?? cast.point;
         const heading = point.subtract(origin).normalized(), direction = heading.lengthSquared() > 0 ? heading : new Vector2(0, 1);
         this.projectiles.set(this.nextProjectileId++, { cast: { ...cast, origin, point }, position: origin, lastUpdate: cast.hitAt, actionIndex: 0,
@@ -390,7 +394,7 @@ export class CombatSystem {
         this.events.push({ type: "projectile", sourceId: cast.source.id, targetId: cast.targetId, skillId: cast.skill.id });
       } else for (const id of cast.primaryIds) {
         const target = this.actors.find((actor) => actor.id === id);
-        if (!target) continue;
+        if (!target || !validTarget(cast.source, target)) continue;
         const projectileCast = { ...cast, targetId: id, primaryIds: [id], point: target.position };
         this.projectiles.set(this.nextProjectileId++, { cast: projectileCast, position: cast.origin, lastUpdate: cast.hitAt, actionIndex: 0,
           expiresAt });
@@ -414,16 +418,19 @@ export class CombatSystem {
       return;
     }
     const targets = action?.recipient === "self" ? [source] : action?.recipient === "enemies" ?
-      this.actors.filter((actor) => actor.alive && actor.faction !== source.faction && (action.globalTargets || source.position.distance(actor.position) <= skill.range))
+      this.actors.filter((actor) => validTarget(source, actor) && actor.faction !== source.faction && (action.globalTargets || source.position.distance(actor.position) <= skill.range))
         .sort((a, b) => source.position.distanceSquared(a.position) - source.position.distanceSquared(b.position) || a.id.localeCompare(b.id)).slice(0, action.targetCount ?? skill.targetCount ?? 1) : action?.recipient === "allies" ?
-      this.actors.filter((actor) => actor.alive && actor.faction === source.faction && (action.globalTargets || source.position.distance(actor.position) <= skill.range))
+      this.actors.filter((actor) => validTarget(source, actor) && actor.faction === source.faction && (action.globalTargets || source.position.distance(actor.position) <= skill.range))
         .sort((a, b) => a.health / a.stats.maxHealth - b.health / b.stats.maxHealth || a.id.localeCompare(b.id)).slice(0, action.targetCount ?? 1) : contacts ?? this.hitTargets(cast, projectile);
     if (targets.length === 0) this.events.push({ type: "miss", sourceId: source.id, targetId: cast.targetId, skillId: skill.id });
     for (const target of targets) {
-      if (!target.alive) continue;
+      if (!validTarget(source, target)) continue;
       this.awardEnergy(cast);
       if (action?.type === "status") {
         if (action.status) this.applyStatus(cast, target, action.status);
+      } else if (action?.type === "remove_state") {
+        const removed = target.removeState(action.stateId!); this.synchronizeControl(target);
+        if (removed) this.events.push({ type: "state_removed", sourceId: source.id, targetId: target.id, skillId: skill.id, statusId: action.stateId, value: removed });
       } else if (action?.type === "cleanse") {
         const removed = target.cleanse(action.cleanse?.count ?? 1, action.cleanse?.npcOnly ?? false, this.random);
         this.synchronizeControl(target);
@@ -451,7 +458,7 @@ export class CombatSystem {
         const critical = Boolean(action?.forceCritical || skill.forceCritical || (chance > 0 && this.random() < chance));
         const damage = this.applyDamage(source, target, skill.id, action?.power ?? skill.power, type, critical);
         if (action?.healFromDamage && damage > 0) {
-          const allies = action.healFromDamageRecipient === "self" ? (source.alive ? [source] : []) : this.actors.filter((actor) => actor.alive && actor.faction === source.faction);
+          const allies = action.healFromDamageRecipient === "self" ? (source.alive ? [source] : []) : this.actors.filter((actor) => validTarget(source, actor) && actor.faction === source.faction);
           for (const ally of allies) { const value = ally.heal(damage * action.healFromDamage / allies.length); this.events.push({ type: "heal", sourceId: source.id, targetId: ally.id, value, skillId: skill.id }); }
         }
         if (action?.knockback) this.knockBack(cast, target, action.knockback);
@@ -473,7 +480,7 @@ export class CombatSystem {
     const origin = projectile.position, destination = origin.add(state.direction.scale(projectile.cast.skill.projectileSpeed! * span));
     const contacts: Array<{ target: Actor; at: number }> = [];
     for (const target of this.actors) {
-      if (!target.alive || (projectile.cast.skill.target === "enemy" ? target.faction === projectile.cast.source.faction : target.faction !== projectile.cast.source.faction)) continue;
+      if (!validTarget(projectile.cast.source, target) || (projectile.cast.skill.target === "enemy" ? target.faction === projectile.cast.source.faction : target.faction !== projectile.cast.source.faction)) continue;
       const last = state.hits.get(target.id);
       if (last !== undefined && definition.repeatInterval === undefined) continue;
       const interval = circleContactInterval(origin, destination, target.position, definition.radius + (target.stats.collisionRadius ?? 0));
@@ -488,7 +495,7 @@ export class CombatSystem {
     contacts.sort((left, right) => left.at - right.at || left.target.id.localeCompare(right.target.id));
     for (const contact of contacts) {
       if (state.remaining <= 0) break;
-      if (!contact.target.alive) continue;
+      if (!validTarget(projectile.cast.source, contact.target)) continue;
       state.hits.set(contact.target.id, contact.at); state.remaining--;
       const impact = { cast: projectile.cast, target: contact.target, at: contact.at, actionIndex: 0 };
       this.advanceProjectileImpact(impact);
@@ -499,7 +506,7 @@ export class CombatSystem {
   }
 
   private advanceProjectileImpact(impact: ProjectileImpact): void {
-    if (!impact.target.alive || !this.actors.includes(impact.target)) return;
+    if (!validTarget(impact.cast.source, impact.target) || !this.actors.includes(impact.target)) return;
     const actions = impact.cast.skill.actions;
     if (!actions) { if (!impact.actionIndex) this.resolveHit(impact.cast, true, undefined, [impact.target]); impact.actionIndex = 1; return; }
     while (impact.actionIndex < actions.length && impact.at + actions[impact.actionIndex].at / impact.cast.speed <= this.time + 1e-9) {
@@ -518,7 +525,8 @@ export class CombatSystem {
     const damage = target.receiveDamage(source.attackPower * power * multiplier, type, periodic, this.mode === "pve");
     const absorbed = previousShield - target.shield;
     if (absorbed > 0) this.events.push({ type: "absorb", sourceId: source.id, targetId: target.id, value: absorbed, skillId });
-    this.events.push({ type: "damage", sourceId: source.id, targetId: target.id, value: damage, skillId, critical, damageType: type, ...(periodic ? { periodic, statusId } : {}) });
+    this.events.push({ type: "damage", sourceId: source.id, targetId: target.id, value: damage, skillId, critical, damageType: type,
+      ...(target.invulnerable && source.attackPower * power > 0 ? { immune: true } : {}), ...(periodic ? { periodic, statusId } : {}) });
     if (!target.alive) { this.cancelCaster(target.id); this.cancelDisplacement(target.id); this.events.push({ type: "death", sourceId: source.id, targetId: target.id, skillId }); }
     return damage;
   }
@@ -560,7 +568,7 @@ export class CombatSystem {
     const center = skill.areaAnchor === "caster" ? source.position : skill.target === "self" || area?.shape === "cone" || area?.shape === "line" ? cast.origin : cast.point;
     const forward = cast.point.subtract(cast.origin).normalized();
     const candidates = this.actors.filter((actor) => {
-      if (!actor.alive || (skill.target === "enemy" ? actor.faction === source.faction : actor.faction !== source.faction)) return false;
+      if (!validTarget(source, actor) || (skill.target === "enemy" ? actor.faction === source.faction : actor.faction !== source.faction)) return false;
       if (skill.targetCount && area?.shape === "circle" && area.radius <= 10) return cast.primaryIds.includes(actor.id) && (projectile || source.position.distance(actor.position) <= skill.range);
       if (!area) {
         if ((skill.maxTargets ?? 1) > 1 && skill.target === "ally") return source.position.distance(actor.position) <= skill.range;
@@ -587,7 +595,7 @@ export class CombatSystem {
 
   private primaryTargets(source: Actor, first: Actor, skill: SkillDefinition): Actor[] {
     if (!skill.targetCount || skill.target === "self") return [first];
-    const pool = this.actors.filter((actor) => actor.alive && actor.faction === first.faction && source.position.distance(actor.position) <= skill.range &&
+    const pool = this.actors.filter((actor) => validTarget(source, actor) && actor.faction === first.faction && source.position.distance(actor.position) <= skill.range &&
       targetHealthAllowed(actor, skill));
     pool.sort((a, b) => skill.targetRule === "lowest_hp" ? a.health / a.stats.maxHealth - b.health / b.stats.maxHealth || a.id.localeCompare(b.id) :
       source.position.distanceSquared(a.position) - source.position.distanceSquared(b.position) || a.id.localeCompare(b.id));
