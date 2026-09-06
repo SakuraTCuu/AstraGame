@@ -1,5 +1,5 @@
 import type { Actor } from "../actor/Actor";
-import { selectNearestTarget, selectSkillTarget } from "../combat/Combat";
+import { selectNearestTarget } from "../combat/Combat";
 import type { CombatSystem, SkillDefinition } from "../combat/Combat";
 import type { Vec2Like } from "../math/Vector2";
 
@@ -34,7 +34,7 @@ export class PlayerAI {
     for (const skill of skills.slice().sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))) {
       if (!combat.canUse(player, skill)) continue;
       if ((skill.type === "shield" || skill.type === "summon") && !target) continue;
-      const selected = selectSkillTarget(player, skill.target === "enemy" ? opponents : allies, skill);
+      const selected = combat.selectTarget(player, skill.target === "enemy" ? opponents : allies, skill);
       if (selected && combat.use(player, selected, skill)) return;
     }
     if (!target) { player.setState("idle"); return; }

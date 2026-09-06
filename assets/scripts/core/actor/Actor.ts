@@ -4,6 +4,7 @@ import type { Vec2Like } from "../math/Vector2";
 import type { ControlKind, DamageType, StatModifiers, StatusDefinition, StatusState } from "../combat/SkillEffects";
 
 export type Faction = "player" | "enemy";
+export type CombatRole = "tank" | "melee" | "ranged" | "support";
 export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "displaced" | "controlled" | "returning" | "dead";
 
 export interface ShieldLayer { readonly key: string; amount: number; remaining: number; readonly breakState?: string; readonly interruptOnBreak?: boolean; readonly clearStatesOnBreak?: readonly string[]; }
@@ -55,6 +56,7 @@ export interface ActorOptions {
   readonly kind?: string;
   readonly name?: string;
   readonly healthBars?: number;
+  readonly combatRole?: CombatRole;
   readonly initialEnergy?: number;
 }
 
@@ -75,6 +77,7 @@ export class Actor {
   readonly kind: string;
   readonly displayName: string;
   readonly healthBars: number;
+  readonly combatRole?: CombatRole;
   private readonly shields: ShieldLayer[] = [];
   private readonly statuses: AppliedStatus[] = [];
   private readonly states: AppliedState[] = [];
@@ -95,6 +98,8 @@ export class Actor {
     this.kind = options.kind ?? (options.tags?.includes("boss") ? "boss" : options.faction === "player" ? "hero" : "normal");
     this.displayName = options.name ?? options.id;
     this.healthBars = Math.max(1, Math.floor(options.healthBars ?? 1));
+    if (options.combatRole !== undefined && !["tank", "melee", "ranged", "support"].includes(options.combatRole)) throw new Error("Invalid combat role");
+    this.combatRole = options.combatRole;
     this.currentStats = options.stats;
     this.modifiedStats = applyMaxHealthModifier(options.stats);
     this.tags = new Set(options.tags ?? []);

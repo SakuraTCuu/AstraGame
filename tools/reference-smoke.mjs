@@ -1025,6 +1025,53 @@ try {
     boot.renderer.update(boot.session.getSnapshot(), 0.1); return result;
   });
   assert.deepEqual(shieldChannel.completed, { sourceHealth: 1500, targetHealth: 2000, shield: 0, consumed: true, finishers: 1 });
+  const targeting = await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session, world = session.world, nav = world.options.navigation; boot.enabled = false;
+    const spawn = session.config.spawns.find((entry) => boot.renderer.referenceArt.config.bindings[entry.id] && session.config.enemies.find((enemy) => enemy.id === entry.enemyId)?.kind === "enemy");
+    const tankProfile = session.config.roster.heroes.find((entry) => entry.sourceId === 10), supportProfile = session.config.roster.heroes.find((entry) => entry.sourceId === 8);
+    const tankModel = session.roster.actor(tankProfile.id), supportModel = session.roster.actor(supportProfile.id);
+    const origin = nav.nearestWalkable(world.leader.position.add({ x: 0, y: 100 })), tankPosition = nav.nearestWalkable({ x: origin.x + 300, y: origin.y });
+    const supportPosition = [{ x: -80, y: 0 }, { x: -120, y: -80 }, { x: -120, y: 80 }]
+      .map((offset) => nav.nearestWalkable({ x: origin.x + offset.x, y: origin.y + offset.y }))
+      .find((point) => point && point.x < origin.x && Math.hypot(point.x - origin.x, point.y - origin.y) < 220);
+    if (!spawn || !supportPosition || tankPosition.x <= origin.x) throw new Error("No valid targeting fixture positions");
+    const stats = { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 220, aggroRange: 220, leashRange: 1000 };
+    const source = new world.leader.constructor({ id: `${spawn.id}:targeting_probe`, name: session.config.enemies.find((entry) => entry.id === spawn.enemyId).name,
+      kind: "boss", tags: ["boss"], faction: "enemy", position: origin, stats, skillIds: ["reference_skill_5007003"] });
+    const tank = new world.leader.constructor({ id: `${tankProfile.id}:targeting_probe`, name: tankModel.displayName, combatRole: tankModel.combatRole, faction: "player", position: tankPosition, stats });
+    const support = new world.leader.constructor({ id: `${supportProfile.id}:targeting_probe`, name: supportModel.displayName, combatRole: supportModel.combatRole, faction: "player", position: supportPosition, stats });
+    const previousSummons = world.alliedSummons.length; world.alliedSummons.push(tank, support); world.addEnemy(source);
+    const combat = new world.combat.constructor(() => 0.99), actors = [source, tank, support]; combat.update(0, actors);
+    world.bosses.get(source.id).update(source, [tank, support], combat, 0.05); combat.update(0.25, actors);
+    const casts = combat.castSnapshots(); boot.targetingProbe = { source, tank, support, combat, previousSummons };
+    boot.renderer.update({ ...session.getSnapshot(), casts }, 0.1);
+    return { setup: "Source role-priority laser with cached hero professions and fixture positions", engagement: source.targetId === support.id,
+      selectedTank: casts[0]?.targetId === tank.id, nearerSupport: source.position.distance(support.position) < source.position.distance(tank.position),
+      aimRight: casts[0]?.point.x > source.position.x, engagementLeft: support.position.x < source.position.x };
+  });
+  assert.equal(targeting.engagement, true); assert.equal(targeting.selectedTank, true); assert.equal(targeting.nearerSupport, true);
+  assert.equal(targeting.aimRight, true); assert.equal(targeting.engagementLeft, true);
+  let targetingReady = false;
+  for (let index = 0; index < 50 && !targetingReady; index++) {
+    targetingReady = await evaluate(() => {
+      const boot = window.__referenceBoot, { source, tank, support, combat } = boot.targetingProbe;
+      boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots() }, 0.05);
+      return [source, tank, support].every((actor) => boot.renderer.referenceArt.views.get(actor.id)?.node.active) && boot.renderer.referenceArt.views.get(source.id).facing === 1;
+    });
+    if (!targetingReady) await delay(100);
+  }
+  assert.equal(targetingReady, true, "Targeting fixture art or casting direction did not update");
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-role-targeting`);
+  }
+  targeting.cleaned = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, tank, support, combat, previousSummons } = boot.targetingProbe;
+    combat.cancelCaster(source.id); combat.resetEngagement();
+    for (const actor of [source, tank, support]) boot.session.world.removeEnemy(actor.id);
+    boot.renderer.update(boot.session.getSnapshot(), 0.1); delete boot.targetingProbe; boot.enabled = true;
+    return boot.session.world.alliedSummons.length === previousSummons;
+  });
+  assert.equal(targeting.cleaned, true);
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -1055,7 +1102,7 @@ try {
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
     periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
-    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, movingAreaArt, shieldChannel, resetCounts, viewports, errors, failures };
+    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, movingAreaArt, shieldChannel, targeting, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

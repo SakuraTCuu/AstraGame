@@ -4,6 +4,7 @@ import { referenceEnergy } from "./reference-development.mjs";
 export function buildReferenceRoster(lookup, ids, config, skills, art, binding, assets, rewards, issues) {
   const initial = new Map([13, 1, 9, 8].map((id, index) => [id, config.squad.actors[index]]));
   const heroes = [], actors = [];
+  const roles = { 1: "tank", 2: "melee", 3: "support", 4: "ranged" };
   for (const id of ids("Hero").map(Number)) {
     const hero = lookup("Hero", id);
     if (hero.close || /PlayerLevel\|minLevel:9999/.test(hero.showCondition || "")) continue;
@@ -27,6 +28,8 @@ export function buildReferenceRoster(lookup, ids, config, skills, art, binding, 
         art.bindings[actor.id].skillPhases = Object.fromEntries(definitions.map((skill) => [skill.id, skill.presentation]));
       } else { issues.push({ owner: id, kind: "hero_art", avatar: hero.display }); deployCondition = { kind: "flag", id: `external:hero_art:${id}`, label: "\u6682\u4e0d\u53ef\u7528" }; }
     }
+    actor.combatRole = roles[hero.job];
+    if (!actor.combatRole) issues.push({ owner: id, kind: "hero_role", value: hero.job });
     let visibility;
     try { visibility = compileReferenceCondition(hero.showCondition, lookup); }
     catch { visibility = { kind: "flag", id: `external:hero_visibility:${id}`, label: "\u672a\u5f00\u653e" }; issues.push({ owner: id, kind: "hero_visibility", source: hero.showCondition }); }

@@ -217,6 +217,18 @@ export function createReferenceSkillCompiler(lookup) {
       publicCooldown: (row.publicCd || 0) / 1000, publicCooldownGroup: row.publicCdGroup === null || row.publicCdGroup === undefined ? undefined : String(row.publicCdGroup),
       conditions, area, areaAnchor: area?.shape === "cone" ? "caster" : undefined, actions,
       forceCritical: tags.some((tag) => tag[0] === "criticalTag"), blockEnergyGain: tags.some((tag) => tag[0] === "blockUltraEnegyTag") };
+    if (row.targetSelectType !== undefined && row.targetSelectType !== null) {
+      const rule = { 0: "nearest", 1: "lowest_hp", 2: "random", 9: "role_priority" }[row.targetSelectType];
+      if (rule) definition.targetRule = rule;
+      else report(id, "target_selector", row.targetSelectType);
+      if (rule === "random" || rule === "role_priority") report(id, "target_selection_parity", "seeded eligible-target selection or tank/melee/ranged/support priority; tie ordering, unclassified summons and exact native exceptions require live comparison");
+    }
+    for (const sort of tags.filter((tag) => tag[0] === "extraSortTag")) {
+      if (sort.length === 3 && sort[1] === 2 && sort[2] === "atk" && (row.targetSelectType === undefined || row.targetSelectType === null || row.targetSelectType === 0)) {
+        definition.targetRule = "highest_attack";
+        report(id, "target_selection_parity", "highest current attack first, then distance and stable id; attribute basis and tie ordering require live comparison");
+      } else report(id, "target_sort", sort);
+    }
     if (conditions.hasShield && tags.some((tag) => tag[0] === "chantSkillTag")) definition.maintainConditions = { hasShield: true };
     const backCenterFinish = npc && tags.some((tag) => tag[0] === "backCenterTag");
     if (backCenterFinish) {

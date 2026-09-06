@@ -1,4 +1,4 @@
-import type { Actor } from "../actor/Actor";
+import type { Actor, CombatRole } from "../actor/Actor";
 import { Vector2 } from "../math/Vector2";
 import type { Vec2Like } from "../math/Vector2";
 import { SeededRandom } from "../random/SeededRandom";
@@ -11,7 +11,7 @@ export interface SkillDefinition {
   readonly cooldown: number;
   readonly power: number;
   readonly target: "enemy" | "ally" | "self";
-  readonly targetRule?: "nearest" | "lowest_hp" | "cluster";
+  readonly targetRule?: "nearest" | "lowest_hp" | "cluster" | "random" | "role_priority" | "highest_attack";
   readonly type?: "damage" | "heal" | "telegraph_damage" | "shield" | "summon" | "buff";
   readonly telegraph?: number;
   readonly windup?: number;
@@ -107,7 +107,7 @@ interface AreaEffect { readonly id: number; readonly cast: Cast; readonly defini
 interface Displacement { readonly actor: Actor; readonly direction: Vector2; readonly distance: number; readonly duration: number; readonly startedAt: number; progress: number; }
 type CombatMovement = SkillMotion["kind"] | "knockback" | "fear" | "channel";
 export interface SummonRequest { readonly sourceId: string; readonly enemyId: string; readonly count: number; readonly limit: number; readonly radius: number; readonly position: Vec2Like; }
-export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; readonly warnings?: readonly WarningSnapshot[]; readonly cycle?: number; }
+export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; readonly warnings?: readonly WarningSnapshot[]; readonly cycle?: number; }
 export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number;
   readonly age: number; readonly directionX: number; readonly directionY: number; readonly radius?: number; }
 export interface AreaEffectSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly x: number; readonly y: number;
@@ -135,18 +135,27 @@ function targetHealthAllowed(target: Actor, skill: SkillDefinition): boolean {
   return limit === undefined || target.health / target.stats.maxHealth < limit;
 }
 
-export function selectSkillTarget(source: Actor, candidates: readonly Actor[], skill: SkillDefinition): Actor | undefined {
+const ROLE_PRIORITY: Readonly<Record<CombatRole, number>> = { tank: 0, melee: 1, ranged: 2, support: 3 };
+
+function compareTargetPriority(left: Actor, right: Actor, rule: SkillDefinition["targetRule"]): number {
+  if (rule === "lowest_hp") return left.health / left.stats.maxHealth - right.health / right.stats.maxHealth;
+  if (rule === "highest_attack") return right.attackPower - left.attackPower;
+  if (rule === "role_priority") return (left.combatRole ? ROLE_PRIORITY[left.combatRole] : 4) - (right.combatRole ? ROLE_PRIORITY[right.combatRole] : 4);
+  return 0;
+}
+
+export function selectSkillTarget(source: Actor, candidates: readonly Actor[], skill: SkillDefinition, random: () => number = () => 0): Actor | undefined {
   if (skill.target === "self") return source.alive && targetHealthAllowed(source, skill) ? source : undefined;
   const eligible = candidates.filter((actor) => validTarget(source, actor) &&
     (skill.target === "enemy" ? actor.faction !== source.faction : actor.faction === source.faction) &&
     source.position.distance(actor.position) <= skill.range &&
     targetHealthAllowed(actor, skill));
   const clusterSize = (actor: Actor) => eligible.filter((candidate) => actor.position.distance(candidate.position) <= (skill.area?.radius ?? 0)).length;
-  return eligible.sort((left, right) => {
-    const rule = skill.targetRule === "lowest_hp" ? left.health / left.stats.maxHealth - right.health / right.stats.maxHealth :
-      skill.targetRule === "cluster" ? clusterSize(right) - clusterSize(left) : 0;
+  eligible.sort((left, right) => {
+    const rule = skill.targetRule === "cluster" ? clusterSize(right) - clusterSize(left) : compareTargetPriority(left, right, skill.targetRule);
     return rule || source.position.distanceSquared(left.position) - source.position.distanceSquared(right.position) || left.id.localeCompare(right.id);
-  })[0];
+  });
+  return eligible[skill.targetRule === "random" && eligible.length > 1 ? Math.min(eligible.length - 1, Math.floor(random() * eligible.length)) : 0];
 }
 
 export class CombatSystem {
@@ -282,6 +291,8 @@ export class CombatSystem {
   }
 
   isBusy(actor: Actor): boolean { return this.casts.has(actor.id) || this.returningCasts.has(actor.id) || this.isDisplaced(actor) || actor.hardControlled; }
+  selectTarget(actor: Actor, candidates: readonly Actor[], skill: SkillDefinition): Actor | undefined { return selectSkillTarget(actor, candidates, skill, this.random); }
+  castingTargetId(actor: Actor): string | undefined { return this.casts.get(actor.id)?.targetId ?? this.returningCasts.get(actor.id)?.cast.targetId; }
   isDisplaced(actor: Actor): boolean { return this.displacements.has(actor.id); }
   isWindingUp(actor: Actor): boolean { const cast = this.casts.get(actor.id); return Boolean(cast && this.castTiming(cast).phase === "windup"); }
   cooldownRemaining(actor: Actor, skill: SkillDefinition): number { return this.cooldowns.get(this.cooldownKey(actor, skill)) ?? 0; }
@@ -347,7 +358,7 @@ export class CombatSystem {
 
   castSnapshots(): CastSnapshot[] {
     return [...this.casts.values()].map((cast) => ({
-      id: cast.id, sourceId: cast.source.id, skillId: cast.skill.id,
+      id: cast.id, sourceId: cast.source.id, targetId: cast.targetId, skillId: cast.skill.id,
       ...this.castTiming(cast),
       origin: !cast.resolved && cast.skill.directionalProjectile ? cast.source.position : cast.origin,
       point: !cast.resolved && cast.skill.directionalProjectile && cast.skill.trackTargetFor === undefined ? this.actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor))?.position ?? cast.point : cast.point, area: cast.skill.area,
@@ -494,7 +505,7 @@ export class CombatSystem {
       if (child.disabled || child.energyCost || child.skillEnergyCost || child.healthCost || !parent.source.alive || (this.isDisplaced(parent.source) && !parent.source.interruptionImmune) || parent.triggerChain.includes(child.id) || parent.triggerChain.length >= 8) continue;
       if (!this.conditionsMet(parent.source, this.actors.find((actor) => actor.id === parent.targetId), trigger.conditions)) continue;
       if ((trigger.chance ?? 1) < 1 && this.random() >= (trigger.chance ?? 1)) continue;
-      const target = selectSkillTarget(parent.source, this.actors, child);
+      const target = this.selectTarget(parent.source, this.actors, child);
       if (!target || parent.source.blocksCasting(child.category) || !this.conditionsMet(parent.source, target, child.conditions)) continue;
       const cast = this.makeCast(parent.source, target, child, parent.triggerChain);
       this.triggeredCasts.set(cast.id, cast);
@@ -834,8 +845,8 @@ export class CombatSystem {
         along / delta.length() >= Math.cos((area.angleDegrees ?? 90) * Math.PI / 360));
     });
     return candidates.sort((left, right) => {
-      const health = skill.targetRule === "lowest_hp" ? left.health / left.stats.maxHealth - right.health / right.stats.maxHealth : 0;
-      return health || left.position.distanceSquared(center) - right.position.distanceSquared(center) || left.id.localeCompare(right.id);
+      if (skill.targetCount && area?.shape === "circle" && area.radius <= 10) return cast.primaryIds.indexOf(left.id) - cast.primaryIds.indexOf(right.id);
+      return compareTargetPriority(left, right, skill.targetRule) || left.position.distanceSquared(center) - right.position.distanceSquared(center) || left.id.localeCompare(right.id);
     }).slice(0, skill.maxTargets ?? 1);
   }
 
@@ -846,9 +857,13 @@ export class CombatSystem {
     if (!skill.targetCount || skill.target === "self") return [first];
     const pool = this.actors.filter((actor) => validTarget(source, actor) && actor.faction === first.faction && source.position.distance(actor.position) <= skill.range &&
       targetHealthAllowed(actor, skill));
-    pool.sort((a, b) => skill.targetRule === "lowest_hp" ? a.health / a.stats.maxHealth - b.health / b.stats.maxHealth || a.id.localeCompare(b.id) :
-      source.position.distanceSquared(a.position) - source.position.distanceSquared(b.position) || a.id.localeCompare(b.id));
-    return [first, ...pool.filter((actor) => actor !== first)].slice(0, skill.targetCount);
+    pool.sort((a, b) => compareTargetPriority(a, b, skill.targetRule) || source.position.distanceSquared(a.position) - source.position.distanceSquared(b.position) || a.id.localeCompare(b.id));
+    const rest = pool.filter((actor) => actor !== first), selected = [first];
+    while (selected.length < skill.targetCount && rest.length) {
+      const index = skill.targetRule === "random" && rest.length > 1 ? Math.min(rest.length - 1, Math.floor(this.random() * rest.length)) : 0;
+      selected.push(rest.splice(index, 1)[0]);
+    }
+    return selected;
   }
 
   private advanceActions(cast: Cast): void {

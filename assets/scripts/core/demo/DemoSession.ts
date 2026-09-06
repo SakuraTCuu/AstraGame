@@ -1,5 +1,5 @@
 import { Actor, applyMaxHealthModifier } from "../actor/Actor";
-import type { ActorOptions, ActorStats, Faction } from "../actor/Actor";
+import type { ActorOptions, ActorStats, CombatRole, Faction } from "../actor/Actor";
 import type { BossPhase } from "../ai/BossAI";
 import type { AreaEffectSnapshot, CastSnapshot, CombatEvent, ProjectileSnapshot, SkillArea, SkillDefinition } from "../combat/Combat";
 import type { StatModifiers, StatusDefinition } from "../combat/SkillEffects";
@@ -28,6 +28,7 @@ export type DefeatReward = ProgressReward;
 export interface DemoActorConfig {
   readonly id: string;
   readonly name?: string;
+  readonly combatRole?: CombatRole;
   readonly kind: string;
   readonly team?: Faction;
   readonly x: number;
@@ -172,6 +173,7 @@ export interface ActorSnapshot {
   readonly name: string;
   readonly kind: string;
   readonly team: Faction;
+  readonly combatRole?: CombatRole;
   readonly x: number;
   readonly y: number;
   readonly hp: number;
@@ -706,6 +708,7 @@ export class DemoSession {
       name: entry.displayName,
       kind: entry.kind,
       team: entry.faction,
+      combatRole: entry.combatRole,
       x: entry.position.x,
       y: entry.position.y,
       hp: entry.health,
@@ -794,6 +797,7 @@ export class DemoSession {
       summonerId: config.summonerId,
       kind: config.kind,
       name: config.name,
+      combatRole: config.combatRole,
       healthBars: config.healthBars,
       initialEnergy: config.energy,
     };
@@ -862,6 +866,7 @@ export class DemoSession {
     if (config.skillEnergyCost !== undefined && (!Number.isSafeInteger(config.skillEnergyCost) || config.skillEnergyCost < 0)) throw new Error(`Invalid skill-energy cost for ${config.id}`);
     if (config.healthCost && (!Number.isFinite(config.healthCost.fraction) || config.healthCost.fraction <= 0 || config.healthCost.fraction > 1 || !["maximum", "current"].includes(config.healthCost.basis))) throw new Error(`Invalid health cost for ${config.id}`);
     if (config.disabled !== undefined && typeof config.disabled !== "boolean") throw new Error(`Invalid disabled skill for ${config.id}`);
+    if (config.targetRule !== undefined && !["nearest", "lowest_hp", "cluster", "random", "role_priority", "highest_attack"].includes(config.targetRule)) throw new Error(`Invalid target rule for ${config.id}`);
     if (config.completionState !== undefined && (typeof config.completionState !== "string" || !config.completionState)) throw new Error(`Invalid completion state for ${config.id}`);
     if (config.returnHomeOnComplete !== undefined && (typeof config.returnHomeOnComplete !== "boolean" || !config.completionState)) throw new Error(`Invalid completion movement for ${config.id}`);
     if (config.castCycles && (!Number.isSafeInteger(config.castCycles.count) || config.castCycles.count < 1 || !Number.isFinite(config.castCycles.interval) ||
@@ -935,7 +940,7 @@ export class DemoSession {
       cooldown: config.cooldown,
       power: config.coefficient,
       target: config.target === "self" ? "self" : config.target.includes("ally") ? "ally" : "enemy",
-      targetRule: config.target.includes("lowest_hp") ? "lowest_hp" : config.target.includes("cluster") ? "cluster" : "nearest",
+      targetRule: config.targetRule ?? (config.target.includes("lowest_hp") ? "lowest_hp" : config.target.includes("cluster") ? "cluster" : "nearest"),
       type: config.type as SkillDefinition["type"],
       telegraph: config.telegraph,
       maxTargets: config.maxTargets,

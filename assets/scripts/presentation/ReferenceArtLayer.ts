@@ -265,7 +265,7 @@ export class ReferenceArtLayer {
         let action = actor.hp <= 0 ? "dead" : fleeing ? "move" : actor.state === "displaced" || actor.state === "controlled" ? "hurt" : cast ? "attack" : moving && !restrained ? "move" : "idle";
         if (cast) action = view.binding.skillAnimations && view.binding.skillAnimations[cast.skillId] || "attack";
         const target = snapshot.actors.find((target) => target.id === actor.targetId);
-        const dx = target && !fleeing ? target.x - actor.x : actor.x - view.lastX;
+        const dx = cast && !fleeing ? cast.point.x - actor.x : moving || fleeing ? actor.x - view.lastX : target ? target.x - actor.x : 0;
         if (Math.abs(dx) > 0.2) view.facing = Math.sign(dx);
         view.lastX = actor.x;
         const visual = view.skeleton ? view.skeleton.node : view.sprite.node;
