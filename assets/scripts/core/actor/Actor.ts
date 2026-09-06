@@ -148,7 +148,18 @@ export class Actor {
   get controlled(): boolean { return this.states.some((entry) => Boolean(entry.definition.control)); }
   get hardControlled(): boolean { return this.hasControl("stun") || this.hasControl("freeze") || this.hasControl("airborne") || this.hasControl("fear"); }
   get canMove(): boolean { return this.alive && this.fsm.state !== "displaced" && !this.hardControlled && !this.hasControl("root"); }
-  blocksCasting(category = "skill"): boolean { return this.hardControlled || (category !== "normal" && this.hasControl("silence")); }
+  blocksCasting(category = "skill", target: "enemy" | "ally" | "self" = "enemy"): boolean {
+    return this.hardControlled || (category !== "normal" && this.hasControl("silence")) ||
+      this.hasControl("taunt") && (category !== "normal" || target !== "enemy");
+  }
+  get tauntTarget(): Actor | undefined {
+    for (let index = this.states.length - 1; index >= 0; index--) {
+      const state = this.states[index], source = state.owner.source;
+      if (state.definition.control === "taunt" && source !== this && source.targetable && source.faction !== this.faction &&
+          source.position.distance(this.homePosition) <= (this.stats.leashRange ?? Infinity)) return source;
+    }
+    return undefined;
+  }
   get interruptionImmune(): boolean { return this.states.some((entry) => entry.definition.interruptionImmunity) || this.hasStatus("ignoreBreakSkill"); }
   get displacementImmune(): boolean { return this.states.some((entry) => entry.definition.displacementImmunity) || ["unForceMove", "ignoreControl", "notControl"].some((state) => this.hasStatus(state) || this.tags.has(state)); }
   private controlImmune(kind: ControlKind): boolean {

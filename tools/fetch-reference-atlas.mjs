@@ -7,8 +7,8 @@ import { inside, mergeBundleParts, openCache } from "./reference-cache.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => args.includes(name) ? args[args.indexOf(name) + 1] : fallback;
-const cacheRoot = option("--cache"), baseUrl = option("--base-url"), atlas = option("--atlas");
-if (!cacheRoot || !baseUrl || !/^uires\/skillEffect\/[A-Za-z0-9_]+$/.test(atlas || "")) throw new Error("Specify --cache, --base-url and one --atlas effect path");
+const cacheRoot = option("--cache"), baseUrl = option("--base-url"), atlas = option("--atlas"), spine = option("--spine"), resource = spine || atlas;
+if (!cacheRoot || !baseUrl || Boolean(atlas) === Boolean(spine) || !(spine ? /^spine\/[A-Za-z0-9_]+$/ : /^uires\/skillEffect\/[A-Za-z0-9_]+$/).test(resource || "")) throw new Error("Specify --cache, --base-url and one --atlas or --spine path");
 const base = new URL(baseUrl.endsWith("/") ? baseUrl : baseUrl + "/");
 if (base.protocol !== "https:" || base.username || base.password || base.search) throw new Error("Use a public HTTPS resource base without credentials");
 const output = inside(process.cwd(), option("--out", "reference-private/downloads"));
@@ -23,17 +23,18 @@ for (const pattern of [/^remote\/resources\/config\.[^_]+\.json$/, /^remote\/res
 const config = mergeBundleParts(parts), imports = new Map(), natives = new Map();
 for (let index = 0; index < config.versions.import.length; index += 2) imports.set(config.versions.import[index], config.versions.import[index + 1]);
 for (let index = 0; index < config.versions.native.length; index += 2) natives.set(config.versions.native[index], config.versions.native[index + 1]);
-const selected = Object.entries(config.paths).filter(([, [path, type]]) => path === atlas && ["cc.SpriteAtlas", "cc.Texture2D"].includes(config.types[type]));
-if (!selected.some(([, [, type]]) => config.types[type] === "cc.SpriteAtlas")) throw new Error("No source SpriteAtlas at the requested path");
+const assetType = spine ? "sp.SkeletonData" : "cc.SpriteAtlas";
+const selected = Object.entries(config.paths).filter(([, [path, type]]) => path === resource && [assetType, "cc.Texture2D"].includes(config.types[type]));
+if (!selected.some(([, [, type]]) => config.types[type] === assetType)) throw new Error("No matching source art at the requested path");
 const tasks = new Set();
 for (const [indexText, [, type]] of selected) {
   const index = Number(indexText), uuid = config.uuids[index];
   const pack = Object.entries(config.packs).find(([, ids]) => ids.includes(index))?.[0], importId = pack || uuid, version = imports.get(pack || index);
   if (!version) throw new Error("Missing import version for the selected asset");
   tasks.add(`remote/resources/import/${importId.slice(0, 2)}/${importId}.${version}.json`);
-  if (config.types[type] === "cc.Texture2D") {
-    if (!natives.has(index)) throw new Error("Missing texture version");
-    tasks.add(`remote/resources/native/${uuid.slice(0, 2)}/${uuid}.${natives.get(index)}.png`);
+  if (config.types[type] === "cc.Texture2D" || config.types[type] === "sp.SkeletonData") {
+    if (!natives.has(index)) throw new Error("Missing native version");
+    tasks.add(`remote/resources/native/${uuid.slice(0, 2)}/${uuid}.${natives.get(index)}.${config.types[type] === "sp.SkeletonData" ? "bin" : "png"}`);
   }
 }
 await mkdir(output, { recursive: true });
@@ -47,10 +48,12 @@ for (const key of tasks) {
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${key}`);
   const data = Buffer.from(await response.arrayBuffer());
   if (key.endsWith(".json")) JSON.parse(data.toString("utf8"));
-  else if (!data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error("Response is not a PNG asset");
+  else if (key.endsWith(".bin")) {
+    if (data.length < 32 || !data.subarray(0, 80).toString("latin1").match(/3\.8\.\d+/)) throw new Error("Response is not a supported Spine binary");
+  } else if (!data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error("Response is not a PNG asset");
   const destination = inside(output, key); await mkdir(dirname(destination), { recursive: true }); await writeFile(destination, data);
-  manifest.files[key] = { file: key, path: atlas, bytes: data.length, sha256: createHash("sha256").update(data).digest("hex") };
+  manifest.files[key] = { file: key, path: resource, bytes: data.length, sha256: createHash("sha256").update(data).digest("hex") };
   await writeFile(join(output, "manifest.json"), JSON.stringify(manifest, null, 2));
   downloaded.push({ key, bytes: data.length });
 }
-console.log(JSON.stringify({ atlas, downloaded, output }, null, 2));
+console.log(JSON.stringify({ resource, downloaded, output }, null, 2));

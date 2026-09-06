@@ -883,6 +883,8 @@ export class DemoSession {
       for (const action of timeline) {
         if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state", "skill_energy", "area", "clear_shields", "shield_to_health", "clear_cooldowns"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
         if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
+        if (action.targetCount !== undefined && (!Number.isSafeInteger(action.targetCount) || action.targetCount < 1)) throw new Error(`Invalid action target count for ${config.id}`);
+        if (action.targetGroup !== undefined && (typeof action.targetGroup !== "string" || !action.targetGroup || (action.recipient && action.recipient !== "targets"))) throw new Error(`Invalid target group for ${config.id}`);
         if (action.healthDamage && (action.type !== "damage" || !["maximum", "current"].includes(action.healthDamage.basis) || !Number.isFinite(action.healthDamage.fraction) || action.healthDamage.fraction <= 0)) throw new Error(`Invalid health-based damage for ${config.id}`);
         if (action.type === "clear_cooldowns" && (!action.cooldownIds?.length || action.cooldownIds.some((id) => typeof id !== "string" || !id))) throw new Error(`Invalid cooldown reset for ${config.id}`);
         if (action.warningIndex !== undefined && (!Number.isSafeInteger(action.warningIndex) || action.warningIndex < 0 || !config.warnings?.[action.warningIndex] ||
@@ -906,7 +908,7 @@ export class DemoSession {
           if (!status.id || !Number.isFinite(status.duration) || (!status.permanent && status.duration <= 0) || Object.values(status.modifiers ?? {}).some((value) => !Number.isFinite(value))) throw new Error(`Invalid status for ${config.id}`);
           if (!Number.isSafeInteger(status.maxStacks ?? 1) || (status.maxStacks ?? 1) < 1) throw new Error(`Invalid status stack limit for ${config.id}`);
           if (Object.entries(status.targetCountBonuses ?? {}).some(([id, count]) => !id || !Number.isSafeInteger(count))) throw new Error(`Invalid target count bonus for ${config.id}`);
-          const controls = ["stun", "freeze", "root", "silence", "airborne", "fear"];
+          const controls = ["stun", "freeze", "root", "silence", "airborne", "fear", "taunt"];
           for (const shield of status.shields ?? []) {
             if (!["flat", "max_health"].includes(shield.basis) || ![shield.amount, shield.duration].every((value) => Number.isFinite(value) && value > 0) ||
                 (shield.healthCostFraction !== undefined && (!Number.isFinite(shield.healthCostFraction) || shield.healthCostFraction <= 0 || shield.healthCostFraction > 1)) ||

@@ -18,9 +18,10 @@ export class EnemyAI {
     const busy = combat.isBusy(enemy);
     const castingTarget = busy && eligible.find((actor) => actor.id === combat.castingTargetId(enemy));
     const current = targets.find((target) => target.id === enemy.targetId && target.targetable);
-    const target = current && eligible.includes(current) && enemy.position.distance(current.position) <= enemy.stats.aggroRange
+    const taunt = enemy.tauntTarget && eligible.includes(enemy.tauntTarget) ? enemy.tauntTarget : undefined;
+    const target = taunt ?? (current && eligible.includes(current) && enemy.position.distance(current.position) <= enemy.stats.aggroRange
       ? current
-      : selectNearestTarget(enemy, eligible, enemy.stats.aggroRange);
+      : selectNearestTarget(enemy, eligible, enemy.stats.aggroRange));
 
     if (enemy.fsm.state === "returning" || enemy.position.distance(enemy.homePosition) > leash || (!target && !castingTarget)) {
       enemy.targetId = undefined;
@@ -42,7 +43,7 @@ export class EnemyAI {
       if (selected && combat.use(enemy, selected, skill)) return;
     }
 
-    const attackRange = Math.min(enemy.stats.attackRange, ...skills.filter((skill) => !skill.disabled && skill.target === "enemy").map((skill) => skill.range));
+    const attackRange = Math.min(enemy.stats.attackRange, ...skills.filter((skill) => !skill.disabled && skill.target === "enemy" && !enemy.blocksCasting(skill.category, skill.target)).map((skill) => skill.range));
     if (enemy.position.distance(target.position) > attackRange) {
       enemy.setState("chasing");
       if (move) move(enemy, target.position, deltaSeconds);

@@ -2,7 +2,7 @@ import type { Actor, CombatRole } from "../actor/Actor";
 import { Vector2 } from "../math/Vector2";
 import type { Vec2Like } from "../math/Vector2";
 import { SeededRandom } from "../random/SeededRandom";
-import type { AreaEffectDefinition, DamageType, SkillAction, SkillArea, SkillConditions, SkillMotion, SkillTrigger, SkillWarning, StatusDefinition } from "./SkillEffects";
+import type { AreaEffectDefinition, ControlKind, DamageType, SkillAction, SkillArea, SkillConditions, SkillMotion, SkillTrigger, SkillWarning, StatusDefinition } from "./SkillEffects";
 export type { SkillArea } from "./SkillEffects";
 
 export interface SkillDefinition {
@@ -68,6 +68,7 @@ export interface CombatEvent {
   readonly damageType?: DamageType;
   readonly periodic?: boolean;
   readonly statusId?: string;
+  readonly control?: ControlKind;
   readonly triggered?: boolean;
   readonly immune?: boolean;
   readonly resource?: "health" | "energy" | "skill_energy";
@@ -88,6 +89,7 @@ interface Cast {
   resolved: boolean;
   actionIndex: number;
   readonly primaryIds: readonly string[];
+  readonly targetGroups: Map<string, readonly Actor[]>;
   readonly speed: number;
   readonly energyAward: { readonly amount: number; awarded: boolean };
   readonly triggered: boolean;
@@ -150,6 +152,8 @@ export function selectSkillTarget(source: Actor, candidates: readonly Actor[], s
     (skill.target === "enemy" ? actor.faction !== source.faction : actor.faction === source.faction) &&
     source.position.distance(actor.position) <= skill.range &&
     targetHealthAllowed(actor, skill));
+  const taunt = skill.target === "enemy" && source.tauntTarget;
+  if (taunt && candidates.includes(taunt)) return eligible.includes(taunt) ? taunt : undefined;
   const clusterSize = (actor: Actor) => eligible.filter((candidate) => actor.position.distance(candidate.position) <= (skill.area?.radius ?? 0)).length;
   eligible.sort((left, right) => {
     const rule = skill.targetRule === "cluster" ? clusterSize(right) - clusterSize(left) : compareTargetPriority(left, right, skill.targetRule);
@@ -299,7 +303,7 @@ export class CombatSystem {
   canUse(actor: Actor, skill: SkillDefinition): boolean {
     if (!Number.isFinite(skill.energyCost ?? 0) || (skill.energyCost ?? 0) < 0 || !Number.isSafeInteger(skill.skillEnergyCost ?? 0) || (skill.skillEnergyCost ?? 0) < 0 ||
         (skill.healthCost && (!Number.isFinite(skill.healthCost.fraction) || skill.healthCost.fraction <= 0 || skill.healthCost.fraction > 1 || !["maximum", "current"].includes(skill.healthCost.basis)))) return false;
-    if (skill.disabled || actor.blocksCasting(skill.category) || (skill.motion && !actor.canMove)) return false;
+    if (skill.disabled || actor.blocksCasting(skill.category, skill.target) || (skill.motion && !actor.canMove)) return false;
     if (skill.type === "summon" && this.actors.filter((candidate) => candidate.alive && candidate.summonerId === actor.id).length >= (skill.summonLimit ?? skill.maxTargets ?? 1)) return false;
     if ((skill.energyCost ?? 0) > actor.energy || (skill.skillEnergyCost ?? 0) > actor.skillEnergy || this.publicCooldowns.has(this.publicKey(actor, skill))) return false;
     return actor.alive && actor.fsm.state !== "returning" && this.conditionsMet(actor, undefined, skill.conditions) && !this.isBusy(actor) && this.cooldownRemaining(actor, skill) === 0;
@@ -311,6 +315,7 @@ export class CombatSystem {
     if (!this.canUse(actor, skill) || !validTarget(actor, target) || !targetHealthAllowed(target, skill) || actor.position.distance(target.position) > skill.range) return false;
     if (skill.target === "enemy" ? actor.faction === target.faction : actor.faction !== target.faction) return false;
     if (skill.target === "self" && target !== actor) return false;
+    if (skill.target === "enemy" && actor.tauntTarget && this.actors.includes(actor.tauntTarget) && target !== actor.tauntTarget) return false;
     const cast = this.makeCast(actor, target, skill);
     const windup = cast.hitAt - this.time;
     this.cooldowns.set(this.cooldownKey(actor, skill), skill.cooldown);
@@ -472,7 +477,7 @@ export class CombatSystem {
     });
     return { id: this.nextCastId++, source: actor, targetId: target.id, skill, origin: actor.position, point: target.position, startedAt: this.time,
       hitAt: this.time + windup, readyAt: this.time + (skill.actions || skill.castDuration ? end / speed : windup + (skill.recovery ?? 0)), resolved: false,
-      actionIndex: 0, primaryIds: this.primaryTargets(actor, target, skill).map((entry) => entry.id), speed,
+      actionIndex: 0, primaryIds: this.primaryTargets(actor, target, skill).map((entry) => entry.id), targetGroups: new Map(), speed,
       energyAward: { amount: skill.blockEnergyGain || skill.energyCost || skill.category === "ultimate" ? 0 :
         skill.category === "normal" ? actor.stats.energyOnNormal ?? actor.stats.energyOnSkill ?? 0 : actor.stats.energyOnSkill ?? 0, awarded: false },
       triggered: chain.length > 0, triggerChain: [...chain, skill.id], fromPlayer: this.playerControlled(actor), shieldBreakVersion: actor.shieldBreakVersion, warnings };
@@ -506,7 +511,7 @@ export class CombatSystem {
       if (!this.conditionsMet(parent.source, this.actors.find((actor) => actor.id === parent.targetId), trigger.conditions)) continue;
       if ((trigger.chance ?? 1) < 1 && this.random() >= (trigger.chance ?? 1)) continue;
       const target = this.selectTarget(parent.source, this.actors, child);
-      if (!target || parent.source.blocksCasting(child.category) || !this.conditionsMet(parent.source, target, child.conditions)) continue;
+      if (!target || parent.source.blocksCasting(child.category, child.target) || !this.conditionsMet(parent.source, target, child.conditions)) continue;
       const cast = this.makeCast(parent.source, target, child, parent.triggerChain);
       this.triggeredCasts.set(cast.id, cast);
       this.events.push({ type: "skill", sourceId: cast.source.id, targetId: target.id, skillId: child.id, triggered: true });
@@ -529,7 +534,7 @@ export class CombatSystem {
       } else for (const id of cast.primaryIds) {
         const target = this.actors.find((actor) => actor.id === id);
         if (!target || !validTarget(cast.source, target)) continue;
-        const projectileCast = { ...cast, targetId: id, primaryIds: [id], point: target.position };
+        const projectileCast = { ...cast, targetId: id, primaryIds: [id], point: target.position, targetGroups: new Map<string, readonly Actor[]>() };
         this.projectiles.set(this.nextProjectileId++, { cast: projectileCast, position: cast.origin, lastUpdate: cast.hitAt, actionIndex: 0,
           expiresAt });
         this.events.push({ type: "projectile", sourceId: cast.source.id, targetId: id, skillId: cast.skill.id });
@@ -571,11 +576,20 @@ export class CombatSystem {
       this.events.push({ type: "summon", sourceId: source.id, targetId: source.id, value: skill.maxTargets ?? 1, skillId: skill.id });
       return;
     }
-    const targets = action?.recipient === "self" ? [source] : action?.recipient === "enemies" ?
+    let targets = action?.recipient === "self" ? [source] : action?.recipient === "enemies" ?
       this.actors.filter((actor) => validTarget(source, actor) && actor.faction !== source.faction && (action.globalTargets || source.position.distance(actor.position) <= skill.range))
         .sort((a, b) => source.position.distanceSquared(a.position) - source.position.distanceSquared(b.position) || a.id.localeCompare(b.id)).slice(0, action.targetCount ?? skill.targetCount ?? 1) : action?.recipient === "allies" ?
       this.actors.filter((actor) => validTarget(source, actor) && actor.faction === source.faction && (action.globalTargets || source.position.distance(actor.position) <= skill.range))
         .sort((a, b) => a.health / a.stats.maxHealth - b.health / b.stats.maxHealth || a.id.localeCompare(b.id)).slice(0, action.targetCount ?? 1) : contacts ?? this.hitTargets(cast, projectile);
+    if (!action?.recipient || action.recipient === "targets") {
+      if (action?.targetGroup && !contacts) {
+        // Keep a frame's recipients when an earlier action removes or defeats one.
+        const key = `${action.targetGroup}:${action.warningIndex ?? -1}`, previous = cast.targetGroups.get(key);
+        if (previous) targets = previous.filter((actor) => this.actors.includes(actor) && validTarget(source, actor));
+        else cast.targetGroups.set(key, targets);
+      }
+      if (action?.targetCount) targets = targets.slice(0, action.targetCount);
+    }
     if (targets.length === 0) this.events.push({ type: "miss", sourceId: source.id, targetId: cast.targetId, skillId: skill.id });
     for (const target of targets) {
       if (!validTarget(source, target)) continue;
@@ -796,14 +810,17 @@ export class CombatSystem {
       if (target.health < previousHealth) this.events.push({ type: "resource_cost", sourceId: cast.source.id, targetId: target.id, skillId: cast.skill.id, resource: "health", value: previousHealth - target.health });
     }
     this.synchronizeControl(target);
-    this.events.push({ type: "status", sourceId: cast.source.id, targetId: target.id, skillId: cast.skill.id });
+    const control = status.states?.find((state) => state.control && target.hasControl(state.control))?.control;
+    this.events.push({ type: "status", sourceId: cast.source.id, targetId: target.id, skillId: cast.skill.id, statusId: status.id, ...(control ? { control } : {}) });
   }
 
   private synchronizeControl(actor: Actor): void {
     if (!actor.alive) return;
     const pending = [...(this.casts.has(actor.id) ? [this.casts.get(actor.id)!] : []), ...[...this.triggeredCasts.values()].filter((cast) => cast.source === actor)];
+    const taunt = actor.tauntTarget;
     if (pending.some((cast) => cast.shieldBreakVersion !== actor.shieldBreakVersion || (!actor.interruptionImmune &&
-        (actor.blocksCasting(cast.skill.category) || (cast.skill.motion && !actor.canMove))))) this.cancelCaster(actor.id);
+        (actor.blocksCasting(cast.skill.category, cast.skill.target) || (cast.skill.motion && !actor.canMove) ||
+          (taunt && this.actors.includes(taunt) && cast.skill.target === "enemy" && cast.targetId !== taunt.id))))) this.cancelCaster(actor.id);
     else for (const cast of pending) if (!this.conditionsMet(actor, this.actors.find((target) => target.id === cast.targetId), cast.skill.maintainConditions)) {
       if (cast.skill.completionState) this.finishCast(cast); else this.cancelCaster(actor.id);
     }

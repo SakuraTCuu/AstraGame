@@ -482,7 +482,7 @@ try {
   const roster = { reordered: true, toggled: true, five, setup: "rank-four and owned-card fixture after ordinary recruitment" };
   const periodicHeroes = await evaluate(() => {
     const boot = window.__referenceBoot, session = boot.session;
-    const results = [2, 26, 10, 16].map((sourceId, index) => {
+    const results = [2, 26, 10, 16, 31].map((sourceId, index) => {
       const id = `reference_hero_${sourceId}`, hero = session.roster.config.heroes.find((hero) => hero.id === id);
       session.map.grantResources({ [hero.cardResource]: 1, "item:3": 1000 }); session.roster.syncOwnership();
       while (session.development.levelOf(id) < 10) { if (session.upgradeHero(id) !== "completed") throw new Error(`Cannot grow ${id}`); }
@@ -1072,6 +1072,60 @@ try {
     return boot.session.world.alliedSummons.length === previousSummons;
   });
   assert.equal(targeting.cleaned, true);
+  await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session, world = session.world, source = session.roster.actor("reference_hero_31"); boot.enabled = false;
+    if (!world.players.includes(source)) throw new Error("Source taunt hero was not deployed");
+    const spawn = session.config.spawns.find((entry) => boot.renderer.referenceArt.config.bindings[entry.id] && session.config.enemies.find((enemy) => enemy.id === entry.enemyId)?.kind === "enemy");
+    if (!spawn) throw new Error("No cached target art for taunt");
+    const offsets = [{ x: -120, y: 140 }, { x: -40, y: 230 }, { x: 80, y: 210 }, { x: 140, y: 110 }];
+    const targets = offsets.map((offset, index) => new source.constructor({ id: `${spawn.id}:taunt_${index}`, name: session.config.enemies.find((enemy) => enemy.id === spawn.enemyId).name,
+      faction: "enemy", position: source.position.add(offset), stats: { maxHealth: 10000, attack: 20 + index * 100, defense: 0, moveSpeed: 0, attackRange: 500, aggroRange: 500, leashRange: 1000 } }));
+    for (const target of targets) world.addEnemy(target);
+    const decoy = new source.constructor({ id: "taunt_decoy", faction: "player", position: source.position.add({ x: 0, y: 300 }),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 500, aggroRange: 500 } });
+    const combat = new world.combat.constructor(), actors = [source, decoy, ...targets], tactical = { id: "taunt_tactical", target: "enemy", range: 500, power: 0, cooldown: 0, windup: 3, category: "skill" };
+    const normal = { id: "taunt_normal", target: "enemy", range: 500, power: 0, cooldown: 0, category: "normal" };
+    boot.tauntProbe = { source, targets, decoy, combat, actors, tactical, normal, hp: source.health, energy: source.energy, targetId: source.targetId };
+    for (const target of targets) if (!combat.use(target, decoy, tactical, actors)) throw new Error("Taunt target tactical failed");
+    source.gainEnergy(10000); const ultimate = world.options.skillDefinitions.reference_skill_10310101;
+    if (!combat.use(source, combat.selectTarget(source, targets, ultimate), ultimate, actors)) throw new Error("Source taunt ultimate failed");
+    combat.update(0.7, actors); const events = combat.drainEvents(), snapshot = { ...session.getSnapshot(), casts: combat.castSnapshots(), events };
+    boot.tauntProbe.events = events; boot.renderer.pushCombatFeedback(snapshot); boot.renderer.update(snapshot, 0.05);
+  });
+  let tauntReady = false;
+  for (let index = 0; index < 50 && !tauntReady; index++) {
+    tauntReady = await evaluate(() => {
+      const boot = window.__referenceBoot, { source, targets, combat } = boot.tauntProbe;
+      boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots() }, 0);
+      return Boolean(boot.renderer.referenceArt.views.get(source.id)?.skeleton) && targets.every((target) => boot.renderer.referenceArt.views.get(target.id)?.node.active);
+    });
+    if (!tauntReady) await delay(100);
+  }
+  assert.equal(tauntReady, true, "Source taunt hero or targets did not render");
+  const taunting = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, targets, combat, tactical, normal, events } = boot.tauntProbe;
+    return { setup: "Source hero grown/deployed through ordinary commands with fixture cards and stationary NPCs", sourceSpine: Boolean(boot.renderer.referenceArt.views.get(source.id).skeleton),
+      affected: targets.map((target) => target.hasControl("taunt")), cancelled: events.filter((event) => event.type === "cast_cancelled").length,
+      feedback: boot.renderer.floatTexts.filter((entry) => entry.node.getComponent(cc.Label)?.string === "\u5632\u8bbd").length,
+      restrictions: targets.slice(1).every((target) => !combat.canUse(target, tactical) && combat.canUse(target, normal) && target.tauntTarget === source) };
+  });
+  assert.equal(taunting.sourceSpine, true); assert.deepEqual(taunting.affected, [false, true, true, true]);
+  assert.equal(taunting.cancelled, 3); assert.equal(taunting.feedback, 3); assert.equal(taunting.restrictions, true);
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-taunt`);
+  }
+  taunting.recovered = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, targets, decoy, combat, actors, tactical, normal } = boot.tauntProbe;
+    const AI = boot.session.world.enemyAIs.get(targets[0].id).constructor;
+    for (const target of targets.slice(1)) new AI([tactical, normal]).update(target, [source, decoy], combat, 0.05);
+    const forced = targets.slice(1).every((target) => target.targetId === source.id);
+    combat.update(2.6, actors); const available = targets.slice(1).every((target) => !target.hasControl("taunt") && combat.canUse(target, tactical));
+    combat.resetEngagement(); source.health = boot.tauntProbe.hp; source.energy = boot.tauntProbe.energy; source.targetId = boot.tauntProbe.targetId;
+    for (const target of targets) boot.session.world.removeEnemy(target.id);
+    boot.renderer.update(boot.session.getSnapshot(), 1); delete boot.tauntProbe; boot.enabled = true;
+    return { forced, available };
+  });
+  assert.deepEqual(taunting.recovered, { forced: true, available: true });
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -1102,7 +1156,7 @@ try {
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
     periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
-    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, movingAreaArt, shieldChannel, targeting, resetCounts, viewports, errors, failures };
+    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, movingAreaArt, shieldChannel, targeting, taunting, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

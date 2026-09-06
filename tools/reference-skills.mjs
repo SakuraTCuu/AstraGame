@@ -43,9 +43,9 @@ const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", 
   craftDmgBonus: "magicBonus", craftDmgReduction: "magicReduction", maxhpRate: "maxHealthRate", pveFinalDmgRecution: "pveDamageReduction", ultraEnegyRate: "energyGainRate" };
 const list = (source) => source ? splitSkillExpression(source, "|").map(skillTuple) : [];
 const skillId = (id) => `reference_skill_${id}`;
-const controlKinds = ["stun", "freeze", "root", "silence", "airborne", "fear"];
+const controlKinds = ["stun", "freeze", "root", "silence", "airborne", "fear", "taunt"];
 const stateControls = { stun: "stun", stunned: "stun", stunNotBoss: "stun", stunAnim1: "stun", stunAnim2: "stun",
-  frozen: "freeze", traditionFreeze: "freeze", twine: "root", immobilized: "root", silent: "silence", silence: "silence", knockUp: "airborne", flyUp: "airborne", upUp: "airborne", fear: "fear" };
+  frozen: "freeze", traditionFreeze: "freeze", twine: "root", immobilized: "root", silent: "silence", silence: "silence", knockUp: "airborne", flyUp: "airborne", upUp: "airborne", fear: "fear", taunt: "taunt" };
 
 export function heroSkillAtStar(source, star = 0) {
   if (!Number.isSafeInteger(star) || star < 0) throw new Error("Invalid hero star");
@@ -118,6 +118,7 @@ export function createReferenceSkillCompiler(lookup) {
         else if (stateId === "unHeal") state.healingBlocked = true;
         else if (stateId === "fixOneDmg") state.damageCap = 1;
         else report(id, "state_behavior", stateId);
+        if (state.control === "taunt") report(id, "taunt_parity", "only normal attacks; AI selects the latest valid opposing applier within its leash; source loss, movement input and attackNotCtrl behavior require live comparison");
         if (state.control === "fear") {
           state.wander = { speed: action[3] ?? 350, turnInterval: (action[4] ?? 1000) / 1000 };
           report(id, "fear_motion_parity", { source: action, interpretation: "random heading at each configured interval; speed and default heading loop follow the source description; interval operand requires live comparison" });
@@ -310,7 +311,7 @@ export function createReferenceSkillCompiler(lookup) {
       report(id, "channel_movement_parity", { source: channelMove, interpretation: "forward movement beginning at the configured offset; additional operands and exact steering require live comparison" });
     }
     const appendFrames = (frames, actions, insideArea = false) => {
-      for (const frame of frames) {
+      for (const [frameIndex, frame] of frames.entries()) {
         const at = insideArea || definition.projectileSpeed ? Math.max(0, frame.frame / fps) : motion ? windup + definition.motion.duration + frame.frame / fps : Math.max(windup, frame.frame / fps);
         const firstAction = actions.length;
         let damageStep;
@@ -385,6 +386,12 @@ export function createReferenceSkillCompiler(lookup) {
             actions.push({ at, type: "skill_energy", recipient: "self", skillEnergy: { minimum: action[1], maximum: action[2] } });
             report(id, "skill_energy_parity", { source: action, interpretation: "inclusive random gain range; equal bounds give a fixed refill; requires live comparison" });
           }
+        else if (action[0] === "targetBuffAction" && action.length === 4 && Number.isSafeInteger(action[1]) && action[1] > 0 && action[2] === 0) {
+          const buff = status(action[3]);
+          actions.push(...buff.immediate.map((effect) => ({ ...effect, at, recipient: "targets", targetCount: action[1] })));
+          actions.push({ at, type: "status", status: buff.definition, recipient: "targets", targetCount: action[1] });
+          report(id, "target_buff_parity", "positive target count with mode 0; share this frame's selected recipients without replacing defeated targets; other modes and exact selection timing require live comparison");
+        }
         else if (action[0] === "addBuffAction") {
           const buff = status(action[1]);
           const recipient = action[2] === 1 ? "self" : action[2] === 2 ? "allies" : "targets";
@@ -393,6 +400,9 @@ export function createReferenceSkillCompiler(lookup) {
           actions.push({ at, type: "status", status: buff.definition, recipient, targetCount });
           if (insideArea && action.length > 4) report(id, "area_buff_options", action);
           } else if (!['bubbleAction', 'chargeAction', 'jumpAction'].includes(action[0])) report(id, "action", action);
+        }
+        if (frame.actions.some((action) => action[0] === "targetBuffAction" && action.length === 4 && Number.isSafeInteger(action[1]) && action[1] > 0 && action[2] === 0)) {
+          for (const action of actions.slice(firstAction)) if ((!action.recipient || action.recipient === "targets") && ["damage", "status", "heal"].includes(action.type)) action.targetGroup = `frame:${frameIndex}`;
         }
         const warningIndices = !insideArea && frameWarnings.get(frame);
         if (warningIndices) {

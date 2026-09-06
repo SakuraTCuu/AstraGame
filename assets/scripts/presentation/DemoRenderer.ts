@@ -261,22 +261,23 @@ export class DemoRenderer {
         const actors = new Map<string, ActorSnapshot>();
         snapshot.actors.forEach((actor) => actors.set(actor.id, actor));
         snapshot.events.forEach((event) => {
-            if (!["damage", "heal", "absorb"].includes(event.type) || (!(event.value > 0) && !event.immune)) return;
+            const taunted = event.type === "status" && event.control === "taunt";
+            if (!taunted && (!["damage", "heal", "absorb"].includes(event.type) || (!(event.value > 0) && !event.immune))) return;
             const actor = actors.get(event.targetId);
             if (!actor) return;
-            const color = event.immune ? cc.color(164, 216, 239) : event.type === "heal" ? cc.color(100, 241, 148) : event.type === "absorb" ? cc.color(111, 210, 244) : cc.color(255, 104, 89);
+            const color = taunted ? cc.color(245, 196, 101) : event.immune ? cc.color(164, 216, 239) : event.type === "heal" ? cc.color(100, 241, 148) : event.type === "absorb" ? cc.color(111, 210, 244) : cc.color(255, 104, 89);
             const label = this.floatPool.pop() || this.createLabel("FloatText", 23, color, cc.Vec2.ZERO, cc.Label.HorizontalAlign.CENTER);
             label.node.active = true;
             label.node.color = color;
             label.node.opacity = 255;
             label.node.setContentSize(140, 32);
-            label.string = event.immune ? "\u514d\u75ab" : `${event.type === "heal" ? "+" : "-"}${Math.round(event.value || 0)}`;
+            label.string = taunted ? "\u5632\u8bbd" : event.immune ? "\u514d\u75ab" : `${event.type === "heal" ? "+" : "-"}${Math.round(event.value || 0)}`;
             label.node.zIndex = 30;
-            const lane = (this.feedbackLane++ % 3) - 1;
+            const lane = taunted ? 0 : (this.feedbackLane++ % 3) - 1;
             const visualHeight = this.referenceArt?.feedbackHeight(actor.id);
             const elevation = Math.max(actor.elevation || 0, snapshot.casts.find((cast) => cast.sourceId === actor.id)?.elevation || 0);
             this.floatTexts.push({ node: label.node, world: { x: actor.x + lane * 24, y: actor.y + Math.abs(lane) * 16 },
-                age: 0, duration: 0.72, height: (visualHeight === undefined ? actor.kind === "boss" ? 110 : 80 : visualHeight + 32) + elevation });
+                age: 0, duration: taunted ? 0.9 : 0.72, height: (visualHeight === undefined ? actor.kind === "boss" ? 110 : 80 : visualHeight + 32) + elevation + (taunted ? 32 : 0) });
         });
     }
 

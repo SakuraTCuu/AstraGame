@@ -63,9 +63,9 @@ test("reference supplements admit resource data but reject scripts and escaping 
   const root = await mkdtemp(join(tmpdir(), "astra-cache-test-")), cache = join(root, "cache"), supplement = join(root, "supplement");
   try {
     await mkdir(cache); await mkdir(supplement); await writeFile(join(cache, "cacheList.json"), JSON.stringify({ files: {} }));
-    const texture = "remote/resources/native/aa/aabb.ccdd.png", atlas = "remote/resources/import/aa/aabb.ccdd.json";
-    await writeFile(join(supplement, "manifest.json"), JSON.stringify({ files: { [texture]: { file: texture }, [atlas]: { file: atlas } } }));
-    assert.deepEqual((await openCache(cache, supplement)).entries.map((entry) => entry.key), [texture, atlas]);
+    const texture = "remote/resources/native/aa/aabb.ccdd.png", atlas = "remote/resources/import/aa/aabb.ccdd.json", spine = "remote/resources/native/aa/aabb.ccdd.bin";
+    await writeFile(join(supplement, "manifest.json"), JSON.stringify({ files: { [texture]: { file: texture }, [atlas]: { file: atlas }, [spine]: { file: spine } } }));
+    assert.deepEqual((await openCache(cache, supplement)).entries.map((entry) => entry.key), [texture, atlas, spine]);
     for (const [key, file] of [["remote/resources/index.js", "index.js"], ["remote/resources/import/aa/aabb.ccdd.js", "script.js"],
       [texture, "../outside.png"], ["remote/resources/native/aa/../../outside.png", "outside.png"]]) {
       await writeFile(join(supplement, "manifest.json"), JSON.stringify({ files: { [key]: { file } } }));

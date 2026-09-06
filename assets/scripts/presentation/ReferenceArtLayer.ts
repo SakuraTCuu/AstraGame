@@ -261,7 +261,7 @@ export class ReferenceArtLayer {
         const cast = snapshot.casts.find((cast) => cast.sourceId === actor.id);
         const frozen = actor.controls?.some((control) => control.kind === "freeze");
         const fleeing = actor.controls?.some((control) => control.kind === "fear") && !actor.controls.some((control) => ["freeze", "stun", "airborne", "root"].includes(control.kind));
-        const restrained = actor.controls?.some((control) => control.kind !== "silence");
+        const restrained = actor.controls?.some((control) => control.kind !== "silence" && control.kind !== "taunt");
         let action = actor.hp <= 0 ? "dead" : fleeing ? "move" : actor.state === "displaced" || actor.state === "controlled" ? "hurt" : cast ? "attack" : moving && !restrained ? "move" : "idle";
         if (cast) action = view.binding.skillAnimations && view.binding.skillAnimations[cast.skillId] || "attack";
         const target = snapshot.actors.find((target) => target.id === actor.targetId);

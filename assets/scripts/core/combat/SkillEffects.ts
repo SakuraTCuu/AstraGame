@@ -1,5 +1,5 @@
 export type DamageType = "physical" | "magic" | "soul" | "holy" | "punishment" | "skill";
-export type ControlKind = "stun" | "freeze" | "root" | "silence" | "airborne" | "fear";
+export type ControlKind = "stun" | "freeze" | "root" | "silence" | "airborne" | "fear" | "taunt";
 
 export interface SkillArea {
   readonly shape: "circle" | "cone" | "line";
@@ -126,6 +126,7 @@ export interface SkillAction {
   readonly forceCritical?: boolean;
   readonly recipient?: "targets" | "self" | "allies" | "enemies";
   readonly targetCount?: number;
+  readonly targetGroup?: string;
   readonly globalTargets?: boolean;
   readonly status?: StatusDefinition;
   readonly stateId?: string;

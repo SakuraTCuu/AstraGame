@@ -107,7 +107,8 @@ test("source state actions preserve multiple timers, immunity tags and control-f
   const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]), skill = compiler.compile(1), status = skill.actions[0].status;
   assert.equal(skill.conditions.uncontrolled, true); assert.deepEqual(status.blockedByStates, ["unFlyUp"]);
   assert.deepEqual(status.states.map((state) => [state.id, state.duration]), [["ignoreBreakSkill", 0.5], ["knockUp", 2], ["notControl", 1]]);
-  assert.equal(status.states[0].interruptionImmunity, true); assert.equal(status.states[1].control, "airborne"); assert.equal(status.states[2].controlImmunity.length, 6);
+  assert.equal(status.states[0].interruptionImmunity, true); assert.equal(status.states[1].control, "airborne"); assert.equal(status.states[2].controlImmunity.length, 7);
+  assert.equal(status.states[2].controlImmunity.includes("taunt"), true);
   assert.equal(status.harmful, true); assert.deepEqual(compiler.issues.map((issue) => issue.kind), ["airborne_motion_parity"]);
 });
 
