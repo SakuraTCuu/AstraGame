@@ -129,6 +129,13 @@ export function createReferenceSkillCompiler(lookup) {
         } else if (action.length > 3) report(id, "state_options", action);
         definition.states ||= []; definition.states.push(state);
       }
+      else if (action[0] === "addShieldAction" && action[2] > 0 && [1, 3, 5].includes(action[1]) && action[3] > 0 &&
+          (action[1] === 5 ? action.length === 5 && action[3] <= 10000 && action[4] > 0 : action.length === 4)) {
+        definition.shields ||= [];
+        definition.shields.push({ basis: action[1] === 1 ? "flat" : "max_health", duration: action[2] / 1000,
+          amount: (action[1] === 5 ? action[4] : action[3]) / (action[1] === 1 ? 1 : 10000), healthCostFraction: action[1] === 5 ? action[3] / 10000 : undefined });
+        report(id, "shield_parity", { source: action, interpretation: "flat or target maximum-health shield; type 5 converts paid maximum-health share into the configured shield share; low-health clamp, replacement and Boss costs require live comparison" });
+      }
       else if (action[0] === "healAction") immediate.push({ type: "heal", power: Number(action[2] ?? action[1]) / 10000 });
       else if (action[0] === "buffAddEnegyAction" && action[2] > 0 && action[3] >= action[2]) {
         if (action[1] === -1) immediate.push({ type: "skill_energy", skillEnergy: { minimum: action[2], maximum: action[2], cap: action[3] } });
@@ -152,6 +159,10 @@ export function createReferenceSkillCompiler(lookup) {
       if (tag[0] === "backHomeRemoveTag") definition.clearOnReturn = true;
       else if (tag[0] === "noStateTag" && typeof tag[1] === "string") { definition.blockedByStates ||= []; definition.blockedByStates.push(tag[1]); }
       else if (tag[0] === "tickSpanChangeByBuffTag" && tag[1] === 2 && tag[2] === `1_${row.group || row.id}` && definition.periodicDamage) definition.periodicDamage.intervalPerStack = tag[3] / 1000;
+      else if (tag[0] === "shieldBreakStopTag" && tag.length === 1 && definition.shields?.length) {
+        for (const shield of definition.shields) { shield.breakState = "chantBroken"; shield.interruptOnBreak = true; }
+        report(id, "shield_break_parity", "damage depletion interrupts the cast and sets chantBroken; natural expiry does not set it; state timing and active-area cleanup require live comparison");
+      }
       else report(id, "buff_tag", tag);
     }
     if (definition.maxStacks > 1 && row.overlieRefreshFirst !== 1) report(id, "stack_expiry", "shared expiry currently refreshes on reapplication");
@@ -177,6 +188,7 @@ export function createReferenceSkillCompiler(lookup) {
       else if (condition[0] === "fightingTimeCond" && condition[1] === ">") conditions.combatTimeAtLeast = condition[2] / 1000;
       else if (condition[0] === "castStateCond") conditions.requiredState = String(condition[2]);
       else if (condition[0] === "notControlCond") conditions.uncontrolled = true;
+      else if (condition[0] === "shieldCond" && condition.length === 1) { conditions.hasShield = true; conditions.excludedState = "chantBroken"; }
       else if (condition[0] === "enegyCond") {
         if (!Number.isSafeInteger(condition[2]) || condition[2] < 0) { report(id, "condition", condition); unavailable = true; continue; }
         const amount = condition[2];
@@ -204,6 +216,7 @@ export function createReferenceSkillCompiler(lookup) {
       publicCooldown: (row.publicCd || 0) / 1000, publicCooldownGroup: row.publicCdGroup === null || row.publicCdGroup === undefined ? undefined : String(row.publicCdGroup),
       conditions, area, areaAnchor: area?.shape === "cone" ? "caster" : undefined, actions,
       forceCritical: tags.some((tag) => tag[0] === "criticalTag"), blockEnergyGain: tags.some((tag) => tag[0] === "blockUltraEnegyTag") };
+    if (conditions.hasShield && tags.some((tag) => tag[0] === "chantSkillTag")) definition.maintainConditions = { hasShield: true };
     for (const cost of tags.filter((tag) => tag[0] === "castCostTag")) {
       if (cost.length % 2 !== 1) { report(id, "invalid_cost", cost); unavailable = true; continue; }
       for (let index = 1; index < cost.length; index += 2) {
@@ -239,22 +252,26 @@ export function createReferenceSkillCompiler(lookup) {
     if (warnings.length > 1) {
       const round = tags.find((tag) => tag[0] === "warnRoundTag");
       const lines = tags.find((tag) => tag[0] === "warnRandomLineTag");
+      const randomDirection = tags.find((tag) => tag[0] === "warnRandomDirTag"), quadrants = tags.find((tag) => tag[0] === "warnRoundForeTag");
+      const directionLayout = randomDirection?.length === 2 && randomDirection[1] === 8 && quadrants?.length === 5 && quadrants[1] === warnings.length &&
+        quadrants[2] === 90 && quadrants[3] === 0 && quadrants[4] === 2 && warnings.every((entry) => entry[0] === 2 && entry[1] === -1 && entry[4] === "sector1_4");
       const paths = lines?.slice(3).map((value) => String(value).split("_").map(Number));
       const lineLayout = lines?.[1] === 0 && lines[2] === 0 && paths.length > 0 && paths.every((path) => path.length === 4 && path.every(Number.isFinite) && (path[0] !== path[2] || path[1] !== path[3])) &&
         warnings.every((entry) => entry[0] === 4 && entry[1] === 1 && entry[4] === "box");
       const spatialFrames = frames.filter((frame) => frame.actions.some((action) => ["damageAction", "damageByBuffAction", "sceneSpriteAction"].includes(action[0])));
-      const supported = !definition.projectileSpeed && !tags.some((tag) => ["warnPosOffsetTag", "warnRandomDirTag", "warnRandomBoxPosTag"].includes(tag[0])) &&
-        (lineLayout || (!lines && warnings.every((entry) => entry[4] === "circle" && [1, 2, 3].includes(entry[0])) &&
+      const supported = !definition.projectileSpeed && !tags.some((tag) => ["warnPosOffsetTag", "warnRandomBoxPosTag"].includes(tag[0]) || (tag[0] === "warnRandomDirTag" && !directionLayout)) &&
+        (directionLayout || lineLayout || (!lines && warnings.every((entry) => entry[4] === "circle" && [1, 2, 3].includes(entry[0])) &&
         (!warnings.some((entry) => entry[0] === 3) || (round && Math.abs(round[1] * warnings.length - 360) < 1e-6)))) &&
         (spatialFrames.length === warnings.length || spatialFrames.length === 1);
       if (supported) {
-        definition.warnings = warnings.map((entry, index) => lineLayout ? { start: entry[2] / 1000, end: entry[3] / 1000,
+        definition.warnings = warnings.map((entry, index) => directionLayout ? { start: entry[2] / 1000, end: entry[3] / 1000, anchor: "caster", follow: true,
+          geometry: { shape: "cone", radius: entry[5], angleDegrees: 90 }, directionAngles: [0, 90, 180, 270] } : lineLayout ? { start: entry[2] / 1000, end: entry[3] / 1000,
           geometry: { shape: "line", width: entry[5], radius: entry[6] }, anchor: "home",
           paths: paths.map(([x, y, endX, endY]) => ({ from: { x, y }, to: { x: endX, y: endY } })) } : { start: entry[2] / 1000, end: entry[3] / 1000,
           geometry: { shape: "circle", radius: entry[5] }, anchor: entry[0] === 2 ? "random_target" : entry[1] === -1 ? "caster" : "target",
           distance: entry[0] === 3 ? round[2] : 0, angleDegrees: entry[0] === 3 ? index * round[1] : 0, follow: entry[0] !== 3 });
         spatialFrames.forEach((frame, index) => frameWarnings.set(frame, spatialFrames.length === 1 ? warnings.map((_, index) => index) : [index]));
-        report(id, "warning_layout_parity", lineLayout ? "seeded distinct source line pairs relative to caster home, using configured warning length; anchor, direction and release offsets require live comparison" :
+        report(id, "warning_layout_parity", directionLayout ? "seeded distinct world-axis quadrants around the caster; zero angle and random-direction operands require live comparison" : lineLayout ? "seeded distinct source line pairs relative to caster home, using configured warning length; anchor, direction and release offsets require live comparison" :
           "independent circles, first-target ring anchor and seeded distinct random targets; layout origin and release-frame offsets require live comparison");
       } else report(id, "multiple_warnings", warnings);
     }
@@ -288,7 +305,7 @@ export function createReferenceSkillCompiler(lookup) {
           const search = tags.find((tag) => tag[0] === "sceneSpriteSearchTag");
           const moving = search?.length === 5 && search[1] === 0 && search[2] > 0 && search[3] === -1 && [2, 3].includes(search[4]) &&
             !tags.some((tag) => ["sceneSpriteDelayTag", "sceneSpriteCastPosTag"].includes(tag[0]));
-          const unsupportedLayout = tags.filter((tag) => ["warnRandomDirTag", "warnRandomBoxPosTag"].includes(tag[0]) ||
+          const unsupportedLayout = tags.filter((tag) => tag[0] === "warnRandomBoxPosTag" || (tag[0] === "warnRandomDirTag" && !definition.warnings?.every((warning) => warning.directionAngles)) ||
             (tag[0] === "warnRandomLineTag" && !definition.warnings?.every((warning) => warning.paths)) || (tag[0] === "sceneSpriteSearchTag" && !moving));
           if (unsupportedLayout.length) { report(id, "area_layout", unsupportedLayout); continue; }
             const geometry = action[3] === "circle" ? { shape: "circle", radius: action[4] } : action[3] === "box" ?
@@ -354,6 +371,23 @@ export function createReferenceSkillCompiler(lookup) {
       }
     };
     appendFrames(frames, actions);
+    const loop = tags.find((tag) => tag[0] === "chantLoopTag");
+    if (loop) {
+      if (loop.length === 4 && Number.isSafeInteger(loop[1]) && loop[1] > 0 && loop[1] <= 100 && loop[2] > 0 && loop[2] === loop[3] &&
+          definition.warnings?.length && actions.some((action) => action.warningIndex !== undefined) && !definition.motion && !definition.projectileSpeed) {
+        const baseWarnings = definition.warnings, baseActions = actions.splice(0);
+        definition.warnings = [];
+        for (let cycle = 0; cycle < loop[1]; cycle++) {
+          const offset = cycle * loop[2] / 1000;
+          definition.warnings.push(...baseWarnings.map((warning) => ({ ...warning, start: warning.start + offset, end: warning.end + offset, directionGroup: String(cycle) })));
+          for (const action of baseActions) {
+            if (action.warningIndex !== undefined) actions.push({ ...action, at: action.at + offset, warningIndex: action.warningIndex + cycle * baseWarnings.length });
+            else if (cycle === 0) actions.push(action);
+          }
+        }
+        report(id, "chant_loop_parity", { cycles: loop[1], interval: loop[2] / 1000, interpretation: "repeated warning-bound frames; existing post-time retained; cadence and older descriptions require live comparison" });
+      } else report(id, "chant_loop", loop);
+    }
     const presentations = row.presentationIds ? skillTuple(row.presentationIds) : [];
     definition.presentation = { release: presentations[presentations.length - 1] || "attack",
       prepare: presentations.length > 2 ? presentations[1] : undefined, hold: presentations.length > 3 ? presentations[2] : undefined };

@@ -2,7 +2,7 @@ import { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
 import { ForegroundRenderer } from "./ForegroundRenderer";
 
 interface ArtBinding { path: string; kind: "spine" | "atlas"; scale: number; height: number; fps: number; flip: boolean; skillAnimations?: Record<string, string>; skillPhases?: Record<string, { prepare?: string; hold?: string; release: string }>; }
-interface ProjectileBinding { path: string; fps: number; scale: number; loop: boolean; offsetY: number; directional: boolean; }
+interface ProjectileBinding { path: string; fps: number; scale: number; loop: boolean; offsetY: number; directional: boolean; offsetAlong?: number; anchorX?: number; }
 interface ArtConfig { bundle: string; mapBundle: string; mapName: string; tileSize: number; mapWidth: number; mapHeight: number; depth: number; scale: number; tiles: string[]; bindings: Record<string, ArtBinding>; projectiles?: Record<string, ProjectileBinding>; areas?: Record<string, ProjectileBinding>; occlusionPolygons?: Array<Array<{ x: number; y: number }>>; }
 interface ActorView { node: cc.Node; skeleton?: sp.Skeleton; sprite?: cc.Sprite; bars: cc.Graphics; binding: ArtBinding; action: string; age: number; lastX: number; facing: number; castId?: number; }
 
@@ -184,7 +184,10 @@ export class ReferenceArtLayer {
             const frame = Math.floor(area.age * binding.fps);
             sprite.spriteFrame = frames[binding.loop ? frame % frames.length : Math.min(frames.length - 1, frame)];
             const facing = area.moving && area.directionX < 0 ? -1 : 1;
-            sprite.node.setPosition(point.x, point.y + binding.offsetY * scale); sprite.node.setScale(binding.scale * scale * facing, binding.scale * scale);
+            sprite.node.anchorX = binding.anchorX ?? 0.5;
+            sprite.node.setPosition(point.x + area.directionX * (binding.offsetAlong || 0) * scale,
+                point.y + (binding.offsetY + area.directionY * (binding.offsetAlong || 0) * depth) * scale);
+            sprite.node.setScale(binding.scale * scale * facing, binding.scale * scale);
             sprite.node.angle = binding.directional ? (area.moving ? Math.atan2(area.directionY * depth, Math.abs(area.directionX)) * facing : Math.atan2(area.directionY * depth, area.directionX)) * 180 / Math.PI : 0;
             sprite.node.zIndex = (area.moving ? 0 : -1000000) + Math.round(100000 - area.y);
         }
@@ -306,6 +309,10 @@ export class ReferenceArtLayer {
         g.fillColor = cc.color(15, 18, 18, 220); g.rect(-width / 2, height, width, 7); g.fill();
         g.fillColor = actor.team === "player" ? cc.color(72, 208, 118) : cc.color(226, 73, 70);
         g.rect(-width / 2 + 1, height + 1, (width - 2) * actor.hp / actor.maxHp, 5); g.fill();
+        if (actor.shield > 0) {
+            g.fillColor = cc.color(16, 40, 50, 230); g.rect(-width / 2, height + 9, width, 5); g.fill();
+            g.fillColor = cc.color(118, 226, 246); g.rect(-width / 2 + 1, height + 10, (width - 2) * Math.min(1, actor.shield / actor.maxHp), 3); g.fill();
+        }
         if (actor.maxEnergy) {
             g.fillColor = cc.color(18, 27, 43, 230); g.rect(-width / 2, height - 5, width, 4); g.fill();
             g.fillColor = cc.color(110, 190, 230); g.rect(-width / 2, height - 5, width * (actor.energy || 0) / actor.maxEnergy, 3); g.fill();

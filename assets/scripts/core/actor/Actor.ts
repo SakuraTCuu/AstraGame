@@ -6,7 +6,7 @@ import type { ControlKind, DamageType, StatModifiers, StatusDefinition, StatusSt
 export type Faction = "player" | "enemy";
 export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "displaced" | "controlled" | "returning" | "dead";
 
-export interface ShieldLayer { readonly key: string; amount: number; remaining: number; }
+export interface ShieldLayer { readonly key: string; amount: number; remaining: number; readonly breakState?: string; readonly interruptOnBreak?: boolean; }
 interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; energyElapsed: number; source: Actor; skillId: string; fromPlayer: boolean; }
 interface AppliedState { readonly definition: StatusState; readonly owner: AppliedStatus; readonly initialElevation: number; remaining: number; elapsed: number; direction?: Vector2; nextTurn?: number; }
 export interface PeriodicDamageTick { readonly source: Actor; readonly skillId: string; readonly statusId: string; readonly power: number; readonly damageType: DamageType; }
@@ -82,6 +82,7 @@ export class Actor {
   health: number;
   energy: number;
   skillEnergy = 0;
+  shieldBreakVersion = 0;
   targetId?: string;
 
   constructor(options: ActorOptions) {
@@ -187,7 +188,7 @@ export class Actor {
     if (!this.alive || (!definition.permanent && definition.duration <= 0) || definition.blockedByStates?.some((state) => this.hasStatus(state) || this.tags.has(state))) return false;
     const requested = definition.states ?? (definition.state ? [{ id: definition.state, duration: definition.permanent ? -1 : definition.duration }] : []);
     const states = requested.filter((state) => !(state.excludeBoss && (this.kind === "boss" || this.tags.has("boss"))) && (!state.control || !this.controlImmune(state.control)));
-    if (requested.length && !states.length && !Object.keys(definition.modifiers ?? {}).length && !definition.periodicDamage && !definition.periodicSkillEnergy && !definition.targetCountBonuses) return false;
+    if (requested.length && !states.length && !Object.keys(definition.modifiers ?? {}).length && !definition.periodicDamage && !definition.periodicSkillEnergy && !definition.targetCountBonuses && !definition.shields?.length) return false;
     const existing = this.statuses.find((entry) => (entry.definition.group ?? entry.definition.id) === (definition.group ?? definition.id));
     const remaining = definition.permanent ? -1 : definition.duration;
     if (existing) {
@@ -201,6 +202,11 @@ export class Actor {
     for (let index = this.states.length - 1; index >= 0; index--) if ((this.states[index].owner.definition.group ?? this.states[index].owner.definition.id) === (definition.group ?? definition.id)) this.states.splice(index, 1);
     for (const state of states) this.states.push({ definition: state, owner, remaining: state.duration, elapsed: 0, initialElevation });
     this.refreshHealthModifier();
+    for (let index = 0; index < (definition.shields?.length ?? 0); index++) {
+      const shield = definition.shields![index], cost = this.stats.maxHealth * (shield.healthCostFraction ?? 0);
+      const paid = cost > 0 ? this.spendHealth(cost) : 0, factor = cost > 0 ? paid / cost : 1;
+      this.addShield(`${definition.group ?? definition.id}:${index}`, (shield.basis === "max_health" ? this.stats.maxHealth : 1) * shield.amount * factor, shield.duration, shield);
+    }
     return true;
   }
 
@@ -265,12 +271,12 @@ export class Actor {
     }
   }
 
-  addShield(key: string, amount: number, duration: number): number {
+  addShield(key: string, amount: number, duration: number, options: { readonly breakState?: string; readonly interruptOnBreak?: boolean } = {}): number {
     if (!this.alive || amount <= 0 || duration <= 0) return 0;
     const previous = this.shield;
     const layer = this.shields.find((entry) => entry.key === key);
-    if (layer) { layer.amount = Math.max(layer.amount, Math.floor(amount)); layer.remaining = duration; }
-    else this.shields.push({ key, amount: Math.floor(amount), remaining: duration });
+    if (layer) { layer.amount = Math.max(layer.amount, Math.floor(amount + 1e-9)); layer.remaining = duration; }
+    else this.shields.push({ key, amount: Math.floor(amount + 1e-9), remaining: duration, breakState: options.breakState, interruptOnBreak: options.interruptOnBreak });
     return this.shield - previous;
   }
 
@@ -341,6 +347,10 @@ export class Actor {
       const absorbed = Math.min(layer.amount, actualDamage);
       layer.amount -= absorbed;
       actualDamage -= absorbed;
+      if (absorbed > 0 && layer.amount === 0) {
+        if (layer.interruptOnBreak) this.shieldBreakVersion++;
+        if (layer.breakState) this.addStatus({ id: `shield_break:${layer.key}`, duration: -1, permanent: true, clearOnReturn: true, states: [{ id: layer.breakState, duration: -1 }] });
+      }
     }
     actualDamage = Math.min(Math.max(0, this.health - (this.preventsDeath ? 1 : 0)), actualDamage);
     this.health = Math.max(0, this.health - actualDamage);

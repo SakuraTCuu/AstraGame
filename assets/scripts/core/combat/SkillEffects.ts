@@ -14,6 +14,8 @@ export interface SkillWarning {
   readonly geometry: SkillArea;
   readonly anchor: "caster" | "target" | "random_target" | "home";
   readonly paths?: readonly { readonly from: { readonly x: number; readonly y: number }; readonly to: { readonly x: number; readonly y: number } }[];
+  readonly directionAngles?: readonly number[];
+  readonly directionGroup?: string;
   readonly distance?: number;
   readonly angleDegrees?: number;
   readonly follow?: boolean;
@@ -100,6 +102,8 @@ export interface StatusDefinition {
     readonly intervalPerStack?: number;
   };
   readonly periodicSkillEnergy?: { readonly interval: number; readonly amount: number; readonly cap: number };
+  readonly shields?: readonly { readonly basis: "flat" | "max_health"; readonly amount: number; readonly duration: number;
+    readonly healthCostFraction?: number; readonly breakState?: string; readonly interruptOnBreak?: boolean }[];
 }
 
 export interface HealingBonus {
@@ -153,4 +157,5 @@ export interface SkillConditions {
   readonly uncontrolled?: boolean;
   readonly skillEnergyAtLeast?: number;
   readonly skillEnergyAtMost?: number;
+  readonly hasShield?: boolean;
 }

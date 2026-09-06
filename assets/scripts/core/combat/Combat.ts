@@ -43,6 +43,7 @@ export interface SkillDefinition {
   readonly warnings?: readonly SkillWarning[];
   readonly blockEnergyGain?: boolean;
   readonly conditions?: SkillConditions;
+  readonly maintainConditions?: SkillConditions;
   readonly linkedCooldowns?: readonly { readonly id: string; readonly duration: number }[];
   readonly motion?: SkillMotion;
   readonly damageType?: DamageType;
@@ -89,6 +90,7 @@ interface Cast {
   readonly triggered: boolean;
   readonly triggerChain: readonly string[];
   readonly fromPlayer: boolean;
+  readonly shieldBreakVersion: number;
 }
 
 interface WarningPlacement { readonly definition: SkillWarning; readonly anchorId: string; readonly offset: Vector2; readonly direction: Vector2; position: Vector2; }
@@ -364,6 +366,7 @@ export class CombatSystem {
   }
 
   private conditionsMet(source: Actor, target: Actor | undefined, condition?: SkillConditions): boolean {
+    if (condition?.hasShield !== undefined && (source.shield > 0) !== condition.hasShield) return false;
     if (condition?.skillEnergyAtLeast !== undefined && source.skillEnergy < condition.skillEnergyAtLeast) return false;
     if (condition?.skillEnergyAtMost !== undefined && source.skillEnergy > condition.skillEnergyAtMost) return false;
     if (condition?.uncontrolled && source.controlled) return false;
@@ -384,7 +387,7 @@ export class CombatSystem {
     const speed = Math.max(0.1, 1 + actor.modifier("attackSpeedRate") + (skill.category === "normal" ? actor.modifier("normalAttackSpeedRate") : 0));
     const windup = (skill.windup ?? (skill.type === "telegraph_damage" ? skill.telegraph ?? 0 : 0)) / speed;
     const end = Math.max(skill.castDuration ?? 0, (skill.windup ?? 0) + (skill.recovery ?? 0), ...(skill.actions ?? []).map((action) => action.at), ...(skill.warnings ?? []).map((warning) => warning.end));
-    const facing = Math.atan2(target.position.y - actor.position.y, target.position.x - actor.position.x), used = new Set<string>([target.id]), usedPaths = new Set<string>();
+    const facing = Math.atan2(target.position.y - actor.position.y, target.position.x - actor.position.x), used = new Set<string>([target.id]), usedPaths = new Set<string>(), usedAngles = new Map<string, Set<number>>();
     const warnings = (skill.warnings ?? []).map((definition) => {
       let anchor = definition.anchor === "caster" || definition.anchor === "home" ? actor : target;
       if (definition.anchor === "random_target") {
@@ -396,6 +399,13 @@ export class CombatSystem {
       used.add(anchor.id);
       const angle = facing + (definition.angleDegrees ?? 0) * Math.PI / 180;
       let direction = new Vector2(Math.cos(angle), Math.sin(angle)), offset = direction.scale(definition.distance ?? 0);
+      if (definition.directionAngles?.length) {
+        const group = definition.directionGroup ?? "default", selected = usedAngles.get(group) ?? new Set<number>();
+        const unused = definition.directionAngles.filter((value) => !selected.has(value)), choices = unused.length ? unused : definition.directionAngles;
+        const chosen = choices[Math.min(choices.length - 1, Math.floor(this.random() * choices.length))];
+        selected.add(chosen); usedAngles.set(group, selected);
+        direction = new Vector2(Math.cos(chosen * Math.PI / 180), Math.sin(chosen * Math.PI / 180)); offset = direction.scale(definition.distance ?? 0);
+      }
       if (definition.paths?.length) {
         const candidates = definition.paths.map((path) => ({ path, key: [path.from.x, path.from.y, path.to.x, path.to.y].join(",") }));
         const unused = candidates.filter((entry) => !usedPaths.has(entry.key)), choices = unused.length ? unused : candidates;
@@ -409,7 +419,7 @@ export class CombatSystem {
       actionIndex: 0, primaryIds: this.primaryTargets(actor, target, skill).map((entry) => entry.id), speed,
       energyAward: { amount: skill.blockEnergyGain || skill.energyCost || skill.category === "ultimate" ? 0 :
         skill.category === "normal" ? actor.stats.energyOnNormal ?? actor.stats.energyOnSkill ?? 0 : actor.stats.energyOnSkill ?? 0, awarded: false },
-      triggered: chain.length > 0, triggerChain: [...chain, skill.id], fromPlayer: this.playerControlled(actor), warnings };
+      triggered: chain.length > 0, triggerChain: [...chain, skill.id], fromPlayer: this.playerControlled(actor), shieldBreakVersion: actor.shieldBreakVersion, warnings };
   }
 
   private updateWarnings(cast: Cast, deltaSeconds: number): void {
@@ -704,6 +714,7 @@ export class CombatSystem {
     this.events.push({ type: "damage", sourceId: source.id, targetId: target.id, value: damage, skillId, critical, damageType: type,
       ...(target.invulnerable && source.attackPower * power > 0 ? { immune: true } : {}), ...(periodic ? { periodic, statusId } : {}) });
     if (!target.alive) { this.cancelCaster(target.id); this.cancelDisplacement(target.id); this.events.push({ type: "death", sourceId: source.id, targetId: target.id, skillId }); }
+    else this.synchronizeControl(target);
     return damage;
   }
 
@@ -712,15 +723,22 @@ export class CombatSystem {
   }
 
   private applyStatus(cast: Cast, target: Actor, status: StatusDefinition): void {
+    const previousHealth = target.health, previousShield = target.shield;
     if (!target.addStatus(status, cast.source, cast.skill.id, cast.fromPlayer)) return;
+    if (status.shields?.length) {
+      if (target.shield > previousShield) this.events.push({ type: "shield", sourceId: cast.source.id, targetId: target.id, skillId: cast.skill.id, value: target.shield - previousShield });
+      if (target.health < previousHealth) this.events.push({ type: "resource_cost", sourceId: cast.source.id, targetId: target.id, skillId: cast.skill.id, resource: "health", value: previousHealth - target.health });
+    }
     this.synchronizeControl(target);
     this.events.push({ type: "status", sourceId: cast.source.id, targetId: target.id, skillId: cast.skill.id });
   }
 
   private synchronizeControl(actor: Actor): void {
     if (!actor.alive) return;
+    const pending = [...(this.casts.has(actor.id) ? [this.casts.get(actor.id)!] : []), ...[...this.triggeredCasts.values()].filter((cast) => cast.source === actor)];
+    if (pending.some((cast) => cast.shieldBreakVersion !== actor.shieldBreakVersion ||
+        !this.conditionsMet(actor, this.actors.find((target) => target.id === cast.targetId), cast.skill.maintainConditions))) this.cancelCaster(actor.id);
     if (!actor.interruptionImmune) {
-      const pending = [...(this.casts.has(actor.id) ? [this.casts.get(actor.id)!] : []), ...[...this.triggeredCasts.values()].filter((cast) => cast.source === actor)];
       if (pending.some((cast) => actor.blocksCasting(cast.skill.category) || (cast.skill.motion && !actor.canMove))) this.cancelCaster(actor.id);
     }
     if (actor.hardControlled && !this.isDisplaced(actor) && !this.casts.has(actor.id) && actor.fsm.state !== "returning") actor.setState("controlled");

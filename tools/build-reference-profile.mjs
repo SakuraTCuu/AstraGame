@@ -225,7 +225,8 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     if (assets.some((asset) => asset.path === path && asset.type === "cc.SpriteAtlas") && assets.some((asset) => asset.path === path && asset.type === "cc.Texture2D" && asset.native)) {
       const key = `reference_effect_${id}`, area = skill.actions.find((action) => action.areaEffect?.effectKey === key)?.areaEffect;
       art.areas[key] = { path, fps: effect.frame || 12, scale: effect.scale || 1, loop: effect.bLoop === 1, offsetY: effect.dy || 0,
-        directional: area?.geometry.shape !== "circle" };
+        directional: area?.geometry.shape !== "circle", offsetAlong: effect.OffsetX || 0, anchorX: area?.geometry.shape === "cone" ? 0 : 0.5 };
+      if (area?.geometry.shape === "cone" || effect.OffsetX) skillCompiler.issues.push({ id: String(skill.sourceId), kind: "area_art_parity", value: "cone origin uses the left frame anchor and source local-X offset; artwork extent and projection require live comparison" });
     } else skillCompiler.issues.push({ id: String(skill.sourceId), kind: "area_art", value: path || id });
   }
   for (const id of families.get("WorldMap").keys()) {

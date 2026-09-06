@@ -884,6 +884,82 @@ try {
     return boot.renderer.referenceArt.areaViews.size === 0;
   });
   assert.equal(movingAreaArt.cleaned, true);
+  const shieldChannel = await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session, leader = session.world.leader; boot.enabled = false;
+    const spawn = session.config.spawns.find((entry) => boot.renderer.referenceArt.config.bindings[entry.id] && session.config.enemies.find((enemy) => enemy.id === entry.enemyId)?.kind === "enemy");
+    if (!spawn) throw new Error("No cached enemy for the shield-channel fixture");
+    const source = new leader.constructor({ id: `${spawn.id}:shield_channel_probe`, name: session.config.enemies.find((enemy) => enemy.id === spawn.enemyId).name,
+      kind: "boss", faction: "enemy", position: leader.position.add({ x: 0, y: 350 }),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 1000, aggroRange: 1000 } });
+    const target = new leader.constructor({ id: "shield_channel_aim", faction: "player", position: source.position.add({ x: 300, y: 0 }),
+      stats: { maxHealth: 10000, attack: 100, defense: 0, moveSpeed: 0, attackRange: 1000, aggroRange: 1000 } });
+    source.health = 3500; session.world.addEnemy(source); const combat = new session.world.combat.constructor(() => 0);
+    boot.shieldChannelProbe = { source, target, combat };
+    if (!combat.use(source, target, session.world.options.skillDefinitions.reference_skill_5004502, [source, target])) throw new Error("Source shield entry failed");
+    combat.update(1, [source, target]);
+    if (!combat.use(source, target, session.world.options.skillDefinitions.reference_skill_5004503, [source, target])) throw new Error("Source shield channel failed");
+    combat.update(0.3, [source, target]); boot.renderer.update({ ...session.getSnapshot(), casts: combat.castSnapshots(), areas: combat.areaSnapshots() }, 0.1);
+    return { setup: "Actual source shield/channel skills on a zero-attack cached enemy fixture", health: source.health, shield: source.shield, warnings: combat.castSnapshots()[0].warnings.length };
+  });
+  assert.equal(shieldChannel.health, 1500); assert.equal(shieldChannel.shield, 2000); assert.equal(shieldChannel.warnings, 2);
+  for (let index = 0; index < 50; index++) {
+    const ready = await evaluate(() => {
+      const boot = window.__referenceBoot, { source, combat } = boot.shieldChannelProbe;
+      boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots(), areas: combat.areaSnapshots() }, 0.05);
+      const view = boot.renderer.referenceArt.views.get(source.id); return Boolean(view?.node.active && view.bars.fillColor.r === 118 && view.bars.fillColor.g === 226);
+    });
+    if (ready) break;
+    if (index === 49) throw new Error("Source shield bar did not render");
+    await delay(100);
+  }
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-shield-channel`);
+  }
+  await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.shieldChannelProbe; combat.update(1.7, [source, target]);
+    boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots(), areas: combat.areaSnapshots() }, 0.1);
+  });
+  let frostReady = false;
+  for (let index = 0; index < 50 && !frostReady; index++) {
+    frostReady = await evaluate(() => {
+      const boot = window.__referenceBoot, combat = boot.shieldChannelProbe.combat, areas = combat.areaSnapshots();
+      boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots(), areas }, 0.05);
+      return areas.length === 2 && areas.every((area) => boot.renderer.referenceArt.areaViews.has(area.id));
+    });
+    if (!frostReady) await delay(100);
+  }
+  assert.equal(frostReady, true, "Source frost-area atlas did not render");
+  shieldChannel.frost = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.shieldChannelProbe, first = combat.areaSnapshots()[0];
+    const before = boot.renderer.referenceArt.areaViews.get(first.id).spriteFrame.name; combat.update(0.3, [source, target]);
+    boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots(), areas: combat.areaSnapshots() }, 0.3);
+    return { count: combat.areaSnapshots().length, before, after: boot.renderer.referenceArt.areaViews.get(first.id).spriteFrame.name,
+      anchored: combat.areaSnapshots().every((area) => boot.renderer.referenceArt.areaViews.get(area.id).node.anchorX === 0) };
+  });
+  assert.equal(shieldChannel.frost.count, 2); assert.notEqual(shieldChannel.frost.before, shieldChannel.frost.after); assert.equal(shieldChannel.frost.anchored, true);
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-frost-areas`);
+  }
+  shieldChannel.broken = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.shieldChannelProbe; combat.update(1.2, [source, target]);
+    const secondWarnings = combat.castSnapshots()[0].warnings.length;
+    if (!combat.use(target, source, { id: "fixture_shield_break", target: "enemy", range: 1000, cooldown: 0, power: 20 }, [source, target])) throw new Error("Shield break fixture failed");
+    if (!combat.use(source, source, boot.session.world.options.skillDefinitions.reference_skill_5004505, [source, target])) throw new Error("Source shield-break follow-up failed");
+    combat.update(0.15, [source, target]); combat.update(1, [source, target]);
+    boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots(), areas: combat.areaSnapshots() }, 0.1);
+    return { secondWarnings, health: source.health, shield: source.shield, stunned: source.hasControl("stun"), consumed: !source.hasStatus("chantBroken"),
+      pendingWarnings: combat.castSnapshots().reduce((sum, cast) => sum + (cast.warnings?.length || 0), 0), areas: combat.areaSnapshots().length,
+      shieldBarRemoved: boot.renderer.referenceArt.views.get(source.id).bars.fillColor.r === 226 };
+  });
+  assert.deepEqual(shieldChannel.broken, { secondWarnings: 2, health: 1500, shield: 0, stunned: true, consumed: true, pendingWarnings: 0, areas: 0, shieldBarRemoved: true });
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-shield-broken`);
+  }
+  await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.shieldChannelProbe;
+    combat.update(6, [source, target]); combat.resetEngagement(); boot.session.world.removeEnemy(source.id);
+    boot.renderer.update(boot.session.getSnapshot(), 0.1); delete boot.shieldChannelProbe; boot.enabled = true;
+  });
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -914,7 +990,7 @@ try {
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
     periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
-    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, movingAreaArt, resetCounts, viewports, errors, failures };
+    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, movingAreaArt, shieldChannel, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

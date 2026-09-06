@@ -854,6 +854,7 @@ export class DemoSession {
           (warning.distance ?? 0) < 0 || !["caster", "target", "random_target", "home"].includes(warning.anchor) || !warning.geometry) throw new Error(`Invalid skill warning for ${config.id}`);
       if (warning.paths && (!warning.paths.length || warning.paths.some((path) => !path.from || !path.to || ![path.from.x, path.from.y, path.to.x, path.to.y].every(Number.isFinite) ||
           (path.from.x === path.to.x && path.from.y === path.to.y)))) throw new Error(`Invalid warning paths for ${config.id}`);
+      if (warning.directionAngles && (!warning.directionAngles.length || warning.paths || !warning.directionAngles.every(Number.isFinite) || new Set(warning.directionAngles).size !== warning.directionAngles.length)) throw new Error(`Invalid warning directions for ${config.id}`);
     }
     if (config.trackTargetFor !== undefined && (!Number.isFinite(config.trackTargetFor) || config.trackTargetFor < 0)) throw new Error(`Invalid aim tracking for ${config.id}`);
     if (config.channelMove && (config.motion || !Number.isFinite(config.channelMove.speed) || config.channelMove.speed <= 0 || !Number.isFinite(config.channelMove.start) || config.channelMove.start < 0)) throw new Error(`Invalid channel movement for ${config.id}`);
@@ -861,6 +862,7 @@ export class DemoSession {
     if (config.skillEnergyCost !== undefined && (!Number.isSafeInteger(config.skillEnergyCost) || config.skillEnergyCost < 0)) throw new Error(`Invalid skill-energy cost for ${config.id}`);
     if (config.healthCost && (!Number.isFinite(config.healthCost.fraction) || config.healthCost.fraction <= 0 || config.healthCost.fraction > 1 || !["maximum", "current"].includes(config.healthCost.basis))) throw new Error(`Invalid health cost for ${config.id}`);
     if (config.disabled !== undefined && typeof config.disabled !== "boolean") throw new Error(`Invalid disabled skill for ${config.id}`);
+    for (const condition of [config.conditions, config.maintainConditions]) if (condition?.hasShield !== undefined && typeof condition.hasShield !== "boolean") throw new Error(`Invalid shield condition for ${config.id}`);
     if ([config.conditions?.skillEnergyAtLeast, config.conditions?.skillEnergyAtMost].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 0)) ||
         (config.conditions?.skillEnergyAtLeast ?? 0) > (config.conditions?.skillEnergyAtMost ?? Infinity)) throw new Error(`Invalid skill-energy condition for ${config.id}`);
     if (config.targetCount !== undefined && (!Number.isInteger(config.targetCount) || config.targetCount < 1)) throw new Error(`Invalid primary target count for ${config.id}`);
@@ -894,6 +896,12 @@ export class DemoSession {
           if (!Number.isSafeInteger(status.maxStacks ?? 1) || (status.maxStacks ?? 1) < 1) throw new Error(`Invalid status stack limit for ${config.id}`);
           if (Object.entries(status.targetCountBonuses ?? {}).some(([id, count]) => !id || !Number.isSafeInteger(count))) throw new Error(`Invalid target count bonus for ${config.id}`);
           const controls = ["stun", "freeze", "root", "silence", "airborne", "fear"];
+          for (const shield of status.shields ?? []) {
+            if (!["flat", "max_health"].includes(shield.basis) || ![shield.amount, shield.duration].every((value) => Number.isFinite(value) && value > 0) ||
+                (shield.healthCostFraction !== undefined && (!Number.isFinite(shield.healthCostFraction) || shield.healthCostFraction <= 0 || shield.healthCostFraction > 1)) ||
+                (shield.breakState !== undefined && (typeof shield.breakState !== "string" || !shield.breakState)) ||
+                (shield.interruptOnBreak !== undefined && typeof shield.interruptOnBreak !== "boolean")) throw new Error(`Invalid status shield for ${config.id}`);
+          }
           if (status.blockedByStates?.some((state) => !state || typeof state !== "string")) throw new Error(`Invalid state exclusion for ${config.id}`);
           for (const state of status.states ?? []) {
             if (!state.id || !Number.isFinite(state.duration) || (state.duration <= 0 && state.duration !== -1) || (state.control && !controls.includes(state.control)) ||
