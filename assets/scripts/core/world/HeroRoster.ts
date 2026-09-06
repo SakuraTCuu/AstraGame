@@ -6,6 +6,7 @@ import type { WorldMap } from "./WorldMap";
 export interface RosterHeroDefinition {
   readonly id: string;
   readonly cardResource?: string;
+  readonly activationCost?: { readonly resource: string; readonly amount: number };
   readonly initiallyOwned?: boolean;
   readonly ownershipFlag?: string;
   readonly visibility?: ProgressCondition;
@@ -20,6 +21,7 @@ export interface RosterDefinition {
 }
 export interface ReserveVitals { readonly id: string; readonly hp: number; readonly energy: number; }
 export interface RosterSave { readonly owned: readonly string[]; readonly lineup: readonly (string | null)[]; readonly reserves: readonly ReserveVitals[]; }
+export type HeroActivationResult = "activated" | "already_owned" | "insufficient_resources" | "unavailable";
 
 export class HeroRoster {
   private readonly actors: ReadonlyMap<string, Actor>;
@@ -37,6 +39,10 @@ export class HeroRoster {
       if (hero.visibility) validateCondition(hero.visibility);
       if (hero.deployCondition) validateCondition(hero.deployCondition);
       if (hero.cardResource) map.validateReward({ resource: hero.cardResource, amount: 0 });
+      if (hero.activationCost) {
+        if (!Number.isSafeInteger(hero.activationCost.amount) || hero.activationCost.amount <= 0) throw new Error("Invalid hero activation cost");
+        map.validateReward(hero.activationCost);
+      }
     }
     for (const slot of config.slots) if (slot.condition) validateCondition(slot.condition);
     this.owned = new Set(config.heroes.filter((hero) => hero.initiallyOwned).map((hero) => hero.id));
@@ -49,6 +55,17 @@ export class HeroRoster {
   slots(): readonly (string | null)[] { return this.lineup; }
   activeActors(): Actor[] { return this.lineup.filter((id): id is string => Boolean(id)).map((id) => this.actors.get(id)!); }
   actor(id: string): Actor | undefined { return this.actors.get(id); }
+
+  activate(id: string): HeroActivationResult {
+    const hero = this.config.heroes.find((entry) => entry.id === id);
+    if (!hero || !hero.activationCost) return "unavailable";
+    if (this.owned.has(id)) return "already_owned";
+    if (!this.map.spendResources({ [hero.activationCost.resource]: hero.activationCost.amount })) return "insufficient_resources";
+    this.owned.add(id);
+    this.publishOwnership();
+    this.map.recordProgressChange("roster");
+    return "activated";
+  }
 
   syncOwnership(): void {
     let changed = false;
@@ -107,6 +124,8 @@ export class HeroRoster {
   snapshot(level: (id: string) => number) {
     return { slots: this.config.slots.map((slot, index) => ({ index, unlocked: this.map.isConditionMet(slot.condition), heroId: this.lineup[index], condition: slot.condition })),
       heroes: this.config.heroes.filter((hero) => this.owned.has(hero.id) || this.map.isConditionMet(hero.visibility)).map((hero) => ({ ...hero,
+        activationCost: hero.activationCost && { ...hero.activationCost, name: this.map.resourceName(hero.activationCost.resource), owned: this.map.resourceBalance(hero.activationCost.resource) },
+        canActivate: !this.owned.has(hero.id) && Boolean(hero.activationCost) && this.map.resourceBalance(hero.activationCost!.resource) >= hero.activationCost!.amount,
         name: this.actors.get(hero.id)!.displayName, owned: this.owned.has(hero.id), available: this.map.isConditionMet(hero.deployCondition), level: level(hero.id), position: this.lineup.indexOf(hero.id) })) };
   }
 

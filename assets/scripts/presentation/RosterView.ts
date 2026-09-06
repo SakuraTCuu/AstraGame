@@ -2,7 +2,23 @@ import type { DemoSnapshot } from "../core/demo/DemoSession";
 
 type Hero = NonNullable<DemoSnapshot["roster"]>["heroes"][number];
 export type RosterTab = "lineup" | "recruitment";
-export type RosterAction = { kind: "open"; tab: RosterTab } | { kind: "close" } | { kind: "assign"; index: number; heroId: string | null } | { kind: "recruit"; poolId: string; count: number };
+export type RosterAction = { kind: "open"; tab: RosterTab } | { kind: "close" } | { kind: "assign"; index: number; heroId: string | null } |
+    { kind: "activate"; heroId: string } | { kind: "recruit"; poolId: string; count: number };
+export interface RosterHeroCardState { readonly status: string; readonly activationEnabled: boolean; readonly activationLabel: string; }
+
+const ACTIVATE_BUTTON_WIDTH = 116;
+const ACTIVATE_BUTTON_HEIGHT = 28;
+const ACTIVATE_BUTTON_Y = -62;
+
+export function rosterHeroCardState(hero: Pick<Hero, "owned" | "available" | "position" | "level" | "activationCost" | "canActivate">): RosterHeroCardState {
+    if (hero.position >= 0) return { status: "\u5df2\u4e0a\u9635", activationEnabled: false, activationLabel: "" };
+    if (hero.owned) return { status: hero.available ? `Lv.${hero.level}` : "\u6682\u4e0d\u53ef\u4e0a\u9635", activationEnabled: false, activationLabel: "" };
+    const progress = hero.activationCost && `${hero.activationCost.owned}/${hero.activationCost.amount}`;
+    if (!hero.available) return { status: progress ? `\u6682\u4e0d\u53ef\u4e0a\u9635 \u00b7 \u788e\u7247 ${progress}` : "\u6682\u4e0d\u53ef\u4e0a\u9635", activationEnabled: false, activationLabel: "" };
+    if (!hero.activationCost) return { status: "\u6682\u65e0\u6fc0\u6d3b\u9014\u5f84", activationEnabled: false, activationLabel: "" };
+    return hero.canActivate ? { status: "", activationEnabled: true, activationLabel: `\u6fc0\u6d3b ${progress}` } :
+        { status: `\u788e\u7247 ${progress}`, activationEnabled: false, activationLabel: "" };
+}
 
 export class RosterView {
     readonly node: cc.Node;
@@ -16,7 +32,7 @@ export class RosterView {
     private tab: RosterTab = "lineup";
     private page = 0;
     private pages = 1;
-    private ownedOnly = true;
+    private ownedOnly = false;
     private rows: Hero[] = [];
     private usedLabels = 0;
     private feedback = "";
@@ -34,7 +50,10 @@ export class RosterView {
     destroy(): void { this.node.destroy(); }
     contains(point: cc.Vec2): boolean { return this.node.active && (this.isOpen || point.sub(cc.v2(-166, 300)).mag() <= 29); }
     hover(point: cc.Vec2 | null): void { this.hint.node.active = Boolean(this.node.active && !this.isOpen && point && point.sub(cc.v2(-166, 300)).mag() <= 29); }
-    showResult(success: boolean): void { this.feedback = success ? "" : "\u6761\u4ef6\u672a\u6ee1\u8db3"; }
+    showResult(result: boolean | "activated" | "already_owned" | "insufficient_resources" | "unavailable"): void {
+        this.feedback = result === "activated" ? "\u6fc0\u6d3b\u6210\u529f" : result === true ? "" : result === "already_owned" ? "\u5df2\u6fc0\u6d3b" :
+            result === "insufficient_resources" ? "\u788e\u7247\u4e0d\u8db3" : "\u6761\u4ef6\u672a\u6ee1\u8db3";
+    }
 
     hit(point: cc.Vec2): RosterAction | null {
         if (!this.contains(point)) return null;
@@ -56,7 +75,15 @@ export class RosterView {
             const x = -246 + index % 4 * 164, y = 139 - Math.floor(index / 4) * 166;
             if (Math.abs(point.x - x) > 76 || Math.abs(point.y - y) > 76) continue;
             const hero = this.rows[index];
-            if (!hero.owned || !hero.available) { this.feedback = hero.owned ? "\u6682\u4e0d\u53ef\u7528" : "\u672a\u83b7\u5f97"; return null; }
+            if (!hero.owned) {
+                const state = rosterHeroCardState(hero);
+                if (state.activationEnabled && Math.abs(point.x - x) <= ACTIVATE_BUTTON_WIDTH / 2 && Math.abs(point.y - (y + ACTIVATE_BUTTON_Y)) <= ACTIVATE_BUTTON_HEIGHT / 2) {
+                    return { kind: "activate", heroId: hero.id };
+                }
+                this.feedback = state.status || "\u788e\u7247\u5df2\u8db3\u591f";
+                return null;
+            }
+            if (!hero.available) { this.feedback = "\u6682\u4e0d\u53ef\u7528"; return null; }
             if (hero.position >= 0) {
                 if (this.snapshot.partyIds.length <= 1) { this.feedback = "\u81f3\u5c11\u4e0a\u9635\u4e00\u540d\u9547\u90aa\u4eba"; return null; }
                 return { kind: "assign", index: hero.position, heroId: null };
@@ -102,14 +129,21 @@ export class RosterView {
             this.rows.forEach((hero, index) => {
                 const x = -246 + index % 4 * 164, y = 139 - Math.floor(index / 4) * 166;
                 g.fillColor = hero.owned ? cc.color(47, 64, 56) : cc.color(35, 42, 40); g.roundRect(x - 75, y - 76, 150, 152, 4); g.fill();
-                this.portrait(index, hero.icon, x, y + 21, 125, 93, icon);
-                this.text(hero.name, x, y - 40, 143, 32, 18);
-                this.text(hero.position >= 0 ? "\u5df2\u4e0a\u9635" : !hero.owned ? "\u672a\u83b7\u5f97" : !hero.available ? "\u6682\u4e0d\u53ef\u7528" : `Lv.${hero.level}`, x, y - 64, 142, 25, 16, hero.position >= 0 ? cc.color(146, 227, 164) : cc.color(184, 199, 188));
+                this.portrait(index, hero.icon, x, y + 28, 125, 78, icon);
+                this.text(hero.name, x, y - 24, 143, 26, 17);
+                const state = rosterHeroCardState(hero);
+                if (state.activationEnabled) {
+                    g.fillColor = cc.color(123, 95, 57); g.roundRect(x - ACTIVATE_BUTTON_WIDTH / 2, y + ACTIVATE_BUTTON_Y - ACTIVATE_BUTTON_HEIGHT / 2,
+                        ACTIVATE_BUTTON_WIDTH, ACTIVATE_BUTTON_HEIGHT, 4); g.fill();
+                    this.text(state.activationLabel, x, y + ACTIVATE_BUTTON_Y, ACTIVATE_BUTTON_WIDTH - 8, ACTIVATE_BUTTON_HEIGHT - 2, 15, cc.color(239, 228, 191));
+                } else {
+                    this.text(state.status, x, y - 58, 142, 34, 15, hero.position >= 0 ? cc.color(146, 227, 164) : cc.color(184, 199, 188));
+                }
             });
             if (this.pages > 1) { this.text("<", -290, -383, 50, 40, 26); this.text(">", 290, -383, 50, 40, 26); this.text(`${this.page + 1}/${this.pages}`, 0, -383, 140, 38, 19); }
             g.strokeColor = cc.color(163, 180, 167); g.lineWidth = 2; g.rect(-304, -460, 22, 22); g.stroke();
             if (this.ownedOnly) { g.moveTo(-300, -448); g.lineTo(-293, -455); g.lineTo(-285, -442); g.stroke(); }
-            this.text("\u5df2\u83b7\u5f97", -225, -448, 125, 38, 19);
+            this.text("\u4ec5\u5df2\u83b7\u5f97", -215, -448, 145, 38, 19);
             this.text(`\u51fa\u6218 ${snapshot.partyIds.length}/${snapshot.roster.slots.filter((slot) => slot.unlocked).length}`, 190, -448, 220, 38, 20);
         } else {
             const pool = snapshot.recruitment?.pools[0];

@@ -2,15 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Actor, DemoSession } from "../assets/scripts/core/index.ts";
 import type { DemoConfig } from "../assets/scripts/core/demo/DemoSession.ts";
+import { rosterHeroCardState } from "../assets/scripts/presentation/RosterView.ts";
 
 function config(): DemoConfig {
   const actors = Array.from({ length: 5 }, (_, index) => ({ id: `hero${index}`, name: `Hero ${index}`, kind: "hero", x: 10 + index, y: 10,
     hp: 100, attack: 10, defense: 0, moveSpeed: 3, attackRange: 3, aggroRange: 3, maxEnergy: 100, energyPerSecond: 1 }));
   return { meta: { id: "roster", schemaVersion: 1 }, seed: 7,
-    world: { width: 40, height: 40, progression: { level: 1, rank: 1, resources: { fifth: { name: "Fifth hero", initial: 0 }, gear: { name: "Gear", initial: 1 } } } },
+    world: { width: 40, height: 40, progression: { level: 1, rank: 1, resources: { fifth: { name: "Fifth hero", initial: 0 }, shards: { name: "Hero shards", initial: 0 }, gear: { name: "Gear", initial: 1 } } } },
     fog: { revealRadius: 5 }, squad: { actors: actors.slice(0, 4) }, enemies: [],
     skills: { player: { id: "hit", target: "enemy", range: 3, cooldown: 10, power: 1 }, enemy: { id: "hit", target: "enemy", range: 3, cooldown: 10, power: 1 } },
-    roster: { actors, heroes: actors.map((actor, index) => ({ id: actor.id, initiallyOwned: index < 4, ownershipFlag: `owned:${actor.id}`, cardResource: index === 4 ? "fifth" : undefined })),
+    roster: { actors, heroes: actors.map((actor, index) => ({ id: actor.id, initiallyOwned: index < 4, ownershipFlag: `owned:${actor.id}`, cardResource: index === 4 ? "fifth" : undefined,
+      activationCost: index === 4 ? { resource: "shards", amount: 3 } : undefined })),
       slots: [{}, {}, {}, {}, { condition: { kind: "rank", value: 4 } }], initialLineup: ["hero0", "hero1", "hero2", "hero3", null] },
     development: { heroes: actors.map((actor, index) => ({ actorId: actor.id, initialLevel: 1, levelTable: "shared", optionalInSave: index === 4 })),
       levelTables: { shared: [{ level: 1, attributes: { attack: 10, defense: 0, maxHealth: 100 } }] },
@@ -19,12 +21,52 @@ function config(): DemoConfig {
   };
 }
 
+test("fragment activation is explicit, atomic and independent from visibility or deployment gates", () => {
+  const data = config();
+  const gated = { ...data, roster: { ...data.roster!, heroes: data.roster!.heroes.map((hero) => hero.id === "hero4" ? { ...hero,
+    visibility: { kind: "flag" as const, id: "hidden" }, deployCondition: { kind: "rank" as const, value: 4 } } : hero) } };
+  const session = new DemoSession(gated);
+  assert.equal(session.getSnapshot().roster!.heroes.some((hero) => hero.id === "hero4"), false);
+  session.map.grantResources({ shards: 2 }); session.update(0.05);
+  assert.equal(session.roster!.owns("hero4"), false, "holding fragments must not auto-activate a hero");
+  assert.equal(session.activateHero("hero4"), "insufficient_resources");
+  assert.equal(session.map.resourceBalance("shards"), 2, "a threshold-minus-one failure must not spend fragments");
+  session.map.grantResources({ shards: 1 });
+  assert.equal(session.activateHero("hero4"), "activated");
+  assert.equal(session.map.resourceBalance("shards"), 0);
+  assert.equal(session.roster!.owns("hero4"), true);
+  assert.equal(session.map.hasFlag("owned:hero4"), true);
+  assert.equal(session.activateHero("hero4"), "already_owned");
+  assert.equal(session.map.resourceBalance("shards"), 0, "repeat activation must be idempotent");
+  assert.equal(session.setLineup(4, "hero4"), false, "activation must not bypass a rank-gated slot or hero deployment gate");
+  const snapshot = session.getSnapshot().roster!.heroes.find((hero) => hero.id === "hero4")!;
+  assert.deepEqual(snapshot.activationCost, { resource: "shards", amount: 3, name: "Hero shards", owned: 0 });
+
+  const saved = session.saveExploration(), restored = new DemoSession(gated);
+  restored.restoreExploration(saved);
+  assert.equal(restored.roster!.owns("hero4"), true);
+  assert.equal(restored.map.hasFlag("owned:hero4"), true);
+  assert.equal(restored.activateHero("hero4"), "already_owned");
+});
+
+test("roster presentation exposes a distinct activation control only for deployable affordable heroes", () => {
+  const cost = { resource: "shards", amount: 3, name: "Hero shards", owned: 3 };
+  assert.deepEqual(rosterHeroCardState({ owned: false, available: false, position: -1, level: 1, activationCost: cost, canActivate: true }),
+    { status: "\u6682\u4e0d\u53ef\u4e0a\u9635 \u00b7 \u788e\u7247 3/3", activationEnabled: false, activationLabel: "" });
+  assert.deepEqual(rosterHeroCardState({ owned: false, available: true, position: -1, level: 1, activationCost: { ...cost, owned: 2 }, canActivate: false }),
+    { status: "\u788e\u7247 2/3", activationEnabled: false, activationLabel: "" });
+  assert.deepEqual(rosterHeroCardState({ owned: false, available: true, position: -1, level: 1, activationCost: cost, canActivate: true }),
+    { status: "", activationEnabled: true, activationLabel: "\u6fc0\u6d3b 3/3" });
+});
+
 test("fifth deployment requires ownership and the configured rank", () => {
   const session = new DemoSession(config());
   assert.equal(session.world.players.length, 4);
   assert.equal(session.setLineup(4, "hero4"), false);
   session.map.grantResources({ fifth: 1 }); session.update(0.05);
   assert.equal(session.roster!.owns("hero4"), true);
+  session.map.grantResources({ fifth: 1 }); session.update(0.05);
+  assert.equal(session.map.resourceBalance("fifth"), 2, "whole cards and duplicates remain inventory items");
   assert.equal(session.setLineup(4, "hero4"), false);
   session.map.setRank(4);
   assert.equal(session.setLineup(4, "hero4"), true);

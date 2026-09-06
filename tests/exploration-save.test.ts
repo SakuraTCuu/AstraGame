@@ -69,11 +69,12 @@ test("invalid save data is rejected before changing resources and unlocks", () =
   assert.deepEqual(session.saveExploration(), before);
 });
 
+let portScopeSequence = 0;
 function ports() {
   let saved: ExplorationSave | null = null;
   let sequence = 0;
   const service: RuntimePorts = { config: { load: async <T>() => config() as T },
-    storage: { loadCheckpoint: async () => null, saveCheckpoint: async () => {}, clearCheckpoint: async () => {},
+    storage: { checkpointScope: `test:exploration-save:${++portScopeSequence}`, loadCheckpoint: async () => null, saveCheckpoint: async () => {}, clearCheckpoint: async () => {},
       loadExploration: async () => saved, saveExploration: async (_id, value) => { saved = structuredClone(value); }, clearExploration: async () => { saved = null; } },
     protocol: { startRun: async () => ({ runId: `run-${++sequence}` }), submitCheckpoint: async () => ({}), settleRun: async () => ({}) },
     telemetry: { track: () => {} } };

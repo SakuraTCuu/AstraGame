@@ -23,6 +23,7 @@ export interface WorldOptions {
   readonly skillDefinitions?: Readonly<Record<string, SkillDefinition>>;
   readonly revealRadius?: number;
   readonly formationOffsets?: readonly Vec2Like[];
+  readonly formationCatchUpMultiplier?: number;
   readonly followLeashDistance?: number;
   readonly combatMode?: "pve" | "pvp";
 }
@@ -55,7 +56,7 @@ export class GameWorld {
     this.combat = new CombatSystem(() => this.random.next(), options.combatMode, options.skillDefinitions);
     this.players = [...options.players];
     this.enemies = [...options.enemies].sort((a, b) => a.id.localeCompare(b.id));
-    this.formation = new SquadFormation(this.players, options.formationOffsets);
+    this.formation = new SquadFormation(this.players, options.formationOffsets, 6, options.formationCatchUpMultiplier);
     this.revealRadius = options.revealRadius ?? 3;
     this.previousLeaderId = this.leader?.id;
     for (const enemy of this.enemies) this.registerEnemyAI(enemy);
@@ -185,14 +186,15 @@ export class GameWorld {
     }
   }
 
-  private readonly moveActor = (actor: Actor, target: Vec2Like, deltaSeconds: number): boolean => {
+  private readonly moveActor = (actor: Actor, target: Vec2Like, deltaSeconds: number, movementBudget?: number): boolean => {
     if (!actor.canMove) return false;
     const navigation = this.options.navigation;
     const destination = navigation.nearestWalkable(target);
     if (!destination || !navigation.isWorldWalkable(actor.position)) return false;
+    const movement = movementBudget ?? actor.movementSpeed * deltaSeconds;
     if (navigation.isSegmentWalkable(actor.position, destination)) {
       this.actorPaths.delete(actor.id);
-      actor.moveTowards(destination, deltaSeconds);
+      actor.position = actor.position.moveTowards(destination, movement);
       return actor.position.distance(destination) <= 0.01;
     }
     const goal = navigation.worldToGrid(destination);
@@ -205,7 +207,7 @@ export class GameWorld {
       route = { goal, position: actor.position, revision: navigation.revision, path };
       this.actorPaths.set(actor.id, route);
     }
-    actor.position = route.path.update(actor.position, actor.movementSpeed, deltaSeconds);
+    actor.position = route.path.update(actor.position, movement, 1);
     route.position = actor.position;
     return actor.position.distance(destination) <= 0.01;
   };

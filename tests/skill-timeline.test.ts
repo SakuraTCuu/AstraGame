@@ -65,6 +65,19 @@ test("buffs refresh by group, change damage and expire without modifying base st
   assert.equal(source.stats.attack, 100);
 });
 
+test("percentage defense supports positive and negative rates, clamps at zero and expires", () => {
+  const guarded = actor("guarded", "player"), exposed = actor("exposed", "player"), clamped = actor("clamped", "player");
+  for (const target of [guarded, exposed, clamped]) target.updateStats({ ...target.stats, defense: 100 });
+  guarded.addStatus({ id: "guard", duration: 1, modifiers: { defenseRate: 0.5 } });
+  exposed.addStatus({ id: "expose", duration: 1, modifiers: { defenseRate: -0.5 } });
+  clamped.addStatus({ id: "break", duration: 1, modifiers: { defenseRate: -2 } });
+  assert.equal(guarded.defensePower, 150); assert.equal(guarded.receiveDamage(200), 50);
+  assert.equal(exposed.defensePower, 50); assert.equal(exposed.receiveDamage(200), 150);
+  assert.equal(clamped.defensePower, 0); assert.equal(clamped.receiveDamage(200), 200);
+  new CombatSystem().update(1, [guarded, exposed, clamped]);
+  assert.equal(guarded.defensePower, 100); assert.equal(exposed.defensePower, 100); assert.equal(clamped.defensePower, 100);
+});
+
 test("a warned jump lands at the locked location and misses a target that escaped", () => {
   const source = actor("boss", "enemy"), target = actor("hero", "player", 5);
   const combat = new CombatSystem();

@@ -208,6 +208,67 @@ test("summons are capped, linked to their owner and removed before encounter com
   assert.equal(session.resume(), false);
 });
 
+test("action summons inherit owner stats, avoid collisions, survive owner death and expire before completion", () => {
+  const config = runtimeConfig();
+  const actions = [0, 1].map(() => ({ at: 0, type: "summon" as const, summon: {
+    enemyId: "minion", offset: { x: 1, y: 0 }, expiresAfter: 2, removeWithOwner: false, removeOnReturn: true,
+  } }));
+  const session = new DemoSession({ ...config, session: { completionEncounterId: "gate" },
+    enemies: [
+      { ...config.enemies[0], hp: 5000, attack: 100, defense: 50, collisionRadius: 0.5, skillIds: ["summon"] },
+      { ...config.enemies[1], hp: 1, attack: 0, defense: 0, collisionRadius: 0.5,
+        summonInheritance: { attack: 0.5, defense: 1, maxHealth: 0.5 }, skillIds: [] },
+    ],
+    skills: { ...config.skills, definitions: [{ id: "summon", type: "summon", coefficient: 0, range: 20, cooldown: 20,
+      target: "nearest_hero", windup: 0, actions }] },
+  });
+  session.spawns.beforeTick();
+  const owner = session.world.enemies.find((entry) => entry.id === "wave:1")!;
+  owner.addStatus({ id: "summon_source_defense", duration: 1, modifiers: { defenseRate: 0.5 } });
+  const definition = config.skills.definitions![0] as SkillDefinition;
+  assert.equal(session.world.combat.use(owner, session.world.players[0], { ...definition, type: "summon", target: "enemy", power: 0,
+    range: 20, cooldown: 20, actions }, session.world.allActors), true);
+  owner.receiveDamage(99999);
+  session.spawns.afterTick();
+  const summons = session.world.enemies.filter((entry) => entry.summonerId === owner.id);
+  assert.equal(summons.length, 2); assert.equal(new Set(summons.map((entry) => `${entry.position.x}:${entry.position.y}`)).size, 2);
+  assert.ok(summons.every((entry) => entry.stats.maxHealth === 2500 && entry.attackPower === 50 && entry.defensePower === 75));
+  assert.ok(summons[0].position.distance(summons[1].position) >= 1);
+  assert.equal(session.world.enemies.filter((entry) => entry.summonerId === owner.id).length, 2);
+  assert.equal(session.runState, "running");
+  session.update(2.05);
+  assert.equal(session.world.enemies.some((entry) => entry.summonerId === owner.id), false);
+  assert.equal(session.runState, "won");
+});
+
+test("only a summon's own return removes it, while repeated reset cleanup retains no summon tracking", () => {
+  const config = runtimeConfig();
+  const summonConfig = { ...config, session: { recovery: { town: { x: 5.5, y: 5.5 } } },
+    skills: { ...config.skills, definitions: [{ id: "summon", type: "summon", coefficient: 0, range: 20, cooldown: 20,
+      target: "nearest_hero", actions: [{ at: 0, type: "summon", summon: { enemyId: "minion", offset: { x: 1, y: 0 },
+        expiresAfter: 10, removeWithOwner: false, removeOnReturn: true } }] }] } } as DemoConfig;
+  const returning = new DemoSession(summonConfig);
+  returning.update(0.05);
+  const owner = returning.world.enemies.find((entry) => entry.id === "wave:1")!;
+  owner.targetId = undefined; owner.setState("idle"); returning.spawns.afterTick();
+  assert.equal(returning.world.enemies.some((entry) => entry.summonerId === owner.id), true);
+  const summon = returning.world.enemies.find((entry) => entry.summonerId === owner.id)!;
+  summon.setState("returning"); returning.spawns.afterTick();
+  assert.equal(returning.world.enemies.some((entry) => entry.summonerId), false);
+
+  const session = new DemoSession(summonConfig);
+  session.update(0.05);
+  assert.equal(session.world.enemies.some((entry) => entry.summonerId), true);
+  assert.equal(session.spawns.trackedSummonCount, 1);
+  session.spawns.clearSummons(); session.spawns.clearSummons();
+  assert.equal(session.spawns.trackedSummonCount, 0);
+  assert.equal(session.getSnapshot().spawns[0].spawnedIds.some((id) => id.includes(":summon:")), false);
+  session.world.recoverParty(session.world.players.map((entry) => entry.position));
+  session.spawns.afterTick();
+  assert.equal(session.world.enemies.some((entry) => entry.summonerId), false);
+  assert.equal(session.spawns.trackedSummonCount, 0);
+});
+
 test("respawns use fresh IDs and retire dead actors instead of growing forever", () => {
   const config = runtimeConfig();
   const session = new DemoSession({ ...config,

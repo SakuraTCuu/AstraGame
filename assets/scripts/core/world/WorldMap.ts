@@ -4,7 +4,7 @@ import type { GridNavigation } from "../navigation/GridNavigation";
 import type { ConditionContext, ProgressCondition } from "./ProgressConditions";
 import { meetsCondition, unmetConditions, validateCondition } from "./ProgressConditions";
 import { pointInPolygon, polygonIntersectsRect, validateConvexPolygon } from "./WorldGeometry";
-import type { ProgressReward } from "./ProgressionJournal";
+import type { ProgressReward, ProgressRewardGrant } from "./ProgressionJournal";
 
 export interface WorldRect { readonly x: number; readonly y: number; readonly width: number; readonly height: number; }
 export type WorldObstacle =
@@ -202,16 +202,25 @@ export class WorldMap {
   transactRewards(cost: Readonly<Record<string, number>>, rewards: readonly ProgressReward[], random: () => number): boolean {
     const balances = new Map(this.balances);
     for (const [id, amount] of Object.entries(cost)) { this.validateResourceAmount(id, amount); if (this.resourceBalance(id) < amount) return false; balances.set(id, this.resourceBalance(id) - amount); }
-    this.validateRewardBatch(rewards, balances);
-    this.spendResources(cost); this.grantRewards(rewards, random);
+    const resolved = this.resolveRewards(rewards, random, balances);
+    this.spendResources(cost); this.applyRewards(resolved);
     return true;
   }
 
   validateReward(reward: ProgressReward): void {
-    if (!reward || !Number.isSafeInteger(reward.amount) || reward.amount < 0 || !Number.isFinite(reward.chance ?? 1) ||
-        (reward.chance ?? 1) < 0 || (reward.chance ?? 1) > 1) throw new Error("Invalid progression reward");
-    if ("resource" in reward) this.validateResourceAmount(reward.resource, reward.amount);
-    else if (reward.experience !== true || !this.experienceLevels.size) throw new Error("Experience reward requires a level table");
+    if (!reward) throw new Error("Invalid progression reward");
+    if ("oneOf" in reward) {
+      if (!Array.isArray(reward.oneOf) || !reward.oneOf.length) throw new Error("Invalid weighted reward choices");
+      let total = 0;
+      for (const choice of reward.oneOf) {
+        this.validateRewardGrant(choice);
+        if (!Number.isSafeInteger(choice.weight) || choice.weight <= 0 || !Number.isSafeInteger(total + choice.weight)) throw new Error("Invalid weighted reward choice");
+        total += choice.weight;
+      }
+      return;
+    }
+    this.validateRewardGrant(reward);
+    if (!Number.isFinite(reward.chance ?? 1) || (reward.chance ?? 1) < 0 || (reward.chance ?? 1) > 1) throw new Error("Invalid progression reward");
   }
 
   private validateRewardBatch(rewards: readonly ProgressReward[], balances = this.balances, extraOwned: Readonly<Record<string, number>> = {}): void {
@@ -219,8 +228,17 @@ export class WorldMap {
     let maximumExperience = 0;
     for (const reward of rewards) {
       this.validateReward(reward);
-      if ("resource" in reward) maximum[reward.resource] = (maximum[reward.resource] ?? 0) + reward.amount;
-      else maximumExperience += reward.amount;
+      if ("oneOf" in reward) {
+        const choiceMaximum: Record<string, number> = {};
+        let choiceExperience = 0;
+        for (const choice of reward.oneOf) {
+          if ("resource" in choice) choiceMaximum[choice.resource] = Math.max(choiceMaximum[choice.resource] ?? 0, choice.amount);
+          else choiceExperience = Math.max(choiceExperience, choice.amount);
+        }
+        for (const [id, amount] of Object.entries(choiceMaximum)) maximum[id] = this.safeRewardSum(maximum[id] ?? 0, amount);
+        maximumExperience = this.safeRewardSum(maximumExperience, choiceExperience);
+      } else if ("resource" in reward) maximum[reward.resource] = this.safeRewardSum(maximum[reward.resource] ?? 0, reward.amount);
+      else maximumExperience = this.safeRewardSum(maximumExperience, reward.amount);
     }
     for (const [id, amount] of Object.entries(maximum)) if (!Number.isSafeInteger((balances.get(id) ?? 0) + amount) ||
         !Number.isSafeInteger(this.counter(`owned:${id}`) + (extraOwned[id] ?? 0) + amount)) throw new Error("Reward balance overflow");
@@ -228,15 +246,51 @@ export class WorldMap {
   }
 
   grantRewards(rewards: readonly ProgressReward[], random: () => number): void {
-    this.validateRewardBatch(rewards);
+    this.applyRewards(this.resolveRewards(rewards, random));
+  }
+
+  private resolveRewards(rewards: readonly ProgressReward[], random: () => number, balances = this.balances,
+    extraOwned: Readonly<Record<string, number>> = {}): { grants: Record<string, number>; experience: number } {
+    this.validateRewardBatch(rewards, balances, extraOwned);
     const grants: Record<string, number> = {};
     let experience = 0;
-    for (const reward of rewards) if (random() < (reward.chance ?? 1)) {
-      if ("resource" in reward) grants[reward.resource] = (grants[reward.resource] ?? 0) + reward.amount;
-      else experience += reward.amount;
+    for (const reward of rewards) {
+      let grant: ProgressRewardGrant | undefined;
+      if ("oneOf" in reward) {
+        const total = reward.oneOf.reduce((sum, choice) => sum + choice.weight, 0);
+        const unit = random();
+        if (!Number.isFinite(unit) || unit < 0 || unit >= 1) throw new Error("Invalid weighted reward random value");
+        const roll = unit * total;
+        let cursor = 0;
+        grant = reward.oneOf[reward.oneOf.length - 1];
+        for (const choice of reward.oneOf) {
+          cursor += choice.weight;
+          if (roll < cursor) { grant = choice; break; }
+        }
+      } else if (random() < (reward.chance ?? 1)) grant = reward;
+      if (!grant) continue;
+      if ("resource" in grant) grants[grant.resource] = this.safeRewardSum(grants[grant.resource] ?? 0, grant.amount);
+      else experience = this.safeRewardSum(experience, grant.amount);
     }
+    return { grants, experience };
+  }
+
+  private applyRewards(reward: { grants: Readonly<Record<string, number>>; experience: number }): void {
+    const { grants, experience } = reward;
     if (Object.keys(grants).length) this.grantResources(grants);
     if (experience) this.grantExperience(experience);
+  }
+
+  private validateRewardGrant(reward: ProgressRewardGrant): void {
+    if (!reward || !Number.isSafeInteger(reward.amount) || reward.amount < 0) throw new Error("Invalid progression reward");
+    if ("resource" in reward) this.validateResourceAmount(reward.resource, reward.amount);
+    else if (reward.experience !== true || !this.experienceLevels.size) throw new Error("Experience reward requires a level table");
+  }
+
+  private safeRewardSum(left: number, right: number): number {
+    const total = left + right;
+    if (!Number.isSafeInteger(total)) throw new Error("Reward amount overflow");
+    return total;
   }
 
   grantExperience(amount: number): void {
@@ -279,10 +333,10 @@ export class WorldMap {
       if (!Number.isSafeInteger(balance) || !Number.isSafeInteger(this.counter(`owned:${resource}`) + poi.interaction.grants![resource])) throw new Error(`Resource overflow: ${resource}`);
       next.set(resource, balance);
     }
-    this.validateRewardBatch(poi.interaction.rewards ?? [], next, poi.interaction.grants);
+    const rewards = this.resolveRewards(poi.interaction.rewards ?? [], random ?? (() => 0), next, poi.interaction.grants);
     for (const [resource, amount] of next) this.balances.set(resource, amount);
     for (const [id, amount] of Object.entries(poi.interaction.grants ?? {})) this.incrementCounter(`owned:${id}`, amount);
-    if (poi.interaction.rewards?.length) this.grantRewards(poi.interaction.rewards, random!);
+    this.applyRewards(rewards);
     this.interacted.add(id);
     this.revision += 1;
     this.events.push({ type: "poi_interacted", id });

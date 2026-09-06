@@ -129,6 +129,8 @@ try {
   assert.equal(otherRole.viewId, cached.viewId); assert.notEqual(otherRole.contentId, cached.contentId);
   assert.equal(await evaluate(() => window.__astraHostProbe.lastView.explore.session.map.hasFlag("host-probe:A")), false);
   await evaluate(() => window.__astraHostProbe.close());
+  await wait((value) => value && !value.open && value.state === "paused", "cached role close");
+  await evaluate(() => window.__astraHostProbe.setRole("C"));
 
   const beforeDelayed = (await state()).telemetryCount;
   await evaluate(async () => { await window.__astraHostProbe.open(false, true); return true; });

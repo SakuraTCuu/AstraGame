@@ -57,7 +57,7 @@ export interface SkillDefinition {
 }
 
 export interface CombatEvent {
-  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback" | "state_removed" | "resource_cost" | "skill_energy" | "area_created" | "shield_removed";
+  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback" | "displacement" | "state_removed" | "resource_cost" | "skill_energy" | "area_created" | "shield_removed";
   readonly sourceId: string;
   readonly targetId: string;
   readonly value?: number;
@@ -108,7 +108,18 @@ interface AreaEffect { readonly id: number; readonly cast: Cast; readonly defini
   readonly hits: Map<string, number>; nextTick: number; ticks: number; position: Vector2; direction: Vector2; lastUpdate: number; }
 interface Displacement { readonly actor: Actor; readonly direction: Vector2; readonly distance: number; readonly duration: number; readonly startedAt: number; progress: number; }
 type CombatMovement = SkillMotion["kind"] | "knockback" | "fear" | "channel";
-export interface SummonRequest { readonly sourceId: string; readonly enemyId: string; readonly count: number; readonly limit: number; readonly radius: number; readonly position: Vec2Like; }
+export interface SummonRequest {
+  readonly sourceId: string;
+  readonly source: { readonly faction: Actor["faction"]; readonly maxHealth: number; readonly attack: number; readonly defense: number };
+  readonly enemyId: string;
+  readonly count: number;
+  readonly limit?: number;
+  readonly radius: number;
+  readonly position: Vec2Like;
+  readonly expiresAfter?: number;
+  readonly removeWithOwner: boolean;
+  readonly removeOnReturn?: boolean;
+}
 export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; readonly warnings?: readonly WarningSnapshot[]; readonly cycle?: number; }
 export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number;
   readonly age: number; readonly directionX: number; readonly directionY: number; readonly radius?: number; }
@@ -135,6 +146,11 @@ function validTarget(source: Actor, target: Actor): boolean { return target.aliv
 function targetHealthAllowed(target: Actor, skill: SkillDefinition): boolean {
   const limit = skill.conditions?.targetHpBelow ?? (skill.type === "heal" ? 1 : undefined);
   return limit === undefined || target.health / target.stats.maxHealth < limit;
+}
+
+function hasConflictingDisplacement(actions: readonly SkillAction[] = []): boolean {
+  return actions.some((action) => Boolean(action.knockback && action.displacement) ||
+    hasConflictingDisplacement(action.areaEffect?.effects) || (action.areaEffect?.phases ?? []).some((phase) => hasConflictingDisplacement(phase.effects)));
 }
 
 const ROLE_PRIORITY: Readonly<Record<CombatRole, number>> = { tank: 0, melee: 1, ranged: 2, support: 3 };
@@ -303,8 +319,9 @@ export class CombatSystem {
   canUse(actor: Actor, skill: SkillDefinition): boolean {
     if (!Number.isFinite(skill.energyCost ?? 0) || (skill.energyCost ?? 0) < 0 || !Number.isSafeInteger(skill.skillEnergyCost ?? 0) || (skill.skillEnergyCost ?? 0) < 0 ||
         (skill.healthCost && (!Number.isFinite(skill.healthCost.fraction) || skill.healthCost.fraction <= 0 || skill.healthCost.fraction > 1 || !["maximum", "current"].includes(skill.healthCost.basis)))) return false;
-    if (skill.disabled || actor.blocksCasting(skill.category, skill.target) || (skill.motion && !actor.canMove)) return false;
-    if (skill.type === "summon" && this.actors.filter((candidate) => candidate.alive && candidate.summonerId === actor.id).length >= (skill.summonLimit ?? skill.maxTargets ?? 1)) return false;
+    if (skill.disabled || hasConflictingDisplacement(skill.actions) || actor.blocksCasting(skill.category, skill.target) || (skill.motion && !actor.canMove)) return false;
+    if (skill.type === "summon" && skill.summonEnemyId &&
+        this.actors.filter((candidate) => candidate.alive && candidate.summonerId === actor.id).length >= (skill.summonLimit ?? skill.maxTargets ?? 1)) return false;
     if ((skill.energyCost ?? 0) > actor.energy || (skill.skillEnergyCost ?? 0) > actor.skillEnergy || this.publicCooldowns.has(this.publicKey(actor, skill))) return false;
     return actor.alive && actor.fsm.state !== "returning" && this.conditionsMet(actor, undefined, skill.conditions) && !this.isBusy(actor) && this.cooldownRemaining(actor, skill) === 0;
   }
@@ -507,7 +524,8 @@ export class CombatSystem {
     for (const trigger of parent.skill.onRelease ?? []) {
       const child = this.definitions[trigger.skillId];
       if (!child || child.motion || child.channelMove || child.returnHomeOnComplete) throw new Error(`Invalid triggered skill ${trigger.skillId}`);
-      if (child.disabled || child.energyCost || child.skillEnergyCost || child.healthCost || !parent.source.alive || (this.isDisplaced(parent.source) && !parent.source.interruptionImmune) || parent.triggerChain.includes(child.id) || parent.triggerChain.length >= 8) continue;
+      if (child.disabled || hasConflictingDisplacement(child.actions) || child.energyCost || child.skillEnergyCost || child.healthCost || !parent.source.alive ||
+          (this.isDisplaced(parent.source) && !parent.source.interruptionImmune) || parent.triggerChain.includes(child.id) || parent.triggerChain.length >= 8) continue;
       if (!this.conditionsMet(parent.source, this.actors.find((actor) => actor.id === parent.targetId), trigger.conditions)) continue;
       if ((trigger.chance ?? 1) < 1 && this.random() >= (trigger.chance ?? 1)) continue;
       const target = this.selectTarget(parent.source, this.actors, child);
@@ -568,11 +586,20 @@ export class CombatSystem {
       this.tickArea(area);
       return;
     }
+    if (action?.type === "summon") {
+      if (!source.alive || !action.summon) return;
+      this.awardEnergy(cast);
+      const position = source.position.add(action.summon.offset);
+      this.summons.push({ sourceId: source.id, source: this.summonSource(source), enemyId: action.summon.enemyId, count: 1, radius: 0, position,
+        expiresAfter: action.summon.expiresAfter, removeWithOwner: action.summon.removeWithOwner, removeOnReturn: action.summon.removeOnReturn });
+      this.events.push({ type: "summon", sourceId: source.id, targetId: source.id, value: 1, skillId: skill.id, x: position.x, y: position.y });
+      return;
+    }
     if (skill.type === "summon") {
       if (!source.alive || !skill.summonEnemyId) return;
       this.awardEnergy(cast);
-      this.summons.push({ sourceId: source.id, enemyId: skill.summonEnemyId, count: skill.maxTargets ?? 1, limit: skill.summonLimit ?? skill.maxTargets ?? 1,
-        radius: skill.summonRadius ?? 0, position: source.position });
+      this.summons.push({ sourceId: source.id, source: this.summonSource(source), enemyId: skill.summonEnemyId, count: skill.maxTargets ?? 1, limit: skill.summonLimit ?? skill.maxTargets ?? 1,
+        radius: skill.summonRadius ?? 0, position: source.position, removeWithOwner: true });
       this.events.push({ type: "summon", sourceId: source.id, targetId: source.id, value: skill.maxTargets ?? 1, skillId: skill.id });
       return;
     }
@@ -644,10 +671,15 @@ export class CombatSystem {
           for (const ally of allies) { const value = ally.heal(damage * action.healFromDamage / allies.length); this.events.push({ type: "heal", sourceId: source.id, targetId: ally.id, value, skillId: skill.id }); }
         }
         if (action?.knockback) this.knockBack(cast, target, action.knockback);
+        if (action?.displacement) this.displace(cast, target, action.displacement);
         if (target.alive && action?.settleStatus) for (const tick of target.settlePeriodicStatus(action.settleStatus.group, action.settleStatus.seconds))
           this.applyDamage(tick.source, target, skill.id, tick.power, tick.damageType, false, tick.statusId);
       }
     }
+  }
+
+  private summonSource(source: Actor): SummonRequest["source"] {
+    return { faction: source.faction, maxHealth: source.stats.maxHealth, attack: source.attackPower, defense: source.defensePower };
   }
 
   private awardEnergy(cast: Cast): void {
@@ -833,10 +865,30 @@ export class CombatSystem {
     let direction = target.position.subtract(cast.source.position).normalized();
     if (direction.lengthSquared() === 0) direction = cast.point.subtract(cast.origin).normalized();
     if (direction.lengthSquared() === 0) direction = new Vector2(0, 1);
+    this.startDisplacement(cast, target, direction, motion.distance, motion.duration, "knockback");
+  }
+
+  private displace(cast: Cast, target: Actor, motion: NonNullable<SkillAction["displacement"]>): void {
+    if (!target.alive || target.fsm.state === "returning" || this.displacementImmune(target)) return;
+    const anchor = motion.anchor === "source" ? cast.source.position : cast.point;
+    const anchorDistance = target.position.distance(anchor);
+    if (motion.direction === "toward" && anchorDistance <= 1e-9) return;
+    let direction = (motion.direction === "toward" ? anchor.subtract(target.position) : target.position.subtract(anchor)).normalized();
+    if (direction.lengthSquared() === 0) {
+      const fallback = cast.direction ?? cast.point.subtract(cast.origin).normalized();
+      direction = motion.direction === "toward" ? fallback.scale(-1) : fallback;
+    }
+    if (direction.lengthSquared() === 0) direction = new Vector2(0, motion.direction === "toward" ? -1 : 1);
+    this.startDisplacement(cast, target, direction, motion.direction === "toward" ? Math.min(motion.distance, anchorDistance) : motion.distance, motion.duration, "displacement");
+  }
+
+  private startDisplacement(cast: Cast, target: Actor, direction: Vector2, distance: number, duration: number,
+    eventType: "knockback" | "displacement"): void {
     if (!target.interruptionImmune) this.cancelCaster(target.id);
-    this.displacements.set(target.id, { actor: target, direction, distance: motion.distance, duration: motion.duration, startedAt: this.time, progress: 0 });
+    this.displacements.set(target.id, { actor: target, direction, distance, duration, startedAt: this.time, progress: 0 });
     target.setState("displaced");
-    this.events.push({ type: "knockback", sourceId: cast.source.id, targetId: target.id, skillId: cast.skill.id, value: motion.distance });
+    this.events.push({ type: eventType, sourceId: cast.source.id, targetId: target.id, skillId: cast.skill.id, value: distance,
+      ...(eventType === "displacement" ? { x: cast.point.x, y: cast.point.y } : {}) });
   }
 
   private hitTargets(cast: Cast, projectile: boolean): Actor[] {

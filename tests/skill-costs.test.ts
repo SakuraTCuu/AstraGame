@@ -78,6 +78,20 @@ test("paid additional skills cannot bypass their resource costs through release 
   assert.equal(target.health, 900); assert.equal(combat.events.some((event) => event.triggered), false);
 });
 
+test("release triggers reject conflicting child displacement without casting or impact events", () => {
+  const source = actor("source", "player"), target = actor("target", "enemy", 2);
+  const child: SkillDefinition = { id: "conflicting_child", target: "enemy", range: 10, cooldown: 0, power: 0,
+    actions: [{ at: 0, type: "damage", power: 5, knockback: { distance: 4, duration: 0.4 },
+      displacement: { distance: 2, duration: 0.2, direction: "toward", anchor: "impact" } }] };
+  const parent: SkillDefinition = { id: "parent", target: "enemy", range: 10, cooldown: 0, power: 0,
+    actions: [{ at: 0, type: "damage", power: 1 }], onRelease: [{ skillId: child.id }] };
+  const combat = new CombatSystem(undefined, "pve", { [child.id]: child });
+  assert.equal(combat.use(source, target, parent, [source, target]), true);
+  assert.equal(target.health, 900);
+  assert.deepEqual(combat.events.filter((event) => event.type === "skill").map((event) => [event.skillId, event.triggered]), [[parent.id, undefined]]);
+  assert.equal(combat.events.filter((event) => ["damage", "knockback", "displacement"].includes(event.type)).length, 1);
+});
+
 test("the source adapter preserves compound costs and rejects unsupported resource costs", () => {
   const rows = { 1: { skillType: 8, frameKey: "[key:0_action:[damageAction,10000]]", skillTagActions: "[castCostTag,hp,2000,ultraEnegy,10000]" },
     2: { skillType: 2, frameKey: "[key:0_action:[damageAction,10000]]", skillTagActions: "[castCostTag,enegy,3]", useCond: "[enegyCond,>,2]" },
@@ -87,6 +101,19 @@ test("the source adapter preserves compound costs and rejects unsupported resour
   assert.equal(compiler.compile(2).skillEnergyCost, 3); assert.equal(compiler.compile(2).conditions.skillEnergyAtLeast, 3);
   const unsupported = compiler.compile(3); assert.equal(unsupported.disabled, true);
   assert.equal(new CombatSystem().canUse(actor("source", "player"), { ...unsupported, power: 1 }), false);
+});
+
+test("actionless generated skills cannot spend resources, start cooldowns or consume AI turns", () => {
+  const compiler = createReferenceSkillCompiler(() => ({ name: "empty", skillType: 8, cd: 15000,
+    skillTagActions: "[castCostTag,ultraEnegy,80]" }));
+  const empty = compiler.compile(10120201), source = actor("source", "enemy"), target = actor("target", "player", 2), combat = new CombatSystem();
+  source.gainEnergy(100);
+  assert.equal(empty.disabled, true); assert.equal(combat.use(source, target, empty, [source, target]), false);
+  assert.deepEqual([source.energy, combat.cooldownRemaining(source, empty)], [100, 0]);
+  const fallback: SkillDefinition = { id: "fallback", target: "enemy", range: 10, cooldown: 0, power: 1, priority: 1 };
+  new EnemyAI([{ ...empty, priority: 10 }, fallback]).update(source, [target], combat, 0.1);
+  assert.equal(target.health, 900);
+  assert.deepEqual(combat.events.filter((event) => event.type === "skill").map((event) => event.skillId), [fallback.id]);
 });
 
 test("source charge actions and instant or periodic charge Buffs retain separate gain contracts", () => {

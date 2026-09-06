@@ -108,6 +108,7 @@
     "leaderId": "hero_guard",
     "formationRotationMode": "movement_direction",
     "followLeashDistance": 720,
+    "formationCatchUpMultiplier": 1.21,
     "formationOffsets": [
       { "x": 0, "y": 0 },
       { "x": -55, "y": -60 },

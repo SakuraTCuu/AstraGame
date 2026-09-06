@@ -31,6 +31,9 @@ test("first-defeat equipment drops once across respawns and rolls stable item at
   assert.equal(items.length, 1); assert.ok(items[0].attributes.attack >= 4 && items[0].attributes.attack <= 7);
   const twin = new DemoSession(config()); twin.update(4);
   assert.deepEqual(twin.development!.save().items, session.development!.save().items);
+  const restored = new DemoSession(config()); restored.restoreExploration(session.saveExploration()); restored.update(4);
+  assert.equal(restored.map.resourceBalance("bracer"), 1);
+  assert.equal(restored.map.hasFlag("first_drop:guard"), true);
 });
 
 test("equipment changes only its assigned hero and moves a single item between slots", () => {

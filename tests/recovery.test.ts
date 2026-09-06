@@ -106,7 +106,7 @@ test("runtime saves a recoverable wipe without settling it or replacing its run"
   let saved: ReturnType<DemoSession["saveExploration"]> | null = null;
   const ports: RuntimePorts = {
     config: { load: async <T>() => data as T },
-    storage: { loadCheckpoint: async () => null, saveCheckpoint: async () => {}, clearCheckpoint: async () => {},
+    storage: { checkpointScope: "test:recovery", loadCheckpoint: async () => null, saveCheckpoint: async () => {}, clearCheckpoint: async () => {},
       loadExploration: async () => saved, saveExploration: async (_id, save) => { saved = save; }, clearExploration: async () => { saved = null; } },
     protocol: { startRun: async () => ({ runId: `run-${++starts}` }), submitCheckpoint: async () => { checkpoints++; return {}; },
       settleRun: async () => { settlements++; return {}; } },

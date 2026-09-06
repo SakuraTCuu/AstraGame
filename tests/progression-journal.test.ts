@@ -70,7 +70,7 @@ test("invalid rewards cannot charge an interaction or mark a quest as claimed", 
 
 test("quest travel stops at a locked gate and resumes the actual goal only after payment", () => {
   const config: DemoConfig = {
-    seed: 2, world: { width: 20, height: 10, zoneMode: "overlay", progression: { level: 1, resources: { incense: { name: "Incense", initial: 5 } } },
+    seed: 2, world: { width: 20, height: 10, zoneMode: "overlay", navigation: { manualResumeDelay: 0.1 }, progression: { level: 1, resources: { incense: { name: "Incense", initial: 5 } } },
       pointsOfInterest: [{ id: "gate", name: "Gate", type: "fog_gate", x: 9.5, y: 2.5, discoverRadius: 2,
         interaction: { radius: 2, allowLockedApproach: true, cost: { resource: "incense", amount: 5 } } },
         { id: "autoChest", type: "chest", x: 15.5, y: 2.5, discoverRadius: 1, interaction: { radius: 1, auto: true, rewards: [{ resource: "incense", amount: 2 }] } }] },
@@ -82,6 +82,17 @@ test("quest travel stops at a locked gate and resumes the actual goal only after
   const session = new DemoSession(config);
   assert.equal(session.setAutoDestination(15.5, 2.5), false);
   assert.equal(session.navigateToQuest("travel"), true);
+  const gateDestination = session.getSnapshot().autoNavigation.destination;
+  session.update(0.1);
+  session.setMoveIntent(0, 1);
+  session.update(0.05);
+  assert.equal(session.getSnapshot().autoNavigation.mode, "manual");
+  assert.equal(session.setAutoDestination(15.5, 2.5), false);
+  assert.deepEqual(session.getSnapshot().autoNavigation.destination, gateDestination);
+  session.setMoveIntent(0, 0);
+  assert.equal(session.getSnapshot().autoNavigation.mode, "resume_wait");
+  session.update(0.1);
+  assert.equal(session.getSnapshot().autoNavigation.mode, "auto_path");
   session.update(4);
   assert.ok(session.world.leader!.position.x < 10);
   assert.equal(session.map.resourceBalance("incense"), 5);

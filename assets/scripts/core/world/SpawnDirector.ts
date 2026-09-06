@@ -13,11 +13,13 @@ export interface SpawnSnapshot {
 export interface RespawnProgress { readonly id: string; readonly generation: number; readonly remaining: number; }
 
 interface SpawnState { status: SpawnSnapshot["status"]; spawnedIds: string[]; generation: number; respawnAt?: number; }
+interface SummonState { readonly ownerId: string; readonly expiresAt?: number; readonly removeWithOwner: boolean; readonly removeOnReturn: boolean; }
 
 export class SpawnDirector {
   private readonly states = new Map<string, SpawnState>();
   private readonly ownerSpawns = new Map<string, string>();
   private readonly deadSince = new Map<string, number>();
+  private readonly summonStates = new Map<string, SummonState>();
   private nextSummonId = 1;
   private readonly world: GameWorld;
   private readonly map: WorldMap;
@@ -65,28 +67,33 @@ export class SpawnDirector {
 
   afterTick(): void {
     for (const request of this.world.combat.drainSummons()) {
-      const source = this.world.allActors.find((actor) => actor.id === request.sourceId && actor.alive);
-      if (!source) continue;
+      const source = this.world.allActors.find((actor) => actor.id === request.sourceId);
+      if (request.removeWithOwner && !source?.alive) continue;
       const template = this.templates.get(request.enemyId);
       if (!template) throw new Error(`Missing summon template ${request.enemyId}`);
-      const active = this.world.allActors.filter((actor) => actor.alive && actor.summonerId === source.id).length;
-      for (let index = 0; index < Math.min(request.count, request.limit - active); index += 1) {
-        const id = `${source.id}:summon:${this.nextSummonId++}`;
-        this.spawnActor({ ...template, team: source.faction, summonerId: source.id,
-          kind: source.faction === "player" ? "summon" : template.kind }, id, request.position.x, request.position.y, request.radius);
-        const spawnId = this.ownerSpawns.get(source.id);
+      const active = this.world.allActors.filter((actor) => actor.alive && actor.summonerId === request.sourceId).length;
+      const available = request.limit === undefined ? request.count : Math.max(0, request.limit - active);
+      for (let index = 0; index < Math.min(request.count, available); index += 1) {
+        const id = `${request.enemyId}:summon:${request.sourceId}:${this.nextSummonId++}`;
+        const inherited = this.inheritTemplate(template, request.source);
+        this.spawnActor({ ...inherited, team: request.source.faction, summonerId: request.sourceId,
+          kind: request.source.faction === "player" ? "summon" : inherited.kind }, id, request.position.x, request.position.y, request.radius, true);
+        this.summonStates.set(id, { ownerId: request.sourceId,
+          expiresAt: request.expiresAfter === undefined ? undefined : this.world.elapsedSeconds + request.expiresAfter,
+          removeWithOwner: request.removeWithOwner, removeOnReturn: Boolean(request.removeOnReturn) });
+        const spawnId = this.ownerSpawns.get(request.sourceId);
         if (spawnId) { this.states.get(spawnId)!.spawnedIds.push(id); this.ownerSpawns.set(id, spawnId); }
       }
     }
     for (const actor of [...this.world.enemies, ...this.world.alliedSummons]) {
-      const ownerGone = actor.summonerId && !this.world.allActors.some((owner) => owner.id === actor.summonerId && owner.alive);
+      const summonState = this.summonStates.get(actor.id);
+      const ownerGone = actor.summonerId && (summonState?.removeWithOwner ?? true) && !this.world.allActors.some((entry) => entry.id === actor.summonerId && entry.alive);
+      const returned = Boolean(summonState?.removeOnReturn && actor.fsm.state === "returning");
+      const expired = summonState?.expiresAt !== undefined && this.world.elapsedSeconds + 1e-9 >= summonState.expiresAt;
       if (!actor.alive && !this.deadSince.has(actor.id)) this.deadSince.set(actor.id, this.world.elapsedSeconds);
-      if (ownerGone || (this.deadSince.has(actor.id) && this.world.elapsedSeconds - this.deadSince.get(actor.id)! >= 1.5)) {
-        this.world.removeEnemy(actor.id);
-        this.ownerSpawns.delete(actor.id);
-        this.deadSince.delete(actor.id);
-      }
+      if (ownerGone || returned || expired || (this.deadSince.has(actor.id) && this.world.elapsedSeconds - this.deadSince.get(actor.id)! >= 1.5)) this.removeActor(actor.id);
     }
+    this.pruneTracking();
     for (const spawn of this.spawns) {
       const state = this.states.get(spawn.id)!;
       if (state.status === "spawned" && state.spawnedIds.every((id) => !this.world.allActors.some((actor) => actor.id === id && actor.alive))) {
@@ -151,13 +158,67 @@ export class SpawnDirector {
     return spawn && this.templates.get(spawn.enemyId);
   }
 
-  private spawnActor(template: DemoActorConfig, id: string, x: number, y: number, radius: number): void {
-    const angle = this.world.random.next() * Math.PI * 2;
-    const distance = Math.sqrt(this.world.random.next()) * radius;
-    const position = this.world.options.navigation.nearestWalkable({ x: x + Math.cos(angle) * distance, y: y + Math.sin(angle) * distance });
+  clearSummons(): void {
+    for (const actor of [...this.world.enemies, ...this.world.alliedSummons]) if (actor.summonerId) this.removeActor(actor.id);
+    this.pruneTracking();
+  }
+
+  get trackedSummonCount(): number { return this.summonStates.size; }
+
+  private inheritTemplate(template: DemoActorConfig, source: { readonly maxHealth: number; readonly attack: number; readonly defense: number }): DemoActorConfig {
+    const inherit = template.summonInheritance;
+    if (!inherit) return template;
+    const hp = Math.max(1, Math.floor(source.maxHealth * inherit.maxHealth));
+    return { ...template, hp, maxHp: hp, attack: Math.max(0, Math.floor(source.attack * inherit.attack)),
+      defense: Math.max(0, Math.floor(source.defense * inherit.defense)) };
+  }
+
+  private removeActor(id: string): void {
+    this.world.removeEnemy(id);
+    this.ownerSpawns.delete(id);
+    this.deadSince.delete(id);
+    this.summonStates.delete(id);
+    for (const state of this.states.values()) {
+      const index = state.spawnedIds.indexOf(id);
+      if (index >= 0) state.spawnedIds.splice(index, 1);
+    }
+  }
+
+  private pruneTracking(): void {
+    const liveIds = new Set(this.world.allActors.map((actor) => actor.id));
+    for (const id of [...this.ownerSpawns.keys()]) if (!liveIds.has(id)) this.removeActor(id);
+    for (const id of [...this.summonStates.keys()]) if (!liveIds.has(id)) this.removeActor(id);
+    for (const id of [...this.deadSince.keys()]) if (!liveIds.has(id)) this.deadSince.delete(id);
+  }
+
+  private spawnActor(template: DemoActorConfig, id: string, x: number, y: number, radius: number, avoidActors = false): void {
+    const angle = radius > 0 ? this.world.random.next() * Math.PI * 2 : 0;
+    const distance = radius > 0 ? Math.sqrt(this.world.random.next()) * radius : 0;
+    const desired = { x: x + Math.cos(angle) * distance, y: y + Math.sin(angle) * distance };
+    const position = avoidActors ? this.collisionSafePosition(desired, template.collisionRadius ?? 0) : this.world.options.navigation.nearestWalkable(desired);
     if (!position) throw new Error(`No walkable ground for ${id}`);
     const actor = this.create({ ...template, id, x: position.x, y: position.y });
     if (actor.faction === "player") this.world.alliedSummons.push(actor);
     else this.world.addEnemy(actor, template.phaseThresholds, template.phaseNames);
+  }
+
+  private collisionSafePosition(desired: { readonly x: number; readonly y: number }, radius: number) {
+    const navigation = this.world.options.navigation;
+    const candidates = [desired];
+    const step = Math.max(navigation.cellSize, radius * 2, 1);
+    for (let ring = 1; ring <= 16; ring++) for (let index = 0; index < 8; index++) {
+      const angle = index * Math.PI / 4;
+      candidates.push({ x: desired.x + Math.cos(angle) * step * ring, y: desired.y + Math.sin(angle) * step * ring });
+    }
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      const position = navigation.nearestWalkable(candidate);
+      if (!position) continue;
+      const key = `${position.x}:${position.y}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (this.world.allActors.every((actor) => position.distance(actor.position) + 1e-9 >= radius + (actor.stats.collisionRadius ?? 0))) return position;
+    }
+    return undefined;
   }
 }

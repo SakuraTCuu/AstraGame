@@ -47,6 +47,8 @@ assert.equal(session.claimQuest("reference_quest_10010033"), "claimed");
 completed.push("reference_quest_10010033");
 assert.equal(session.claimQuest("reference_quest_120100001"), "claimed");
 completed.push("reference_quest_120100001");
+assert.equal(completed.length, 9, "Reference journal must complete its nine tracked steps");
+assert.ok(session.world.players.some((actor) => actor.alive), "Reference journal must retain at least one survivor");
 const restored = new DemoSession(config);
 restored.restoreExploration(session.saveExploration());
 assert.equal(restored.map.resourceBalance("item:52"), 1);

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 import { tableRow } from "./reference-cache.mjs";
 import { compileReferenceCondition, parseReferenceItem, referenceFogPolygon } from "./reference-rules.mjs";
-import { createReferenceSkillCompiler } from "./reference-skills.mjs";
+import { createReferenceSkillCompiler, hasExecutableSkillBehavior } from "./reference-skills.mjs";
 import { createReferenceRewardCompiler, buildReferenceJournal } from "./reference-progression.mjs";
 import { buildReferenceDevelopment, referenceEnergy } from "./reference-development.mjs";
 import { buildReferenceRoster } from "./reference-roster.mjs";
@@ -15,10 +15,71 @@ function readJsonAsset(data) {
   return json[5][0][2];
 }
 
+function artSource(avatarId, lookup) {
+  const avatar = lookup("Avatar", avatarId);
+  if (!avatar) return { avatar: null, path: null, type: null, reason: "avatar_not_found" };
+  const isSpine = Boolean(avatar.isHeroSpine || avatar.spriteAtlasPath === "spine");
+  if (!avatar.atlasName || (!isSpine && !avatar.spriteAtlasPath)) {
+    return { avatar, path: null, type: null, reason: avatar.prefab ? "unsupported_prefab" : "incomplete_avatar" };
+  }
+  return { avatar, path: isSpine ? `spine/${avatar.atlasName}` : `uires/${avatar.spriteAtlasPath}/${avatar.atlasName}`,
+    type: isSpine ? "sp.SkeletonData" : "cc.SpriteAtlas", reason: "asset_unavailable" };
+}
+
+export function referenceArtBinding(avatarId, lookup, assets) {
+  const source = artSource(avatarId, lookup);
+  if (!source.path) return null;
+  const found = assets.find((asset) => asset.path === source.path && asset.type === source.type &&
+    (source.type !== "sp.SkeletonData" || asset.native));
+  return found ? { path: source.path, kind: source.type === "sp.SkeletonData" ? "spine" : "atlas",
+    scale: source.avatar.scale || 1, height: source.avatar.height || 120, fps: source.avatar.fps || 12,
+    flip: Boolean(source.avatar.flip), offsetX: source.avatar.dx || 0, offsetY: source.avatar.dy || 0, avatarId } : null;
+}
+
+const MAPBOX08_COFFIN_NPC_SOURCES = new Set([250001, 250003, 250004, 250005, 250006]);
+const REFERENCE_SUMMONS = {
+  1601: { display: 10168, moveSpeed: 200, skill: "5001608" },
+  1602: { display: 10169, moveSpeed: 50, skill: "5001609" },
+};
+
+export function validateReferenceSummon(id, summon) {
+  const expected = REFERENCE_SUMMONS[id];
+  if (!expected || !summon || summon.id !== id || summon.display !== expected.display || summon.attributes?.movespeed !== expected.moveSpeed ||
+      String(summon.skill) !== expected.skill || summon.goDieWithMaster !== 0 || summon.tagAction !== "[backHomeRemoveTag]" ||
+      summon.inherit?.atk !== 1700 || summon.inherit?.def !== 10000 || summon.inherit?.maxhp !== 500) {
+    throw new Error(`Unsupported reference Summon ${id} contract`);
+  }
+  return summon;
+}
+
+export function referenceNpcArtBinding(sourceId, avatarId, lookup, assets) {
+  const direct = referenceArtBinding(avatarId, lookup, assets);
+  if (direct || Number(avatarId) !== 4048 || !MAPBOX08_COFFIN_NPC_SOURCES.has(Number(sourceId))) return direct;
+  const fallback = referenceArtBinding(4013, lookup, assets);
+  return fallback ? { ...fallback, avatarId, sourceAvatarId: 4013 } : null;
+}
+
+function missingArtEntry(id, sourceId, avatarId, lookup, assets) {
+  const source = artSource(avatarId, lookup);
+  const available = source.path && assets.some((asset) => asset.path === source.path && asset.type === source.type &&
+    (source.type !== "sp.SkeletonData" || asset.native));
+  return { id, source: Number(sourceId), avatar: Number(avatarId), path: source.path, reason: available ? "binding_unavailable" : source.reason };
+}
+
+export function categorizedMissingArt(missingMonsterArt, missingNpcArt, progressionIssues, lookup, assets) {
+  const missingHeroArt = progressionIssues.filter((issue) => issue.kind === "hero_art").map((issue) =>
+    missingArtEntry(`reference_hero_${issue.owner}`, issue.owner, issue.avatar, lookup, assets)).sort((a, b) => a.source - b.source);
+  const orderedNpcArt = missingNpcArt.slice().sort((a, b) => a.source - b.source || a.id.localeCompare(b.id));
+  return { missingArt: missingMonsterArt, missingArtCount: missingMonsterArt.length,
+    missingMonsterArt, missingMonsterArtCount: missingMonsterArt.length,
+    missingHeroArt, missingHeroArtCount: missingHeroArt.length,
+    missingNpcArt: orderedNpcArt, missingNpcArtCount: orderedNpcArt.length };
+}
+
 export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   const families = new Map();
   for (const [name, table] of Object.entries(tables)) {
-    const family = name.match(/^(Avatar|UiEffect|Hero|HeroPlace|HeroLevel|Skill|Buff|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item|PlayerLevel|Quest|BossFirstKill|Equip|EquipType|RecruitmentPool|RecruitmentWeight|RecruitmentWeightExtra)(?:_(?:\d+|Xs))?$/)?.[1];
+    const family = name.match(/^(Avatar|UiEffect|Hero|HeroPlace|HeroLevel|Skill|Buff|Summon|Monster|MonsterSpawn|GameMap|WorldMap|Npc|NpcSpawn|Reward|MilitaryRank|Item|PlayerLevel|Quest|BossFirstKill|Equip|EquipType|RecruitmentPool|RecruitmentWeight|RecruitmentWeightExtra)(?:_(?:\d+|Xs))?$/)?.[1];
     if (!family) continue;
     if (!families.has(family)) families.set(family, new Map());
     for (const id of Object.keys(table)) if (id !== "__KEY_MAP__") families.get(family).set(id, table);
@@ -79,16 +140,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     if (!candidates.length) throw new Error("No walkable party start near source spawn");
     return candidates[0];
   };
-  const binding = (avatarId) => {
-    const avatar = row("Avatar", avatarId);
-    if (!avatar) return null;
-    const isSpine = Boolean(avatar.isHeroSpine || avatar.spriteAtlasPath === "spine");
-    const path = isSpine ? `spine/${avatar.atlasName}` : `uires/${avatar.spriteAtlasPath}/${avatar.atlasName}`;
-    const type = isSpine ? "sp.SkeletonData" : "cc.SpriteAtlas";
-    const found = assets.find((asset) => asset.path === path && asset.type === type && (type !== "sp.SkeletonData" || asset.native));
-    return found ? { path, kind: isSpine ? "spine" : "atlas", scale: avatar.scale || 1,
-      height: avatar.height || 120, fps: avatar.fps || 12, flip: Boolean(avatar.flip), avatarId } : null;
-  };
+  const binding = (avatarId) => referenceArtBinding(avatarId, row, assets);
   [13, 1, 9, 8].forEach((id, index) => {
     const hero = row("Hero", id);
     const actor = config.squad.actors[index];
@@ -117,6 +169,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   const enemies = new Map();
   config.spawns = [];
   const skipped = [];
+  const missingNpcArt = [];
   const unsupported = [];
   const progressionIssues = [];
   const rewardCompiler = createReferenceRewardCompiler(row, config.world.progression.resources, progressionIssues);
@@ -140,7 +193,9 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
         rewards: grant.rewards, command: npc.type === 1 ? "\u6253\u5f00" : undefined, auto: npc.type === 1 && npc.autoOpen === 1,
         initiallyCompleted: npc.type === 5 && Number(id) === 500000 } };
     config.world.pointsOfInterest.push(poi);
-    art.bindings[poiId] = binding(npc.display);
+    const directArt = binding(npc.display);
+    if (!directArt) missingNpcArt.push(missingArtEntry(poiId, id, npc.display, row, assets));
+    art.bindings[poiId] = directArt || referenceNpcArtBinding(id, npc.display, row, assets);
     if (npc.type === 3) {
       const fog = scene.fogLayer.find((entry) => String(entry.id) === id);
       if (!fog) throw new Error(`Missing fog geometry for NPC ${id}`);
@@ -203,11 +258,34 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
       count, spawnRadius: count > 1 ? 50 : 0, respawn: Boolean(monster.rebirthTime), respawnDelay: monster.rebirthTime || 45 });
     if (boss) config.world.pointsOfInterest.push({ id: spawnId, name: monster.name, type: "boss", ...position, discoverRadius: 500 });
   }
+  const summonIds = new Set([...skillCompiler.definitions.values()].flatMap((skill) => skill.actions || [])
+    .map((action) => action.summon?.enemyId).filter(Boolean).map((id) => Number(String(id).replace("reference_summon_", ""))));
+  for (const id of summonIds) {
+    const summon = validateReferenceSummon(id, row("Summon", id));
+    const skills = String(summon.skill).split(",").map((sourceId) => skillCompiler.compile(Number(sourceId), row("Avatar", summon.display)?.fps || 12, [], true)).filter(Boolean);
+    const templateId = `reference_summon_${id}`, visual = binding(summon.display);
+    enemies.set(templateId, { id: templateId, name: summon.name || templateId, kind: "summon", x: 0, y: 0, hp: 1, attack: 0, defense: 0,
+      moveSpeed: summon.attributes.movespeed, attackRange: skills.find((skill) => skill.category === "normal")?.range || 50,
+      aggroRange: Math.max(...skills.map((skill) => skill.range), 50), collisionRadius: row("Avatar", summon.display)?.volume || 20,
+      skillIds: skills.map((skill) => skill.id), summonInheritance: { attack: summon.inherit.atk / 10000,
+        defense: summon.inherit.def / 10000, maxHealth: summon.inherit.maxhp / 10000 } });
+    art.bindings[templateId] = visual;
+    if (visual) {
+      visual.skillAnimations = Object.fromEntries(skills.map((skill) => [skill.id, skill.presentation.release]));
+      visual.skillPhases = Object.fromEntries(skills.map((skill) => [skill.id, skill.presentation]));
+    }
+  }
+  if (skillCompiler.definitions.has(5001603) && [1601, 1602].every((id) => enemies.has(`reference_summon_${id}`))) {
+    skillCompiler.issues.push({ id: "5001603", kind: "summon_parity",
+      value: "effective owner stats are captured at action execution and rounded down; blocked offsets relocate deterministically; exact return timing and source effect 501608 presentation require live comparison" });
+  }
   config.enemies = [...enemies.values()];
   config.journal = buildReferenceJournal(row, (family) => [...(families.get(family)?.keys() ?? [])], config, toWorld, rewardCompiler, progressionIssues);
   config.recruitment = buildReferenceRecruitment(row, (family) => [...(families.get(family)?.keys() ?? [])], rewardCompiler, assets, progressionIssues);
   config.roster = buildReferenceRoster(row, (family) => [...(families.get(family)?.keys() ?? [])], config, skillCompiler, art, binding, assets, rewardCompiler, progressionIssues);
   config.development = buildReferenceDevelopment(row, (family) => [...(families.get(family)?.keys() ?? [])], config, rewardCompiler, progressionIssues);
+  const enabledWithoutBehavior = [...skillCompiler.definitions.values()].filter((skill) => !skill.disabled && !hasExecutableSkillBehavior(skill));
+  if (enabledWithoutBehavior.length) throw new Error(`Enabled reference skills without executable behavior: ${enabledWithoutBehavior.map((skill) => skill.sourceId).join(",")}`);
   config.skills.definitions = [...config.skills.definitions.filter((skill) => !skill.summonEnemyId), ...skillCompiler.definitions.values()];
   art.projectiles = {};
   for (const skill of skillCompiler.definitions.values()) if (skill.projectileSpeed && skill.projectileEffectIds?.length) {
@@ -237,10 +315,11 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   config.presentation = { reference: art };
   const requiredTiles = Object.entries(cut.data).flatMap(([x, rows]) => Object.keys(rows).map((y) => `${cut.name}/${x}_${y}`));
   const availableTiles = new Set(art.tiles);
+  const missingArtAudit = categorizedMissingArt(skipped, missingNpcArt, progressionIssues, row, assets);
   return { config, audit: { map: sceneAsset.path, collisionGrid: [scene.blockLayer.width, scene.blockLayer.height],
     routeSamples: scene.pathpoint.reduce((count, path) => count + path.length / 2, 0),
     blockedRouteSamples: scene.pathpoint.reduce((count, path) => count + path.filter((_, index) => index % 2 === 0 && sourceBlocked(path[index], path[index + 1])).length, 0),
-    cachedMapTextures: art.tiles.length, enemyTemplates: enemies.size, encounterPlacements: config.spawns.length, missingArt: skipped,
+    cachedMapTextures: art.tiles.length, enemyTemplates: enemies.size, encounterPlacements: config.spawns.length, ...missingArtAudit,
     fogZones: config.fog.unlockZones.length, portals: config.world.pointsOfInterest.filter(poi => poi.type === "portal").length, unsupported,
     requiredMapTiles: requiredTiles.length, missingMapTiles: requiredTiles.filter((path) => !availableTiles.has(path)),
     compiledSkills: skillCompiler.definitions.size, skillIssues: skillCompiler.issues.filter((issue) => issue.kind !== "no_direct_actions" || !skillCompiler.definitions.get(Number(issue.id))?.actions.length),

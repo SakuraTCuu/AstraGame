@@ -50,8 +50,9 @@ export class AstraHostProbe extends cc.Component {
         this.currentConfig = cached ? this.cachedConfig : ASTRA_EXPLORE_VIEW;
         const existing = UIManager.instance.getUIView(this.currentConfig);
         if (existing) return Promise.resolve(existing);
-        const base = createLocalDemoPorts().config;
-        const options: any = { roleKey: this.scope(this.role), config: { load: async (path: string) => {
+        const local = createLocalDemoPorts();
+        const base = local.config;
+        const options: any = { protocol: local.protocol, roleKey: this.scope(this.role), config: { load: async (path: string) => {
             const source: any = await base.load(path);
             this.configId = source.meta?.id || "default";
             const config = { ...source, session: { ...source.session, persistExploration: true } };

@@ -60,6 +60,15 @@ export function parseReferenceItem(source) {
   return { itemId: Number(match[1]), amount, chance };
 }
 
+export function parseReferenceWeightedItem(source) {
+  const match = /^item\|id:(\d+)_num:(\d+)_weight:(\d+)$/.exec(source || "");
+  if (!match) throw new Error(`Unsupported weighted item expression ${source}`);
+  const itemId = Number(match[1]), amount = Number(match[2]), weight = Number(match[3]);
+  if (!Number.isSafeInteger(itemId) || itemId <= 0 || !Number.isSafeInteger(amount) || amount < 0 ||
+      !Number.isSafeInteger(weight) || weight <= 0) throw new Error("Invalid weighted item reward");
+  return { itemId, amount, weight };
+}
+
 export function referenceFogPolygon(rect, toWorld) {
   // Fog uses 120-unit editor cells; ground cells project to 200 by 120 units.
   return [[rect.x, rect.y], [rect.x + rect.w, rect.y], [rect.x + rect.w, rect.y + rect.h], [rect.x, rect.y + rect.h]]

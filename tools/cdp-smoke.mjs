@@ -200,13 +200,19 @@ try {
   await delay(250);
   const completion = await advance("victory");
   screenshots.victory = await capture("victory");
-  const resultSaved = await evaluate(async () => {
+  const resultDelivery = await evaluate(async () => {
     const boot = window.__astraQa.boot;
     boot.runtime.update(0);
     await boot.runtime.waitForResult();
     boot.enabled = true;
-    return JSON.parse(cc.sys.localStorage.getItem("astra.exploration.last-result.v1"))?.payload.result.outcome === "won";
+    return {
+      state: boot.runtime.resultState,
+      pending: boot.runtime.pendingResult,
+      receiptCleared: cc.sys.localStorage.getItem("astra.exploration.last-result.v2") === null,
+      legacyReceiptAbsent: cc.sys.localStorage.getItem("astra.exploration.last-result.v1") === null,
+    };
   });
+  const resultSaved = resultDelivery.state === "settled" && resultDelivery.pending === null && resultDelivery.receiptCleared && resultDelivery.legacyReceiptAbsent;
 
   await click(55, 1195);
   await delay(400);
@@ -233,7 +239,7 @@ try {
   }
   screenshots.restarted = await capture("restarted");
   const controls = { paused, frozen: pausedTime === paused.time, resumed, resets: resetCounts };
-  const report = { runtime, hostPrefab, overviewOpened, manualMode, inputMode, bossInitiallyBlocked, progression, bossWarning, completion, resultSaved, controls, viewports, screenshots, consoleErrors,
+  const report = { runtime, hostPrefab, overviewOpened, manualMode, inputMode, bossInitiallyBlocked, progression, bossWarning, completion, resultDelivery, resultSaved, controls, viewports, screenshots, consoleErrors,
     passed: runtime.ready && overviewOpened && manualMode === "manual" && inputMode === "resume_wait" && bossInitiallyBlocked && progression.reached && bossWarning.reached &&
       completion.reached && completion.report.state === "won" && resultSaved && paused.state === "paused" && controls.frozen &&
       resumed === "running" && resetCounts.every((entry) => entry.state === "running" && entry.zones.join(",") === "south") &&

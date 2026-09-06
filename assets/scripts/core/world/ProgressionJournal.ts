@@ -3,7 +3,11 @@ import type { ProgressCondition } from "./ProgressConditions";
 import { unmetConditions, validateCondition } from "./ProgressConditions";
 import type { WorldMap } from "./WorldMap";
 
-export type ProgressReward = { readonly amount: number; readonly chance?: number } & ({ readonly resource: string } | { readonly experience: true });
+export type ProgressRewardGrant = { readonly amount: number } & ({ readonly resource: string } | { readonly experience: true });
+export type WeightedProgressReward = ProgressRewardGrant & { readonly weight: number };
+export type ProgressReward = (ProgressRewardGrant & { readonly chance?: number }) | { readonly oneOf: readonly WeightedProgressReward[] };
+export type ProgressRewardDisplay = (ProgressRewardGrant & { readonly name: string; readonly chance?: number }) |
+  { readonly oneOf: readonly (WeightedProgressReward & { readonly name: string })[] };
 export interface QuestDefinition {
   readonly id: string;
   readonly name: string;
@@ -20,7 +24,7 @@ export interface JournalConfig { readonly quests: readonly QuestDefinition[]; re
 export type QuestState = "locked" | "active" | "ready" | "claimed";
 export type ClaimResult = "claimed" | "already_claimed" | "requirements_not_met" | "unavailable";
 export interface JournalSnapshot {
-  readonly quests: readonly (Omit<QuestDefinition, "rewards"> & { readonly state: QuestState; readonly requirements: readonly string[]; readonly rewards: readonly (ProgressReward & { readonly name: string })[] })[];
+  readonly quests: readonly (Omit<QuestDefinition, "rewards"> & { readonly state: QuestState; readonly requirements: readonly string[]; readonly rewards: readonly ProgressRewardDisplay[] })[];
   readonly rank: { readonly id: number; readonly name: string; readonly next: (RankDefinition & { readonly ready: boolean }) | null };
 }
 
@@ -88,12 +92,22 @@ export class ProgressionJournal {
     const snapshot: JournalSnapshot = {
       quests: this.quests.map((quest) => ({ ...quest, state: this.state(quest),
         requirements: unmetConditions(this.state(quest) === "locked" ? quest.prerequisite : quest.condition, this.map),
-        rewards: (quest.rewards ?? []).map((reward) => ({ ...reward, name: "resource" in reward ? this.map.resourceName(reward.resource) : "\u961f\u4f0d\u7ecf\u9a8c" })) })),
+        rewards: this.displayRewards(quest.rewards ?? []) })),
       rank: { id: this.map.rank, name: this.ranks.find((rank) => rank.id === this.map.rank)?.name ?? "",
         next: next ? { ...next, ready: next.questIds.every((id) => this.state(this.quests.find((quest) => quest.id === id)!) === "claimed") } : null },
     };
     this.cached = { revision: this.map.revision, snapshot };
     return snapshot;
+  }
+
+  private displayRewards(rewards: readonly ProgressReward[]): ProgressRewardDisplay[] {
+    const result: ProgressRewardDisplay[] = [];
+    for (const reward of rewards) {
+      if ("oneOf" in reward) result.push({ oneOf: reward.oneOf.map((choice) => ({ ...choice,
+        name: "resource" in choice ? this.map.resourceName(choice.resource) : "\u961f\u4f0d\u7ecf\u9a8c" })) });
+      else result.push({ ...reward, name: "resource" in reward ? this.map.resourceName(reward.resource) : "\u961f\u4f0d\u7ecf\u9a8c" });
+    }
+    return result;
   }
 
   private flag(quest: QuestDefinition): string { return quest.flag ?? `quest:${quest.id}`; }

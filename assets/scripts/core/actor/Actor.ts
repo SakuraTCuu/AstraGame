@@ -140,6 +140,7 @@ export class Actor {
   get healingBlocked(): boolean { return this.states.some((state) => state.definition.healingBlocked); }
   get incomingDamageCap(): number { return this.states.reduce((cap, state) => Math.min(cap, state.definition.damageCap ?? Infinity), Infinity); }
   get attackPower(): number { return Math.max(0, this.stats.attack * (1 + this.modifier("attackRate"))); }
+  get defensePower(): number { return this.stats.defense * Math.max(0, 1 + this.modifier("defenseRate")); }
   get movementSpeed(): number { return Math.max(0, (this.stats.moveSpeed + this.modifier("movementBonus")) * Math.max(0, 1 + this.modifier("movementSpeedRate"))); }
   modifier(key: keyof StatModifiers): number { return (this.currentStats.modifiers?.[key] ?? 0) + this.statuses.reduce((value, status) => value + (status.definition.modifiers?.[key] ?? 0) * status.stacks, 0); }
   hasStatus(state: string): boolean { return this.states.some((entry) => entry.definition.id === state) || this.statuses.some((entry) => entry.definition.id === state || entry.definition.group === state); }
@@ -359,7 +360,7 @@ export class Actor {
       (pve ? Math.max(0, 1 - this.modifier("pveDamageReduction")) : 1) *
       (periodic ? Math.max(0, 1 - this.modifier("dotDamageReduction")) : 1);
     if (reduction <= 0) return 0;
-    let actualDamage = Math.max(1, Math.floor((rawDamage - this.stats.defense) * Math.max(0, reduction) + 1e-9));
+    let actualDamage = Math.max(1, Math.floor((rawDamage - this.defensePower) * Math.max(0, reduction) + 1e-9));
     actualDamage = Math.min(actualDamage, this.incomingDamageCap);
     for (const layer of this.shields) {
       const absorbed = Math.min(layer.amount, actualDamage);

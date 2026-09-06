@@ -1,10 +1,19 @@
-import { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
+import type { ActorSnapshot, DemoSnapshot } from "../core/demo/DemoSession";
 import { ForegroundRenderer } from "./ForegroundRenderer";
 
-interface ArtBinding { path: string; kind: "spine" | "atlas"; scale: number; height: number; fps: number; flip: boolean; skillAnimations?: Record<string, string>; skillPhases?: Record<string, { prepare?: string; hold?: string; release: string }>; }
+interface ArtBinding { path: string; kind: "spine" | "atlas"; scale: number; height: number; fps: number; flip: boolean; offsetX?: number; offsetY?: number; skillAnimations?: Record<string, string>; skillPhases?: Record<string, { prepare?: string; hold?: string; release: string }>; }
 interface ProjectileBinding { path: string; fps: number; scale: number; loop: boolean; offsetY: number; directional: boolean; offsetAlong?: number; anchorX?: number; }
 interface ArtConfig { bundle: string; mapBundle: string; mapName: string; tileSize: number; mapWidth: number; mapHeight: number; depth: number; scale: number; tiles: string[]; bindings: Record<string, ArtBinding>; projectiles?: Record<string, ProjectileBinding>; areas?: Record<string, ProjectileBinding>; occlusionPolygons?: Array<Array<{ x: number; y: number }>>; }
-interface ActorView { node: cc.Node; skeleton?: sp.Skeleton; sprite?: cc.Sprite; bars: cc.Graphics; binding: ArtBinding; action: string; age: number; lastX: number; facing: number; castId?: number; castCycle?: number; }
+interface ActorView { node: cc.Node; skeleton?: sp.Skeleton; sprite?: cc.Sprite; bars: cc.Graphics; binding: ArtBinding; action: string; loop?: boolean; age: number; lastX: number; facing: number; castId?: number; castCycle?: number; }
+
+export function referencePoiAnimation(completed: boolean, names: string[]): { action: string; loop: boolean; freezeAtEnd: boolean } {
+    const preferred = completed ? "dead" : "idle";
+    return { action: names.includes(preferred) ? preferred : names.includes("idle") ? "idle" : names[0], loop: !completed, freezeAtEnd: completed };
+}
+
+export function shouldRestartPoiAnimation(action: string, loop: boolean | undefined, next: { action: string; loop: boolean }): boolean {
+    return Boolean(next.action && (action !== next.action || loop !== next.loop));
+}
 
 export class ReferenceArtLayer {
     private readonly ground: cc.Node;
@@ -119,9 +128,13 @@ export class ReferenceArtLayer {
             view.node.active = true; view.node.setPosition(point); view.node.zIndex = Math.round(100000 - poi.y); view.bars.clear();
             if (view.skeleton) {
                 const names = view.skeleton.skeletonData.getRuntimeData().animations.map((entry) => entry.name);
-                const action = names.includes("idle") ? "idle" : names[0];
-                if (action && view.action !== action) view.skeleton.setAnimation(0, action, true);
-                view.action = action; view.skeleton.paused = snapshot.runState !== "running" && snapshot.runState !== "recovering";
+                const state = referencePoiAnimation(poi.completed, names);
+                if (shouldRestartPoiAnimation(view.action, view.loop, state)) view.skeleton.setAnimation(0, state.action, state.loop);
+                view.action = state.action;
+                view.loop = state.loop;
+                const track = view.skeleton.getCurrent(0);
+                view.skeleton.paused = snapshot.runState !== "running" && snapshot.runState !== "recovering" ||
+                    state.freezeAtEnd && Boolean(track?.isComplete());
             } else {
                 const action = poi.completed ? "dead" : "idle";
                 const key = `${binding.path}:${action}`;
@@ -138,7 +151,7 @@ export class ReferenceArtLayer {
             }
         });
         this.views.forEach((view, id) => {
-            if (!existing.has(id) || !present.has(id)) { view.node.destroy(); this.views.delete(id); }
+            if (!existing.has(id) || !present.has(id)) { this.destroyView(view); this.views.delete(id); }
             else view.node.active = present.has(id);
         });
         const presentProjectiles = new Set<number>();
@@ -206,9 +219,13 @@ export class ReferenceArtLayer {
         this.dead = true;
         if (this.foreground) this.foreground.destroy();
         this.ground.destroy();
+        this.views.forEach((view) => this.destroyView(view));
         this.actors.destroy();
         this.loaded.forEach((asset) => asset.decRef());
         this.loaded.clear();
+        this.frames.clear();
+        this.pending.clear();
+        this.failed.clear();
         this.views.clear();
         this.projectileViews.clear();
         this.areaViews.clear();
@@ -253,7 +270,13 @@ export class ReferenceArtLayer {
             art.anchorY = 0;
             art.setScale(binding.scale * this.config.scale);
         }
+        art.setPosition((binding.offsetX || 0) * this.config.scale, (binding.offsetY || 0) * this.config.scale);
         return view;
+    }
+
+    private destroyView(view: ActorView): void {
+        if (view.skeleton) view.skeleton.clearTracks();
+        view.node.destroy();
     }
 
     private animate(view: ActorView, actor: ActorSnapshot, snapshot: DemoSnapshot, delta: number): void {
@@ -269,7 +292,8 @@ export class ReferenceArtLayer {
         if (Math.abs(dx) > 0.2) view.facing = Math.sign(dx);
         view.lastX = actor.x;
         const visual = view.skeleton ? view.skeleton.node : view.sprite.node;
-        visual.y = Math.max(cast?.elevation || 0, actor.elevation || 0) * this.config.scale;
+        visual.x = (view.binding.offsetX || 0) * this.config.scale;
+        visual.y = ((view.binding.offsetY || 0) + Math.max(cast?.elevation || 0, actor.elevation || 0)) * this.config.scale;
         view.bars.node.y = visual.y;
         visual.scaleX = Math.abs(visual.scaleX) * view.facing * (view.binding.flip ? -1 : 1);
         if (view.skeleton) {

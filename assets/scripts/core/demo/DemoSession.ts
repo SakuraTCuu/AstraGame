@@ -19,7 +19,7 @@ import type { JournalConfig, ProgressReward, ClaimResult } from "../world/Progre
 import { PartyDevelopment } from "../world/PartyDevelopment";
 import type { DevelopmentConfig, DevelopmentSave, DevelopmentResult } from "../world/PartyDevelopment";
 import { HeroRoster } from "../world/HeroRoster";
-import type { RosterDefinition, RosterSave } from "../world/HeroRoster";
+import type { HeroActivationResult, RosterDefinition, RosterSave } from "../world/HeroRoster";
 import { Recruitment } from "../world/Recruitment";
 import type { RecruitmentConfig } from "../world/Recruitment";
 
@@ -60,6 +60,7 @@ export interface DemoActorConfig {
   readonly defeatCounters?: readonly string[];
   readonly defeatRewards?: readonly DefeatReward[];
   readonly firstDefeatRewards?: readonly DefeatReward[];
+  readonly summonInheritance?: { readonly attack: number; readonly defense: number; readonly maxHealth: number };
 }
 
 export interface DemoSpawnConfig {
@@ -105,6 +106,7 @@ export interface DemoConfig {
   readonly squad: {
     readonly actors: readonly DemoActorConfig[];
     readonly formationOffsets?: ReadonlyArray<{ readonly x: number; readonly y: number }>;
+    readonly formationCatchUpMultiplier?: number;
     readonly followLeashDistance?: number;
   };
   readonly enemies: readonly DemoActorConfig[] | { readonly actors: readonly DemoActorConfig[] };
@@ -289,7 +291,13 @@ export class DemoSession {
     }
     const players = config.squad.actors.map((entry) => { const actor = this.playerCatalog.get(entry.id); if (!actor) throw new Error("Initial party actor is absent from the roster"); return actor; });
     const enemyConfigs = "actors" in config.enemies ? config.enemies.actors : config.enemies;
-    for (const enemy of enemyConfigs) this.enemyTemplates.set(enemy.id, enemy);
+    for (const enemy of enemyConfigs) {
+      if (enemy.summonInheritance && (!Object.values(enemy.summonInheritance).every(Number.isFinite) ||
+          Math.min(enemy.summonInheritance.attack, enemy.summonInheritance.defense, enemy.summonInheritance.maxHealth) < 0 || enemy.summonInheritance.maxHealth === 0)) {
+        throw new Error(`Invalid summon inheritance for ${enemy.id}`);
+      }
+      this.enemyTemplates.set(enemy.id, enemy);
+    }
     const enemies = config.spawns ? [] : enemyConfigs.map((entry) => this.createActor(entry, "enemy"));
     const cellSize = config.world.cellSize ?? 1;
     const navigation = new GridNavigation(
@@ -350,6 +358,7 @@ export class DemoSession {
       skillDefinitions,
       revealRadius: config.fog.revealRadius,
       formationOffsets: config.squad.formationOffsets,
+      formationCatchUpMultiplier: config.squad.formationCatchUpMultiplier,
       followLeashDistance: config.squad.followLeashDistance,
     });
     const ticksPerSecond = config.ticksPerSecond ?? 20;
@@ -403,6 +412,11 @@ export class DemoSession {
   upgradeHero(actorId: string): DevelopmentResult { return this.canDevelop() && (!this.roster || this.roster.owns(actorId)) ? this.development!.upgrade(actorId) : "unavailable"; }
   private canDevelop(): boolean { return Boolean(this.development && (this.state === "running" || this.state === "paused")); }
 
+  activateHero(actorId: string): HeroActivationResult {
+    if (!this.roster || (this.state !== "running" && this.state !== "paused")) return "unavailable";
+    return this.roster.activate(actorId);
+  }
+
   setLineup(index: number, actorId: string | null): boolean {
     if (!this.roster || (this.state !== "running" && this.state !== "paused")) return false;
     const next = this.roster.planAssignment(index, actorId);
@@ -442,6 +456,7 @@ export class DemoSession {
     const navigation = this.world.options.navigation;
     const positions = this.world.players.map((_, index) => navigation.nearestWalkable(Vector2.from(target).add(this.config.squad.formationOffsets?.[index] ?? Vector2.ZERO)));
     if (positions.some((position, index) => !position || position.distance(Vector2.from(target).add(this.config.squad.formationOffsets?.[index] ?? Vector2.ZERO)) > navigation.cellSize * 3)) return false;
+    this.spawns.clearSummons();
     this.world.recoverParty(positions as Vector2[]);
     this.state = "running"; this.result = null; this.recoveryPosition = null;
     this.frameEvents = []; this.accumulator = 0;
@@ -609,10 +624,10 @@ export class DemoSession {
 
   setAutoDestination(x: number | null, y: number | null): boolean {
     if (this.state !== "running") return false;
-    this.questDestinationId = null;
     if (x === null || y === null) {
       this.world.path.clear();
       this.autoDestination = null;
+      this.questDestinationId = null;
       this.resumeRemaining = 0;
       if (this.moveIntent.lengthSquared() === 0) this.navigationMode = "idle";
       return true;
@@ -620,6 +635,7 @@ export class DemoSession {
     if (!this.world.navigateTo({ x, y })) return false;
     this.moveIntent = Vector2.ZERO;
     this.autoDestination = new Vector2(x, y);
+    this.questDestinationId = null;
     this.resumeRemaining = 0;
     this.navigationMode = "auto_path";
     const leader = this.world.leader;
@@ -833,7 +849,7 @@ export class DemoSession {
         !Number.isFinite(config.directionalProjectile.radius) || config.directionalProjectile.radius < 0 || !Number.isSafeInteger(config.directionalProjectile.maxHits) || config.directionalProjectile.maxHits < 1 ||
         (config.directionalProjectile.repeatInterval !== undefined && (!Number.isFinite(config.directionalProjectile.repeatInterval) || config.directionalProjectile.repeatInterval <= 0)))) throw new Error(`Invalid directional projectile for ${config.id}`);
     if (config.type === "shield" && !(config.duration > 0)) throw new Error(`Shield ${config.id} requires a duration`);
-    if (config.type === "summon" && !this.enemyTemplates.has(config.summonEnemyId)) throw new Error(`Summon ${config.id} references a missing template`);
+    if (config.type === "summon" && config.summonEnemyId && !this.enemyTemplates.has(config.summonEnemyId)) throw new Error(`Summon ${config.id} references a missing template`);
     const areas = (config.actions ?? []).filter((action) => action.type === "area").map((action) => action.areaEffect!);
     for (const area of areas) {
       if (!area || !Number.isFinite(area.duration) || area.duration <= 0 || !Number.isFinite(area.interval) || area.interval <= 0 || !area.geometry || !area.effects?.length ||
@@ -881,7 +897,7 @@ export class DemoSession {
     for (const timeline of timelines) {
       let previous = -1;
       for (const action of timeline) {
-        if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state", "skill_energy", "area", "clear_shields", "shield_to_health", "clear_cooldowns"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
+        if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state", "skill_energy", "area", "summon", "clear_shields", "shield_to_health", "clear_cooldowns"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
         if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
         if (action.targetCount !== undefined && (!Number.isSafeInteger(action.targetCount) || action.targetCount < 1)) throw new Error(`Invalid action target count for ${config.id}`);
         if (action.targetGroup !== undefined && (typeof action.targetGroup !== "string" || !action.targetGroup || (action.recipient && action.recipient !== "targets"))) throw new Error(`Invalid target group for ${config.id}`);
@@ -892,9 +908,17 @@ export class DemoSession {
         if (action.type === "remove_state" && (typeof action.stateId !== "string" || !action.stateId)) throw new Error(`Invalid state removal for ${config.id}`);
         if (action.type === "skill_energy" && (!action.skillEnergy || ![action.skillEnergy.minimum, action.skillEnergy.maximum, action.skillEnergy.cap ?? 0].every((value) => Number.isSafeInteger(value) && value >= 0) ||
             action.skillEnergy.minimum > action.skillEnergy.maximum)) throw new Error(`Invalid skill-energy gain for ${config.id}`);
+        if (action.type === "summon" && (!action.summon || !this.enemyTemplates.has(action.summon.enemyId) ||
+            ![action.summon.offset?.x, action.summon.offset?.y].every(Number.isFinite) ||
+            (action.summon.expiresAfter !== undefined && (!Number.isFinite(action.summon.expiresAfter) || action.summon.expiresAfter <= 0)) ||
+            typeof action.summon.removeWithOwner !== "boolean" ||
+            (action.summon.removeOnReturn !== undefined && typeof action.summon.removeOnReturn !== "boolean"))) throw new Error(`Invalid action summon for ${config.id}`);
         if (action.healFromDamage !== undefined && (action.type !== "damage" || !Number.isFinite(action.healFromDamage) || action.healFromDamage < 0)) throw new Error(`Invalid damage healing for ${config.id}`);
         if (action.healFromDamageRecipient !== undefined && !["self", "allies"].includes(action.healFromDamageRecipient)) throw new Error(`Invalid damage healing recipient for ${config.id}`);
+        if (action.knockback && action.displacement) throw new Error(`Invalid conflicting displacement for ${config.id}`);
         if (action.knockback && (action.type !== "damage" || ![action.knockback.distance, action.knockback.duration].every((value) => Number.isFinite(value) && value > 0))) throw new Error(`Invalid knockback for ${config.id}`);
+        if (action.displacement && (action.type !== "damage" || ![action.displacement.distance, action.displacement.duration].every((value) => Number.isFinite(value) && value > 0) ||
+            !["toward", "away"].includes(action.displacement.direction) || !["source", "impact"].includes(action.displacement.anchor))) throw new Error(`Invalid displacement for ${config.id}`);
         if (action.settleStatus && (!action.settleStatus.group || !Number.isFinite(action.settleStatus.seconds) || action.settleStatus.seconds <= 0)) throw new Error(`Invalid periodic settlement for ${config.id}`);
         if (action.powerPerStack && (!action.powerPerStack.group || !Number.isFinite(action.powerPerStack.amount))) throw new Error(`Invalid stacked damage for ${config.id}`);
         previous = action.at;

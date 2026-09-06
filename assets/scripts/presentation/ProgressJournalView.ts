@@ -127,7 +127,8 @@ export class ProgressJournalView {
         if (selected) {
             this.text(selected.name, 0, -187, 608, 50, 23);
             this.text(selected.requirements.join("\n") || stateNames[selected.state], 0, -270, 608, 100, 19);
-            this.text(selected.rewards.map((reward) => `${reward.name} ${reward.amount}`).join("   ") || "", 0, -373, 608, 75, 19, cc.color(225, 207, 151));
+            this.text(selected.rewards.map((reward) => "oneOf" in reward ? `\u968f\u673a\u4e00\u9879\uff1a${reward.oneOf.map((choice) => `${choice.name} ${choice.amount}\uff08${choice.weight}\uff09`).join(" / ")}` :
+                `${reward.name} ${reward.amount}`).join("   ") || "", 0, -373, 608, 75, 19, cc.color(225, 207, 151));
             const enabled = selected.state === "ready" || (selected.state === "active" && Boolean(selected.destination));
             g.fillColor = enabled ? cc.color(63, 105, 79) : cc.color(47, 57, 54); g.roundRect(10, -576, 260, 58, 4); g.fill();
             this.text(selected.state === "ready" ? "\u9886\u53d6" : selected.state === "claimed" ? "\u5df2\u9886\u53d6" : "\u524d\u5f80", 140, -547, 230, 48, 23);

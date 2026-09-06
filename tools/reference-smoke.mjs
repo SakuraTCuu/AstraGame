@@ -107,6 +107,131 @@ try {
     return { polygons: renderer.visiblePolygons, coveredSamples: covered, totalSamples: pixels.length / 16 };
   });
   assert.ok(foreground.polygons > 0 && foreground.coveredSamples > 100 && foreground.coveredSamples < foreground.totalSamples);
+  const coffinFixture = await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session, map = session.map, navigation = session.world.options.navigation;
+    const poi = map.pois.find((entry) => entry.id === "reference_npc_250004");
+    const gate = map.pois.find((entry) => entry.id === "reference_npc_302002");
+    if (!poi || !gate || poi.type !== "chest" || poi.interaction?.auto || map.saveProgress().interactedPoiIds.includes(poi.id)) return null;
+    const placeParty = (point) => {
+      session.world.clearTravel(); session.setAutoDestination(null, null); session.setMoveIntent(0, 0);
+      session.world.players.forEach((actor, index) => {
+        const offset = session.config.squad.formationOffsets?.[index] || { x: index * 28, y: 0 };
+        const position = navigation.nearestWalkable({ x: point.x + offset.x, y: point.y + offset.y });
+        if (!position) throw new Error(`No walkable coffin fixture position for party slot ${index}`);
+        actor.position = position;
+      });
+    };
+    boot.enabled = false;
+    const originalSave = session.saveExploration();
+    const gatePoint = [40, 80, 120, 160, Math.max(40, gate.interaction.radius - 10)].flatMap((radius) =>
+      Array.from({ length: 64 }, (_, index) => {
+        const angle = index * Math.PI / 32;
+        return navigation.nearestWalkable({ x: gate.x + Math.cos(angle) * radius, y: gate.y + Math.sin(angle) * radius });
+      })).find((point) => point && map.isPositionUnlocked(point) && point.distance(gate) <= gate.interaction.radius && navigation.isSegmentWalkable(point, gate, true));
+    if (!gatePoint) throw new Error("No unlocked approach to the coffin fixture fog gate");
+    const gateCost = gate.interaction.cost;
+    if (gateCost) {
+      const missing = Math.max(0, gateCost.amount - map.resourceBalance(gateCost.resource));
+      if (missing) map.grantResources({ [gateCost.resource]: missing });
+    }
+    placeParty(gatePoint);
+    const gateResult = session.interactWithPoi(gate.id);
+    const poiPoint = navigation.nearestWalkable(poi);
+    if (!poiPoint || !map.isPositionUnlocked(poiPoint) || poiPoint.distance(poi) > poi.interaction.radius || !navigation.isSegmentWalkable(poiPoint, poi))
+      throw new Error("No unlocked walkable coffin interaction point");
+    placeParty(poiPoint);
+    if (session.world.leader.position.distance(poi) > poi.interaction.radius)
+      throw new Error("The positioned party leader is outside the coffin interaction radius");
+    const snapshot = session.getSnapshot();
+    boot.renderer.camera.set(cc.v2(poi.x, poi.y + 150)); boot.renderer.cameraTarget.set(boot.renderer.camera);
+    boot.renderer.update(snapshot, 0);
+    const binding = boot.renderer.referenceArt.config.bindings[poi.id];
+    return { id: poi.id, gateId: gate.id, gateResult, originalSave, binding: { path: binding?.path, kind: binding?.kind,
+      offsetX: binding?.offsetX, offsetY: binding?.offsetY, scale: binding?.scale } };
+  });
+  assert.ok(coffinFixture, "The unopened allowlisted coffin POI is unavailable for the browser fixture");
+  assert.equal(coffinFixture.gateResult, "completed");
+  assert.deepEqual(coffinFixture.binding, { path: "spine/mapbox08", kind: "spine", offsetX: -13, offsetY: -223, scale: 1 });
+  let coffinClosed;
+  for (let index = 0; index < 60; index++) {
+    coffinClosed = await evaluate((id) => {
+      const boot = window.__referenceBoot, art = boot.renderer.referenceArt;
+      const poi = boot.session.map.pois.find((entry) => entry.id === id), leader = boot.session.world.leader;
+      boot.renderer.camera.set(cc.v2(poi.x, poi.y + 150)); boot.renderer.cameraTarget.set(boot.renderer.camera);
+      boot.renderer.update(boot.session.getSnapshot(), 0);
+      const view = art.views.get(id), track = view?.skeleton?.getCurrent(0), binding = art.config.bindings[id];
+      const diagnostic = { ready: Boolean(view?.skeleton && track), pending: [...art.pending], failed: [...art.failed],
+        loaded: art.loaded.has(binding?.path), hasView: Boolean(view), camera: { x: boot.renderer.camera.x, y: boot.renderer.camera.y },
+        leader: leader && { x: leader.position.x, y: leader.position.y }, poi: poi && { x: poi.x, y: poi.y },
+        projected: poi && { x: (poi.x - boot.renderer.camera.x) * art.config.scale,
+          y: (poi.y - boot.renderer.camera.y) * art.config.scale * art.config.depth - 80 }, binding };
+      if (!diagnostic.ready) return diagnostic;
+      return { ...diagnostic, action: view.action, loop: view.loop, trackLoop: track.loop, paused: view.skeleton.paused,
+        animation: track.animation?.name, visualX: view.skeleton.node.x, visualY: view.skeleton.node.y,
+        expectedX: (binding.offsetX || 0) * art.config.scale, expectedY: (binding.offsetY || 0) * art.config.scale };
+    }, coffinFixture.id);
+    if (coffinClosed.ready) break;
+    await delay(100);
+  }
+  assert.ok(coffinClosed?.ready, `The mapbox08 coffin Spine did not load: ${JSON.stringify(coffinClosed)}`);
+  assert.deepEqual({ action: coffinClosed.action, animation: coffinClosed.animation, loop: coffinClosed.loop,
+    trackLoop: coffinClosed.trackLoop, paused: coffinClosed.paused },
+  { action: "idle", animation: "idle", loop: true, trackLoop: true, paused: false });
+  assert.ok(Math.abs(coffinClosed.visualX - coffinClosed.expectedX) < 0.01 && Math.abs(coffinClosed.visualY - coffinClosed.expectedY) < 0.01,
+    JSON.stringify(coffinClosed));
+  await evaluate((id) => {
+    const boot = window.__referenceBoot, poi = boot.session.map.pois.find((entry) => entry.id === id), snapshot = boot.session.getSnapshot();
+    for (let frame = 0; frame < 30; frame++) {
+      boot.renderer.camera.set(cc.v2(poi.x, poi.y + 150)); boot.renderer.cameraTarget.set(boot.renderer.camera);
+      boot.renderer.update(snapshot, 0.1);
+    }
+  }, coffinFixture.id);
+  await delay(300);
+  await capture("coffin-closed");
+  const coffinOpened = await evaluate(async (fixture) => {
+    const boot = window.__referenceBoot, session = boot.session, map = session.map, navigation = session.world.options.navigation;
+    const poi = map.pois.find((entry) => entry.id === fixture.id);
+    if (!poi || !map.isPositionUnlocked(session.world.leader.position) || session.world.leader.position.distance(poi) > poi.interaction.radius ||
+        !navigation.isSegmentWalkable(session.world.leader.position, poi)) throw new Error("The closed coffin fixture lost its interaction position");
+    const result = session.interactWithPoi(poi.id);
+    const snapshot = session.getSnapshot();
+    boot.renderer.centerOnLeader(snapshot); boot.renderer.update(snapshot, 0.1);
+    await boot.runtime.flushProgress();
+    return { result, completed: snapshot.exploration.pois.find((entry) => entry.id === poi.id)?.completed,
+      interactedCount: map.saveProgress().interactedPoiIds.filter((id) => id === poi.id).length };
+  }, coffinFixture);
+  assert.deepEqual(coffinOpened, { result: "completed", completed: true, interactedCount: 1 });
+  let coffinFinal;
+  for (let index = 0; index < 100; index++) {
+    await delay(100);
+    coffinFinal = await evaluate((id) => {
+      const boot = window.__referenceBoot, art = boot.renderer.referenceArt;
+      boot.renderer.update(boot.session.getSnapshot(), 0.1);
+      const view = art.views.get(id), track = view?.skeleton?.getCurrent(0);
+      if (!view?.skeleton || !track) return null;
+      return { action: view.action, loop: view.loop, trackLoop: track.loop, animation: track.animation?.name,
+        complete: track.isComplete(), paused: view.skeleton.paused, trackTime: track.trackTime, animationEnd: track.animationEnd };
+    }, coffinFixture.id);
+    if (coffinFinal?.complete && coffinFinal.paused) break;
+  }
+  assert.ok(coffinFinal, "The completed coffin Spine track disappeared");
+  assert.deepEqual({ action: coffinFinal.action, animation: coffinFinal.animation, loop: coffinFinal.loop,
+    trackLoop: coffinFinal.trackLoop, complete: coffinFinal.complete, paused: coffinFinal.paused },
+  { action: "dead", animation: "dead", loop: false, trackLoop: false, complete: true, paused: true });
+  assert.ok(coffinFinal.trackTime >= coffinFinal.animationEnd, JSON.stringify(coffinFinal));
+  await capture("coffin-open");
+  await send("Page.reload", { ignoreCache: true }); assert.ok(await waitReady());
+  assert.equal(await evaluate((id) => window.__referenceBoot.session.map.saveProgress().interactedPoiIds.includes(id), coffinFixture.id), true);
+  await evaluate(async (fixture) => {
+    const boot = window.__referenceBoot;
+    // Prevent dispose() from enqueueing the opened state after the fixture backup is restored.
+    boot.session.config.session.persistExploration = false;
+    await boot.runtime.ports.storage.saveExploration(boot.session.config.meta.id, fixture.originalSave);
+  }, coffinFixture);
+  await send("Page.reload", { ignoreCache: true }); assert.ok(await waitReady());
+  assert.equal(await evaluate((id) => window.__referenceBoot.session.map.saveProgress().interactedPoiIds.includes(id), coffinFixture.id), false);
+  const coffin = { id: coffinFixture.id, gateResult: coffinFixture.gateResult, binding: coffinFixture.binding, closed: coffinClosed, opened: coffinOpened,
+    final: coffinFinal, persisted: true, restored: true };
   await clickDesign(-310, 300);
   assert.ok(await evaluate(() => window.__referenceBoot.renderer.journal.isOpen && window.__referenceBoot.session.runState === "paused"));
   await clickDesign(214, 484);
@@ -479,7 +604,69 @@ try {
   await send("Page.reload", { ignoreCache: true }); assert.ok(await waitReady());
   assert.deepEqual(await evaluate(() => [...window.__referenceBoot.session.roster.slots()]), five.lineup);
   assert.equal(await evaluate(() => window.__referenceBoot.session.map.counter("recruit")), 2);
-  const roster = { reordered: true, toggled: true, five, setup: "rank-four and owned-card fixture after ordinary recruitment" };
+  await clickDesign(-166, 300);
+  const blockedActivation = await evaluate(() => {
+    const boot = window.__referenceBoot, view = boot.renderer.roster, snapshot = boot.session.getSnapshot();
+    const hero = snapshot.roster.heroes.find((entry) => !entry.owned && !entry.available && entry.activationCost && entry.activationCost.owned <= entry.activationCost.amount);
+    if (!hero) return null;
+    const missing = hero.activationCost.amount - hero.activationCost.owned;
+    if (missing > 0) boot.session.map.grantResources({ [hero.activationCost.resource]: missing });
+    const current = boot.session.getSnapshot();
+    const heroes = snapshot.roster.heroes.slice().sort((a, b) => Number(b.owned) - Number(a.owned) || (b.quality || 0) - (a.quality || 0) || a.id.localeCompare(b.id));
+    view.ownedOnly = false; view.page = Math.floor(heroes.findIndex((entry) => entry.id === hero.id) / 12); boot.renderer.update(current, 0.1);
+    const index = view.rows.findIndex((entry) => entry.id === hero.id);
+    return { id: hero.id, resource: hero.activationCost.resource, balance: hero.activationCost.amount,
+      x: -246 + index % 4 * 164, y: 139 - Math.floor(index / 4) * 166 };
+  });
+  assert.ok(blockedActivation, "No unavailable fragment hero is available for the activation UI fixture");
+  await clickDesign(blockedActivation.x, blockedActivation.y - 62);
+  const blockedResult = await evaluate((fixture) => {
+    const boot = window.__referenceBoot;
+    return { owned: boot.session.roster.owns(fixture.id), balance: boot.session.map.resourceBalance(fixture.resource), feedback: boot.renderer.roster.feedback };
+  }, blockedActivation);
+  assert.deepEqual({ owned: blockedResult.owned, balance: blockedResult.balance }, { owned: false, balance: blockedActivation.balance });
+  assert.match(blockedResult.feedback, /\u6682\u4e0d\u53ef\u4e0a\u9635.*\u788e\u7247/);
+
+  const activation = await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session, view = boot.renderer.roster;
+    let snapshot = session.getSnapshot();
+    const hero = snapshot.roster.heroes.find((entry) => !entry.owned && entry.available && entry.activationCost && entry.activationCost.owned < entry.activationCost.amount);
+    if (!hero) return null;
+    const missing = hero.activationCost.amount - 1 - hero.activationCost.owned;
+    if (missing > 0) session.map.grantResources({ [hero.activationCost.resource]: missing });
+    snapshot = session.getSnapshot();
+    const heroes = snapshot.roster.heroes.slice().sort((a, b) => Number(b.owned) - Number(a.owned) || (b.quality || 0) - (a.quality || 0) || a.id.localeCompare(b.id));
+    view.ownedOnly = false; view.page = Math.floor(heroes.findIndex((entry) => entry.id === hero.id) / 12); boot.renderer.update(snapshot, 0.1);
+    const index = view.rows.findIndex((entry) => entry.id === hero.id), current = view.rows[index];
+    return { id: hero.id, resource: current.activationCost.resource, required: current.activationCost.amount, balance: current.activationCost.owned,
+      x: -246 + index % 4 * 164, y: 139 - Math.floor(index / 4) * 166 };
+  });
+  assert.ok(activation && activation.balance === activation.required - 1, "No threshold-minus-one fragment hero is available for the activation UI fixture");
+  await clickDesign(activation.x, activation.y);
+  assert.deepEqual(await evaluate((fixture) => {
+    const boot = window.__referenceBoot; return { owned: boot.session.roster.owns(fixture.id), balance: boot.session.map.resourceBalance(fixture.resource) };
+  }, activation), { owned: false, balance: activation.balance });
+  await evaluate((fixture) => {
+    const boot = window.__referenceBoot; boot.session.map.grantResources({ [fixture.resource]: 1 }); boot.renderer.update(boot.session.getSnapshot(), 0.1);
+  }, activation);
+  await clickDesign(activation.x, activation.y);
+  assert.deepEqual(await evaluate((fixture) => {
+    const boot = window.__referenceBoot; return { owned: boot.session.roster.owns(fixture.id), balance: boot.session.map.resourceBalance(fixture.resource) };
+  }, activation), { owned: false, balance: activation.required });
+  await capture("fragment-ready");
+  await clickDesign(activation.x, activation.y - 62);
+  const activated = await evaluate((fixture) => {
+    const boot = window.__referenceBoot;
+    return { owned: boot.session.roster.owns(fixture.id), balance: boot.session.map.resourceBalance(fixture.resource), feedback: boot.renderer.roster.feedback };
+  }, activation);
+  assert.deepEqual({ owned: activated.owned, balance: activated.balance }, { owned: true, balance: 0 });
+  assert.equal(activated.feedback, "\u6fc0\u6d3b\u6210\u529f");
+  await capture("fragment-activated");
+  await evaluate(async () => { await window.__referenceBoot.runtime.flushProgress(); });
+  await send("Page.reload", { ignoreCache: true }); assert.ok(await waitReady());
+  assert.equal(await evaluate((id) => window.__referenceBoot.session.roster.owns(id), activation.id), true);
+  const roster = { reordered: true, toggled: true, five, activation: { id: activation.id, blocked: blockedActivation.id, persisted: true },
+    setup: "rank-four, owned-card and explicit fragment activation fixtures after ordinary recruitment" };
   const periodicHeroes = await evaluate(() => {
     const boot = window.__referenceBoot, session = boot.session;
     const results = [2, 26, 10, 16, 31].map((sourceId, index) => {
@@ -1154,7 +1341,7 @@ try {
   assert.ok(resetCounts.every((count) => count.root === resetCounts[0].root && count.world === 8 && count.actors === 4), JSON.stringify(resetCounts));
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);
-  const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
+  const report = { initial, foreground, coffin, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
     periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
     projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, movingAreaArt, shieldChannel, targeting, taunting, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));

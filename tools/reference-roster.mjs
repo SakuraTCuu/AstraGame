@@ -36,7 +36,8 @@ export function buildReferenceRoster(lookup, ids, config, skills, art, binding, 
     const portrait = avatar?.bigIcon?.replace(/^png_/, "");
     const image = assets.find((asset) => asset.type === "cc.SpriteFrame" && asset.path.endsWith(`/${portrait}`) && assets.some((texture) => texture.path === asset.path && texture.type === "cc.Texture2D" && texture.native));
     heroes.push({ id: actor.id, sourceId: id, initiallyOwned: initial.has(id), quality: hero.quality,
-      cardResource: rewards.resource(hero.heroItemId), ownershipFlag: `hero:${id}`, visibility, deployCondition,
+      cardResource: rewards.resource(hero.heroItemId), activationCost: { resource: rewards.resource(hero.chip), amount: hero.chipNum },
+      ownershipFlag: `hero:${id}`, visibility, deployCondition,
       icon: image ? { atlas: image.path, frame: "" } : undefined });
     actors.push(actor);
   }

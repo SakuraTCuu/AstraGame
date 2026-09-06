@@ -1,6 +1,6 @@
 import { DemoSession } from "../core/demo/DemoSession";
 import { DemoRenderer } from "../presentation/DemoRenderer";
-import { ExploreRuntime, SessionReady } from "../framework/ExploreRuntime";
+import { ExploreRuntime, ResultSubmissionState, SessionReady } from "../framework/ExploreRuntime";
 import { createLocalDemoPorts } from "../framework/LocalDemoPorts";
 import { RuntimePorts } from "../framework/RuntimePorts";
 import type { JournalAction } from "../presentation/ProgressJournalView";
@@ -36,6 +36,8 @@ export default class DemoBootstrap extends cc.Component {
     private destroyed = false;
 
     get session(): DemoSession { return this.runtime && this.runtime.session; }
+    get resultState(): ResultSubmissionState { return this.runtime ? this.runtime.resultState : "idle"; }
+    get pendingResult(): Readonly<{ runId: string; sequence: number }> | null { return this.runtime ? this.runtime.pendingResult : null; }
 
     onLoad(): void {
         this.initializeView();
@@ -68,6 +70,8 @@ export default class DemoBootstrap extends cc.Component {
         this.stopJoystick();
         return this.runtime ? this.runtime.restart() : Promise.resolve(false);
     }
+
+    retryPendingResult(): Promise<void> { return this.runtime ? this.runtime.retryResult() : Promise.resolve(); }
 
     pause(): boolean { this.stopJoystick(); return this.runtime ? this.runtime.pause() : false; }
     resume(): boolean { return this.runtime ? this.runtime.resume() : false; }
@@ -274,6 +278,7 @@ export default class DemoBootstrap extends cc.Component {
         } else if (action.kind === "close") {
             this.renderer.roster.close(); if (this.resumeAfterRoster) this.resume(); this.resumeAfterRoster = false;
         } else if (action.kind === "assign") this.renderer.roster.showResult(this.session.setLineup(action.index, action.heroId));
+        else if (action.kind === "activate") this.renderer.roster.showResult(this.session.activateHero(action.heroId));
         else this.renderer.roster.showResult(this.session.recruit(action.poolId, action.count) === "completed");
         this.renderer.update(this.session.getSnapshot(), 0); void this.runtime.flushProgress();
     }

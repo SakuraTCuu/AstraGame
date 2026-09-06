@@ -12,17 +12,22 @@ export const DEFAULT_FORMATION_OFFSETS: readonly Vec2Like[] = [
   { x: -1.25, y: -3 },
   { x: 1.25, y: -3 },
 ];
+export const DEFAULT_FORMATION_CATCH_UP_MULTIPLIER = 1.21;
 
 export class SquadFormation {
   private readonly members: Actor[];
   private readonly offsets: readonly Vec2Like[];
   private readonly followStrength: number;
+  private readonly catchUpMultiplier: number;
 
-  constructor(members: readonly Actor[], offsets = DEFAULT_FORMATION_OFFSETS, followStrength = 6) {
+  constructor(members: readonly Actor[], offsets = DEFAULT_FORMATION_OFFSETS, followStrength = 6,
+    catchUpMultiplier = DEFAULT_FORMATION_CATCH_UP_MULTIPLIER) {
     if (members.length > offsets.length) throw new RangeError("Not enough formation slots");
+    if (!Number.isFinite(catchUpMultiplier) || catchUpMultiplier < 1) throw new RangeError("Formation catch-up multiplier must be finite and at least 1");
     this.members = [...members];
     this.offsets = offsets;
     this.followStrength = followStrength;
+    this.catchUpMultiplier = catchUpMultiplier;
   }
 
   setMembers(members: readonly Actor[]): void {
@@ -40,7 +45,7 @@ export class SquadFormation {
   }
 
   update(anchor: Vec2Like, facing: Vec2Like, deltaSeconds: number,
-    move?: (actor: Actor, target: Vec2Like, deltaSeconds: number) => void, leader?: Actor): void {
+    move?: (actor: Actor, target: Vec2Like, deltaSeconds: number, movementBudget?: number) => void, leader?: Actor): void {
     const members = leader ? [leader, ...this.members.filter((actor) => actor !== leader && actor.alive)] : this.members;
     for (let index = 0; index < members.length; index += 1) {
       const actor = members[index]!;
@@ -48,8 +53,11 @@ export class SquadFormation {
       if (!actor.canMove || !["idle", "moving"].includes(actor.fsm.state)) continue;
       const target = this.slotPosition(index, anchor, facing);
       const blend = Math.min(1, this.followStrength * deltaSeconds);
-      if (move) move(actor, target, deltaSeconds);
-      else actor.position = actor.position.add(target.subtract(actor.position).scale(blend));
+      // followStrength defines the local error correction; catch-up remains bounded by effective actor speed.
+      const movementBudget = Math.min(actor.position.distance(target) * blend,
+        actor.movementSpeed * deltaSeconds * this.catchUpMultiplier);
+      if (move) move(actor, target, deltaSeconds, movementBudget);
+      else actor.position = actor.position.moveTowards(target, movementBudget);
       actor.setState(actor.position.distanceSquared(target) < 0.0025 ? "idle" : "moving");
     }
   }

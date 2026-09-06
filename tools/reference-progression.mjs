@@ -1,4 +1,4 @@
-import { compileReferenceCondition, parseReferenceItem } from "./reference-rules.mjs";
+import { compileReferenceCondition, parseReferenceItem, parseReferenceWeightedItem } from "./reference-rules.mjs";
 
 export function createReferenceRewardCompiler(lookup, resources, issues) {
   const resource = (id) => {
@@ -11,7 +11,17 @@ export function createReferenceRewardCompiler(lookup, resources, issues) {
     if (!id) return [];
     if (stack.includes(id)) throw new Error(`Cyclic reward ${id}`);
     const row = lookup("Reward", id);
-    if (!row || row.type !== "OddsReward") throw new Error(`Unsupported reward ${id}: ${row?.type}`);
+    if (!row || !["OddsReward", "RepeatRand"].includes(row.type)) throw new Error(`Unsupported reward ${id}: ${row?.type}`);
+    if (row.type === "RepeatRand") {
+      const sourceChoices = Object.entries(row).filter(([key, value]) => /^options\d+$/.test(key) && value)
+        .sort(([left], [right]) => Number(left.slice(7)) - Number(right.slice(7)))
+        .map(([, value]) => parseReferenceWeightedItem(value));
+      if (!sourceChoices.length) throw new Error(`Empty weighted reward ${id}`);
+      if (!Number.isSafeInteger(sourceChoices.reduce((total, choice) => total + choice.weight, 0))) throw new Error(`Weighted reward overflow ${id}`);
+      const choices = sourceChoices.map((item) => ({ ...(item.itemId === 7 ? { experience: true } : { resource: resource(item.itemId) }),
+        amount: item.amount, weight: item.weight }));
+      return [{ oneOf: choices }];
+    }
     const rewards = [];
     for (const [key, value] of Object.entries(row)) {
       if (!/^options\d+$/.test(key) || !value) continue;

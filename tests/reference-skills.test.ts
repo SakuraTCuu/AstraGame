@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createReferenceSkillCompiler, heroSkillAtStar, skillFrames, skillTuple } from "../tools/reference-skills.mjs";
+import { createReferenceSkillCompiler, hasExecutableSkillBehavior, heroSkillAtStar, skillFrames, skillTuple } from "../tools/reference-skills.mjs";
 
 test("frame expressions preserve action order, frame timing and damage types", () => {
   const frames = skillFrames("[key:2_action:[damageAction,6000]_dmgType:[2]]&[key:4_action:[damageAction,6000]|[addBuffAction,9,1]]");
@@ -10,6 +10,27 @@ test("frame expressions preserve action order, frame timing and damage types", (
   assert.deepEqual(frames[1].actions, [["damageAction", 6000], ["addBuffAction", 9, 1]]);
   assert.deepEqual(skillTuple("[box,200,600]"), ["box", 200, 600]);
   assert.throws(() => skillFrames("[key:2_action:[damageAction,1]"), /Unbalanced|Invalid/);
+});
+
+test("first-map Boss 5001603 preserves its ordered fixed summon contract", () => {
+  const source = { name: "summon army", skillType: 2, firstSelector: [100, 1], preTime: 100, postTime: 1000,
+    useCond: "[castHpRateCond,5000,1]", presentationIds: "[50016,skill2]",
+    skillTagActions: "[damageTag]|[summonOffsetTag,-58_-36,-28_-36,28_-36,58_-36,-58_-16,-28_-16,28_-16,58_-16,-88_-26,88_-26]",
+    frameKey: Array.from({ length: 10 }, (_, index) => `[key:5_action:[summonAction,${index < 5 ? 1601 : 1602},10000,501608]]`).join("&") };
+  const compiler = createReferenceSkillCompiler((family, id) => family === "Skill" && id === 5001603 ? source : null);
+  const skill = compiler.compile(5001603, 12);
+  assert.equal(skill.type, "summon"); assert.equal(skill.disabled, undefined); assert.equal(skill.actions.length, 10);
+  assert.deepEqual(skill.actions.map((action) => action.summon.enemyId), [
+    ...Array(5).fill("reference_summon_1601"), ...Array(5).fill("reference_summon_1602"),
+  ]);
+  assert.deepEqual(skill.actions.map((action) => action.summon.offset), [
+    { x: -58, y: -36 }, { x: -28, y: -36 }, { x: 28, y: -36 }, { x: 58, y: -36 }, { x: -58, y: -16 },
+    { x: -28, y: -16 }, { x: 28, y: -16 }, { x: 58, y: -16 }, { x: -88, y: -26 }, { x: 88, y: -26 },
+  ]);
+  for (const action of skill.actions) assert.deepEqual({ expiresAfter: action.summon.expiresAfter,
+    removeWithOwner: action.summon.removeWithOwner, removeOnReturn: action.summon.removeOnReturn },
+    { expiresAfter: 10, removeWithOwner: false, removeOnReturn: true });
+  assert.equal(compiler.issues.some((issue) => issue.id === "5001603" && ["action", "no_direct_actions"].includes(issue.kind)), false);
 });
 
 test("impact knockback and self healing attach to their own damage frame only", () => {
@@ -23,6 +44,35 @@ test("impact knockback and self healing attach to their own damage frame only", 
   assert.deepEqual(compiler.issues.map((issue) => issue.kind), ["knockback_parity"]);
   const unsupported = createReferenceSkillCompiler(() => ({ skillType: 2, frameKey: "[key:0_action:[repelAction,300,20]|[healByDmgAction,5000]]" }));
   assert.equal(unsupported.compile(1).actions.length, 0); assert.equal(unsupported.issues.filter((issue) => issue.kind === "action").length, 2);
+});
+
+test("hero 12's four-operand area repel compiles as an inward impact-anchored displacement", () => {
+  const compiler = createReferenceSkillCompiler(() => ({ skillType: 2, firstSelector: [300, 5], preTime: 400, postTime: 1333,
+    selectShape: "[circle,40,1]", skillTagActions: "[lockProTag,700,5000,1,1]|[sceneSpriteDmgTimesTag,1]", projectEffect: "[104504]",
+    projectKey: "[key:0_action:[sceneSpriteAction,2000,410,circle,300,104505,-1]]",
+    sceneSpriteActions: "[key:10_action:[damageAction,12000,5]_dmgType:[3]|[repelAction,600,350,1]]" }));
+  const skill = compiler.compile(10120501, 12);
+  const effect = skill.actions[0].areaEffect.effects[0];
+  assert.deepEqual(effect.displacement, { duration: 0.6, distance: 350, direction: "toward", anchor: "impact" });
+  assert.equal(effect.knockback, undefined);
+  assert.equal(skill.disabled, undefined);
+  assert.ok(compiler.issues.some((issue) => issue.kind === "inward_displacement_parity"));
+  assert.equal(compiler.issues.some((issue) => issue.kind === "action" && issue.value[0] === "repelAction"), false);
+});
+
+test("generated actionless skills remain audited but are explicitly disabled", () => {
+  const rows = {
+    10120201: { name: "gravity proxy", skillType: 2, firstSelector: [50, 1], postTime: 100 },
+    10110101: { name: "unsupported transform", skillType: 8, frameKey: "[key:0_action:[transformAction,1111,5000]]", skillTagActions: "[castCostTag,ultraEnegy,10000]" },
+    2: { name: "metadata only", skillType: 2, firstSelector: [300, 5], selectShape: "[circle,300]", projectEffect: "[7]", skillTagActions: "[lockProTag,700,5000,1,1]" },
+    1: { name: "supported", skillType: 1, frameKey: "[key:0_action:[damageAction,10000]]" },
+  };
+  const compiler = createReferenceSkillCompiler((family, id) => family === "Skill" ? rows[id] : undefined);
+  const proxy = compiler.compile(10120201), transform = compiler.compile(10110101), metadata = compiler.compile(2), supported = compiler.compile(1);
+  assert.equal(proxy.disabled, true); assert.equal(transform.disabled, true); assert.equal(metadata.disabled, true); assert.equal(supported.disabled, undefined);
+  assert.equal(hasExecutableSkillBehavior(metadata), false); assert.equal(hasExecutableSkillBehavior(supported), true);
+  assert.equal(proxy.actions.length, 0); assert.equal(transform.actions.length, 0);
+  assert.deepEqual(compiler.issues.filter((issue) => issue.kind === "no_direct_actions").map((issue) => issue.id), ["10120201", "10110101", "2"]);
 });
 
 test("the adapter converts source timing, projectile and energy units explicitly", () => {
@@ -54,6 +104,75 @@ test("source buffs become timed modifiers and source HP gates remain conditions"
   assert.equal(skill.actions[0].status.duration, 3);
   assert.equal(skill.actions[0].status.modifiers.attackRate, 0.2);
   assert.deepEqual(skill.actions[0].status.states, [{ id: "ready", duration: 3 }]);
+});
+
+test("hero 11's confirmed ultimate passive attaches its timed self defense buff", () => {
+  const rows = { Skill: {
+    10110101: { skillType: 8, skillgroup: 101101, targetCamp: 1, cd: 15000, publicCd: 1000, publicCdGroup: 1,
+      skillTagActions: "[castCostTag,ultraEnegy,10000]", frameKey: "[key:5_action:[transformAction,1111,5000]]" },
+    10110601: { skillType: 3, triggerActions: "[skillAddBuffAction,101101,2,10000,null,1,101111_1]" },
+    10110602: { skillType: 3, triggerActions: "[skillAddBuffAction,101101,2,9999,null,1,101111_1]" },
+  }, Buff: { 101111: { duration: 5000, group: 101111,
+    effects: "[changeAttrAction,damageReduction,1000]|[changeAttrAction,defRate,1000]" } } };
+  const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  compiler.heroSkills({ id: 11, skill2: "10110101_0", skill5: "10110601_0" }, 12);
+  const ultimate = compiler.definitions.get(10110101);
+  assert.equal(ultimate.energyCost, 10000); assert.equal(ultimate.cooldown, 15); assert.equal(ultimate.publicCooldown, 1);
+  assert.deepEqual(ultimate.actions[0], { at: 0, type: "status", recipient: "self", status: {
+    id: "reference_buff_101111", group: "101111", duration: 5, permanent: false, maxStacks: 1,
+    modifiers: { damageReduction: 0.1, defenseRate: 0.1 }, dispellable: true, harmful: false } });
+
+  const other = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  other.heroSkills({ id: 11, skill2: "10110101_0", skill5: "10110602_0" }, 12);
+  assert.equal(other.definitions.get(10110101).actions.some((action) => action.type === "status"), false);
+  assert.ok(other.issues.some((issue) => issue.kind === "passive_buff"));
+});
+
+test("the same strict self-buff tuple supports hero 15 without consuming unrelated passive actions", () => {
+  const rows = { Skill: {
+    10150101: { skillType: 8, skillgroup: 101501, targetCamp: 2, frameKey: "[key:5_action:[transformAction,1151,5000]]" },
+    10150501: { skillType: 3, triggerActions: "[rateBlockDmgAction,1500,1]|[skillAddBuffAction,101501,2,10000,null,1,101511_1]" },
+  }, Buff: { 101511: { duration: 5000, group: 101511, effects: "[changeAttrAction,maxhpRate,1000]" } } };
+  const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  compiler.heroSkills({ id: 15, skill2: "10150101_0", skill5: "10150501_0" }, 12);
+  const ultimate = compiler.definitions.get(10150101);
+  assert.equal(ultimate.actions[0].recipient, "self");
+  assert.equal(ultimate.actions[0].status.duration, 5);
+  assert.equal(ultimate.actions[0].status.modifiers.maxHealthRate, 0.1);
+  assert.ok(compiler.issues.some((issue) => issue.kind === "action" && issue.value[0] === "transformAction"));
+  assert.ok(compiler.issues.some((issue) => issue.kind === "passive" && issue.value[0] === "rateBlockDmgAction"));
+});
+
+test("hero 8's sword-fan Buff remains a projectile conversion instead of a no-op status", () => {
+  const rows = { Skill: {
+    10080101: { skillType: 8, skillgroup: 100801, firstSelector: [300, 4] },
+    10080601: { skillType: 3, triggerActions: "[skillAddBuffAction,100801,2,10000,null,1,100806_1]" },
+    10080701: { skillType: 2, frameKey: "[key:1_action:[damageAction,28000]_dmgType:[2]]" },
+  }, Buff: { 100806: { duration: 2000, effects: "[tickZXFlySwordAction,100,10080701,3,100]" } } };
+  const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  compiler.heroSkills({ id: 8, skill2: "10080101_0", skill5: "10080601_0" }, 12);
+  const ultimate = compiler.definitions.get(10080101);
+  assert.equal(ultimate.type, "damage"); assert.equal(ultimate.actions[0].type, "damage");
+  assert.equal(ultimate.actions.some((action) => action.type === "status"), false);
+  assert.ok(compiler.issues.some((issue) => issue.id === "10080101" && issue.kind === "sword_fan_timing"));
+  assert.ok(compiler.issues.some((issue) => issue.id === "10080101" && issue.kind === "no_direct_actions"));
+});
+
+test("physical vulnerability maps to a negative incoming physical reduction", () => {
+  const rows = { Skill: { 1: { skillType: 2, frameKey: "[key:0_action:[targetBuffAction,1,0,103124]]" } },
+    Buff: { 103124: { duration: 8000, effects: "[changeAttrAction,RevertDmgTypeBonus3,-2000]" } } };
+  const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  assert.equal(compiler.compile(1).actions[0].status.modifiers.physicalReduction, -0.2);
+  assert.deepEqual(compiler.issues.map((issue) => issue.kind), ["buff_duration_parity", "target_buff_parity"]);
+});
+
+test("unconfirmed RevertDmgTypeBonus3 rows remain audited rather than sharing hero 31's sign", () => {
+  const rows = { Skill: { 1: { skillType: 2, frameKey: "[key:0_action:[addBuffAction,300601,0]]" } },
+    Buff: { 300601: { duration: 6000, effects: "[changeAttrAction,RevertDmgTypeBonus3,1500]" } } };
+  const compiler = createReferenceSkillCompiler((family, id) => rows[family]?.[id]);
+  const status = compiler.compile(1).actions[0].status;
+  assert.equal(status.modifiers.physicalReduction, undefined);
+  assert.ok(compiler.issues.some((issue) => issue.id === "300601" && issue.kind === "modifier"));
 });
 
 test("hero skill selection enforces star gates and selects the highest unlocked tier", () => {

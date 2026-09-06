@@ -118,6 +118,10 @@ test("manual override preserves the destination and replans after the configured
   const session = DemoSession.create(explorationConfig());
   assert.equal(session.setAutoDestination(11.5, 5.5), true);
   session.update(0.1);
+  const acceptedRoute = session.getSnapshot().autoNavigation;
+  assert.equal(session.setAutoDestination(35, 10), false);
+  assert.deepEqual(session.getSnapshot().autoNavigation.destination, acceptedRoute.destination);
+  assert.deepEqual(session.getSnapshot().autoNavigation.remainingWaypoints, acceptedRoute.remainingWaypoints);
   session.setMoveIntent(-1, 0);
   session.update(0.1);
   assert.equal(session.getSnapshot().autoNavigation.mode, "manual");
@@ -132,6 +136,55 @@ test("manual override preserves the destination and replans after the configured
   advanceUntil(session, () => session.getSnapshot().autoNavigation.mode === "idle");
   assert.ok(session.world.players[0].position.distance({ x: 11.5, y: 5.5 }) < 0.01);
   assert.equal(session.getSnapshot().autoNavigation.destination, null);
+});
+
+test("moving formation consumes sustained slot error through collision-aware movement", () => {
+  const config: DemoConfig = {
+    seed: 3,
+    world: { width: 24, height: 10, cellSize: 1, blocked: Array.from({ length: 8 }, (_, y) => ({ x: 10, y })) },
+    fog: { revealRadius: 2 },
+    squad: {
+      actors: [
+        { id: "leader", kind: "hero", x: 7.5, y: 5.5, hp: 10, attack: 1, defense: 0, moveSpeed: 4, attackRange: 1, aggroRange: 1 },
+        { id: "follower", kind: "hero", x: 1.5, y: 5.5, hp: 10, attack: 1, defense: 0, moveSpeed: 4, attackRange: 1, aggroRange: 1 },
+      ],
+      formationOffsets: [{ x: 0, y: 0 }, { x: 0, y: -1 }],
+      formationCatchUpMultiplier: 1.21,
+    },
+    enemies: [],
+    skills: { player: { id: "hit", range: 1, cooldown: 1, power: 1, target: "enemy" }, enemy: { id: "claw", range: 1, cooldown: 1, power: 1, target: "enemy" } },
+  };
+  const session = DemoSession.create(config);
+  assert.equal(session.world.options.formationCatchUpMultiplier, 1.21);
+  assert.equal(session.setAutoDestination(18.5, 5.5), true);
+  const follower = session.world.players[1]!;
+  const slotError = () => follower.position.distance(session.world.formation.slotPosition(1, session.world.leader!.position, session.world.facingDirection));
+  const initialError = slotError();
+  let minimumMovingError = initialError;
+  for (let tick = 0; tick < 140; tick += 1) {
+    session.update(0.05);
+    assert.equal(session.world.options.navigation.isWorldWalkable(follower.position), true, "follower left walkable ground");
+    if (session.getSnapshot().autoNavigation.mode === "auto_path") minimumMovingError = Math.min(minimumMovingError, slotError());
+  }
+  assert.ok(minimumMovingError < initialError * 0.5, `slot error did not converge: ${initialError} -> ${minimumMovingError}`);
+  assert.ok(slotError() < 0.1, `follower did not settle into its slot: ${slotError()}`);
+});
+
+test("world formation never drags a zero-speed follower", () => {
+  const config: DemoConfig = {
+    seed: 4, world: { width: 12, height: 6 }, fog: { revealRadius: 2 },
+    squad: { actors: [
+      { id: "leader", kind: "hero", x: 2.5, y: 3.5, hp: 10, attack: 1, defense: 0, moveSpeed: 3, attackRange: 1, aggroRange: 1 },
+      { id: "stopped", kind: "hero", x: 1.5, y: 3.5, hp: 10, attack: 1, defense: 0, moveSpeed: 0, attackRange: 1, aggroRange: 1 },
+    ], formationOffsets: [{ x: 0, y: 0 }, { x: 0, y: -1 }] },
+    enemies: [], skills: { player: { id: "hit", range: 1, cooldown: 1, power: 1, target: "enemy" }, enemy: { id: "claw", range: 1, cooldown: 1, power: 1, target: "enemy" } },
+  };
+  const session = DemoSession.create(config);
+  const stopped = session.world.players[1]!, origin = stopped.position;
+  assert.equal(session.setAutoDestination(9.5, 3.5), true);
+  session.update(1);
+  assert.equal(stopped.position.equals(origin), true);
+  assert.throws(() => DemoSession.create({ ...config, squad: { ...config.squad, formationCatchUpMultiplier: 0 } }), /catch-up multiplier/);
 });
 
 test("normal movement and combat unlock the boss only after every guard spawn clears", () => {

@@ -8,16 +8,18 @@ import { StringUtil } from "../../comm/util/StringUtil";
 import DemoBootstrap from "./app/DemoBootstrap";
 import { createLocalDemoPorts } from "./framework/LocalDemoPorts";
 import { createZhushenPorts } from "./framework/ZhushenPorts";
-import { RuntimeConfigPort, RuntimeProtocolPort } from "./framework/RuntimePorts";
+import { requireRuntimeProtocol, RuntimeConfigPort, RuntimeProtocolPort } from "./framework/RuntimePorts";
+import { ResultSubmissionState } from "./framework/ExploreRuntime";
 
 const { ccclass } = cc._decorator;
 
-export interface AstraExploreOptions {
+interface AstraExploreBaseOptions {
     config?: RuntimeConfigPort;
-    protocol?: RuntimeProtocolPort;
+    protocol: RuntimeProtocolPort;
     configPath?: string;
     roleKey?: string;
 }
+export type AstraExploreOptions = AstraExploreBaseOptions;
 
 export const ASTRA_EXPLORE_VIEW = {
     name: "ASTRA_EXPLORE_VIEW",
@@ -44,7 +46,9 @@ export class AstraExploreView extends BaseUI {
     private openOptions: AstraExploreOptions = null;
 
     public enter(...args: any[]): void {
-        const options: AstraExploreOptions = args[0] || this.openOptions || {};
+        const options: AstraExploreOptions = args[0] || this.openOptions;
+        if (!options) throw new Error("Exploration requires protocol options");
+        const protocol = requireRuntimeProtocol(options.protocol);
         const role = ObjectProxy.instance.getRoleVo();
         const roleKey = args[0]?.roleKey ?? (role && role.srv_id && role.rid ? StringUtil.getNorKey(role.reg_time, role.srv_id, role.rid) : this.roleKey || options.roleKey);
         if (typeof roleKey !== "string" || !roleKey) throw new Error("Exploration requires an active role");
@@ -65,10 +69,9 @@ export class AstraExploreView extends BaseUI {
         this.content.active = true;
         this.addBackButton();
         this.fitContent();
-        const local = createLocalDemoPorts();
         void this.explore.open(createZhushenPorts({
-            config: options.config || local.config,
-            protocol: options.protocol || local.protocol,
+            config: options.config || createLocalDemoPorts().config,
+            protocol,
             storage: StorageMgr.instance,
             roleKey,
             messages: MessageCenter,
@@ -76,6 +79,10 @@ export class AstraExploreView extends BaseUI {
     }
 
     public update(): void { if (this.content) this.fitContent(); }
+
+    public getResultState(): ResultSubmissionState { return this.explore ? this.explore.resultState : "idle"; }
+    public getPendingResult(): Readonly<{ runId: string; sequence: number }> | null { return this.explore ? this.explore.pendingResult : null; }
+    public retryPendingResult(): Promise<void> { return this.explore ? this.explore.retryPendingResult() : Promise.resolve(); }
 
     public exit(...args: any[]): void {
         if (this.explore) this.explore.pause();
@@ -123,6 +130,7 @@ export class AstraExploreView extends BaseUI {
     }
 }
 
-export function openAstraExplore(options: AstraExploreOptions = {}): void {
+export function openAstraExplore(options: AstraExploreOptions): void {
+    requireRuntimeProtocol(options && options.protocol);
     UIManager.instance.show(ASTRA_EXPLORE_VIEW, null, null, options);
 }

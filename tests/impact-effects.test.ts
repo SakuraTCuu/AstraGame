@@ -42,6 +42,27 @@ test("multi-target knockback shares the damage selection and respects explicit d
   assert.deepEqual(combat.events.filter((event) => event.type === "knockback").map((event) => event.targetId), [near.id]);
 });
 
+test("impact-anchored displacement pulls area targets inward from every side", () => {
+  const source = actor("source", "player", -20), center = actor("center", "enemy", 0), left = actor("left", "enemy", -4),
+    right = actor("right", "enemy", 4), up = actor("up", "enemy", 0, 4), down = actor("down", "enemy", 0, -4), actors = [source, center, left, right, up, down];
+  up.addStatus({ id: "anchored", duration: 10, state: "unForceMove" });
+  const pending = { ...strike, id: "pending_pull_target", range: 30, windup: 1, castDuration: 2, actions: [{ at: 1, type: "damage" as const, power: 3 }] };
+  const pull: SkillDefinition = { id: "pull", target: "enemy", range: 30, cooldown: 0, power: 0, maxTargets: 5,
+    area: { shape: "circle", radius: 6 }, actions: [{ at: 0, type: "damage", power: 0,
+      displacement: { distance: 350, duration: 0.6, direction: "toward", anchor: "impact" } }] };
+  const combat = new CombatSystem();
+  assert.equal(combat.use(right, source, pending, actors), true);
+  assert.equal(combat.use(source, center, pull, actors), true);
+  combat.update(0.3, actors);
+  close(left.position.x, -2); close(right.position.x, 2); close(up.position.y, 4); close(down.position.y, -2);
+  combat.update(0.3, actors);
+  for (const target of [center, left, right, down]) { close(target.position.x, 0); close(target.position.y, 0); }
+  close(up.position.y, 4);
+  assert.deepEqual(combat.events.filter((event) => event.type === "displacement").map((event) => event.targetId).sort(), [down.id, left.id, right.id]);
+  assert.equal(combat.events.some((event) => event.type === "cast_cancelled" && event.sourceId === right.id), true);
+  assert.equal(combat.events.some((event) => event.type === "knockback"), false);
+});
+
 test("projectile impact starts displacement and does not replay it on later updates", () => {
   const source = actor("source", "player"), target = actor("target", "enemy", 2), actors = [source, target], combat = new CombatSystem();
   const projectile = { ...strike, windup: 0, castDuration: 0, projectileSpeed: 2, projectileLifetime: 3,
@@ -115,4 +136,24 @@ test("manual input cannot override displacement and malformed impact configurati
     invalid.skills.definitions = [{ ...strike, type: "damage", coefficient: 1, actions: [{ ...strike.actions![0], knockback }] }];
     assert.throws(() => new DemoSession(invalid), /Invalid knockback/);
   }
+  for (const displacement of [{ distance: -1, duration: 0.3, direction: "toward", anchor: "impact" },
+    { distance: 1, duration: 0, direction: "toward", anchor: "impact" }, { distance: 1, duration: 1, direction: "sideways", anchor: "impact" }]) {
+    const invalid = structuredClone(config);
+    invalid.skills.definitions = [{ ...strike, type: "damage", coefficient: 1, actions: [{ at: 0, type: "damage", power: 1, displacement }] } as SkillDefinition];
+    assert.throws(() => new DemoSession(invalid), /Invalid displacement/);
+  }
+  const conflicting = structuredClone(config);
+  conflicting.skills.definitions = [{ ...strike, type: "damage", coefficient: 1, actions: [{ ...strike.actions![0],
+    displacement: { distance: 1, duration: 1, direction: "toward", anchor: "impact" } }] }];
+  assert.throws(() => new DemoSession(conflicting), /Invalid conflicting displacement/);
+});
+
+test("direct combat rejects conflicting displacement without partially executing the skill", () => {
+  const source = actor("source", "player", 0, 0, { maxEnergy: 100 }), target = actor("target", "enemy", 2), actors = [source, target], combat = new CombatSystem();
+  source.gainEnergy(100);
+  const conflicting: SkillDefinition = { ...strike, energyCost: 80, actions: [{ ...strike.actions![0],
+    displacement: { distance: 2, duration: 0.5, direction: "toward", anchor: "impact" } }] };
+  assert.equal(combat.use(source, target, conflicting, actors), false);
+  assert.equal(combat.canUse(source, conflicting), false);
+  assert.deepEqual([source.energy, target.health, combat.cooldownRemaining(source, conflicting), combat.events.length], [100, 1000, 0, 0]);
 });

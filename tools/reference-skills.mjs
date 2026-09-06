@@ -35,7 +35,7 @@ export function skillFrames(source) {
   });
 }
 
-const modifierNames = { atkRate: "attackRate", atkspeedRate: "attackSpeedRate", normalAtkSpeedRate: "normalAttackSpeedRate",
+const modifierNames = { atkRate: "attackRate", defRate: "defenseRate", atkspeedRate: "attackSpeedRate", normalAtkSpeedRate: "normalAttackSpeedRate",
   movespeed: "movementBonus", movespeedRate: "movementSpeedRate", damageBonus: "damageBonus", finalDmgBonus: "finalDamageBonus", damageReduction: "damageReduction",
   finalDmgReduction: "finalDamageReduction", ultraDmgBonus: "physicalBonus", magicDmgBonus: "magicBonus",
   ultraDmgReduction: "physicalReduction", magicDmgReduction: "magicReduction", skillCriticalRate: "criticalChance", healReduction: "healReduction",
@@ -62,9 +62,18 @@ export function heroSkillAtStar(source, star = 0) {
   return selected;
 }
 
+export function hasExecutableSkillBehavior(definition) {
+  const legacyPower = definition.actions === undefined && Number.isFinite(definition.coefficient ?? definition.power) && (definition.coefficient ?? definition.power) > 0;
+  return Boolean(definition.actions?.length || definition.onRelease?.length || definition.summonEnemyId || legacyPower);
+}
+
 export function createReferenceSkillCompiler(lookup) {
-  const definitions = new Map(), statuses = new Map(), heroProfiles = new Map(), issues = [];
+  const definitions = new Map(), statuses = new Map(), heroProfiles = new Map(), issues = [], unavailableDefinitions = new Set();
   const report = (id, kind, value) => issues.push({ id: String(id), kind, value });
+  const refreshDisabled = (definition) => {
+    if (unavailableDefinitions.has(definition.sourceId) || !hasExecutableSkillBehavior(definition)) definition.disabled = true;
+    else delete definition.disabled;
+  };
   const passiveActionsFor = (source, id) => {
     try { return list(source); } catch (error) {
       const extra = [...source].reduce((count, character) => count + (character === "]" ? 1 : character === "[" ? -1 : 0), 0);
@@ -81,6 +90,11 @@ export function createReferenceSkillCompiler(lookup) {
   };
   const changeModifier = (modifiers, action, id) => {
     if (action[1] === "RevertDmgTypeBonus1" && Number.isFinite(action[2])) { modifiers.soulReduction = (modifiers.soulReduction || 0) - action[2] / 10000; return; }
+    if (action[1] === "RevertDmgTypeBonus3" && Number.isFinite(action[2]) && Number(id) === 103124) {
+      modifiers.physicalReduction = (modifiers.physicalReduction || 0) + action[2] / 10000;
+      report(id, "buff_duration_parity", "Buff row is 8 seconds while hero-31 skill descriptions say 5 seconds; retaining the Buff row pending live comparison");
+      return;
+    }
     const key = modifierNames[action[1]];
     if (!key || !Number.isFinite(action[2])) { report(id, "modifier", action); return; }
     modifiers[key] = (modifiers[key] || 0) + action[2] / (action[1] === "movespeed" ? 1 : 10000);
@@ -255,7 +269,7 @@ export function createReferenceSkillCompiler(lookup) {
       }
     }
     if (definition.healthCost?.fraction > 1) { report(id, "invalid_cost", definition.healthCost); delete definition.healthCost; unavailable = true; }
-    if (unavailable) definition.disabled = true;
+    if (unavailable) unavailableDefinitions.add(id);
     definition.linkedCooldowns = tags.filter((tag) => tag[0] === "castCdTag").map((tag) => ({ id: skillId(tag[2]), duration: (lookup("Skill", tag[2])?.cd || 0) / 1000 }));
     if (lockProjectile && row.projectEffect) { definition.projectileSpeed = lockProjectile[1]; definition.projectileLifetime = lockProjectile[2] / 1000; definition.projectileHoming = true; }
     if (directional && row.projectEffect && !lockProjectile) {
@@ -271,6 +285,12 @@ export function createReferenceSkillCompiler(lookup) {
       catch { report(id, "projectile_effect", row.projectEffect); }
     }
     const frames = skillFrames(row.projectKey || row.frameKey);
+    const sourceSummons = frames.flatMap((frame) => frame.actions).filter((action) => action[0] === "summonAction");
+    const summonOffsets = tags.find((tag) => tag[0] === "summonOffsetTag");
+    const supportedSummons = id === 5001603 && sourceSummons.length === 10 && summonOffsets?.length === 11 &&
+      sourceSummons.every((action, index) => action.length === 4 && action[1] === (index < 5 ? 1601 : 1602) && action[2] === 10000 && action[3] === 501608) &&
+      summonOffsets.slice(1).every((value) => /^-?\d+(?:\.\d+)?_-?\d+(?:\.\d+)?$/.test(String(value)));
+    let summonIndex = 0;
     const frameWarnings = new Map();
     if (warnings.length > 1) {
       const round = tags.find((tag) => tag[0] === "warnRoundTag");
@@ -378,6 +398,9 @@ export function createReferenceSkillCompiler(lookup) {
           } else if (action[0] === "repelAction" && damageStep && action.length === 3 && action[1] > 0 && action[2] > 0) {
             damageStep.knockback = { duration: action[1] / 1000, distance: action[2] };
             report(id, "knockback_parity", { durationMilliseconds: action[1], distance: action[2], interpretation: "linear displacement; timing, immunity and interruption require live comparison" });
+          } else if (action[0] === "repelAction" && damageStep && insideArea && action.length === 4 && action[1] > 0 && action[2] > 0 && action[3] === 1) {
+            damageStep.displacement = { duration: action[1] / 1000, distance: action[2], direction: "toward", anchor: "impact" };
+            report(id, "inward_displacement_parity", { source: action, interpretation: "linear movement toward the locked area center; immunity, interruption and collision use the shared displacement runtime" });
           } else if (action[0] === "healByDmgAction" && damageStep && action.length === 2 && action[1] >= 0) {
             damageStep.healFromDamage = action[1] / 10000; damageStep.healFromDamageRecipient = "self";
           } else if (action[0] === "removeStateAction" && action[1] === 1 && action.length >= 3 && action.slice(2).every((id) => typeof id === "string")) {
@@ -386,6 +409,11 @@ export function createReferenceSkillCompiler(lookup) {
             actions.push({ at, type: "skill_energy", recipient: "self", skillEnergy: { minimum: action[1], maximum: action[2] } });
             report(id, "skill_energy_parity", { source: action, interpretation: "inclusive random gain range; equal bounds give a fixed refill; requires live comparison" });
           }
+        else if (action[0] === "summonAction" && supportedSummons && !insideArea) {
+          const [x, y] = String(summonOffsets[++summonIndex]).split("_").map(Number);
+          actions.push({ at, type: "summon", summon: { enemyId: `reference_summon_${action[1]}`, offset: { x, y },
+            expiresAfter: action[2] / 1000, removeWithOwner: false, removeOnReturn: true } });
+        }
         else if (action[0] === "targetBuffAction" && action.length === 4 && Number.isSafeInteger(action[1]) && action[1] > 0 && action[2] === 0) {
           const buff = status(action[3]);
           actions.push(...buff.immediate.map((effect) => ({ ...effect, at, recipient: "targets", targetCount: action[1] })));
@@ -442,12 +470,14 @@ export function createReferenceSkillCompiler(lookup) {
     definition.presentation = { release: presentations[presentations.length - 1] || "attack",
       prepare: presentations.length > 2 ? presentations[1] : undefined, hold: presentations.length > 3 ? presentations[2] : undefined };
     const effectiveActions = actions.flatMap((action) => action.areaEffect?.effects || [action]);
-    definition.type = effectiveActions.some((action) => action.type === "damage") ? "damage" : effectiveActions.some((action) => action.type === "heal") ? "heal" : "buff";
+    definition.type = effectiveActions.some((action) => action.type === "damage") ? "damage" : effectiveActions.some((action) => action.type === "heal") ? "heal" :
+      effectiveActions.some((action) => action.type === "summon") ? "summon" : "buff";
     definition.coefficient = effectiveActions.find((action) => action.power !== undefined)?.power || 0;
     if (row.damageLimit) report(id, "damage_limit", row.damageLimit);
     if (!actions.length) report(id, "no_direct_actions", row.name || id);
     actions.sort((a, b) => a.at - b.at);
     definition.castDuration = Math.max(definition.castDuration, ...actions.map((action) => action.at));
+    refreshDisabled(definition);
     definitions.set(id, definition);
     return definition;
   };
@@ -506,16 +536,29 @@ export function createReferenceSkillCompiler(lookup) {
         }
       } else if (action[0] === "skillAddBuffAction") {
         const buffId = Number(String(action[6]).split("_")[0]);
-        const tick = list(status(buffId).row.effects).find((entry) => entry[0] === "tickZXFlySwordAction");
-        if (!tick) { report(hero.id, "passive_buff", action); continue; }
-        const child = compile(tick[2], fps);
-        for (const parent of skills.filter((skill) => lookup("Skill", skill.sourceId).skillgroup === action[1])) {
-          parent.actions = child.actions.map((step) => ({ ...step, at: 0 }));
-          parent.type = "damage"; parent.target = "enemy"; parent.targetCount = lookup("Skill", parent.sourceId).firstSelector[1]; parent.maxTargets = 1;
-          parent.area = child.area; parent.projectileSpeed = child.projectileSpeed || 1000; parent.projectileLifetime = 3; parent.projectileHoming = true;
-          parent.coefficient = child.coefficient;
-          report(parent.sourceId, "sword_fan_timing", { tick, interpretation: "one projectile per selected target; projectile speed pending live comparison" });
+        const buff = status(buffId);
+        const tick = list(buff.row.effects).find((entry) => entry[0] === "tickZXFlySwordAction");
+        if (tick) {
+          const child = compile(tick[2], fps);
+          for (const parent of skills.filter((skill) => lookup("Skill", skill.sourceId).skillgroup === action[1])) {
+            parent.actions = child.actions.map((step) => ({ ...step, at: 0 }));
+            parent.type = "damage"; parent.target = "enemy"; parent.targetCount = lookup("Skill", parent.sourceId).firstSelector[1]; parent.maxTargets = 1;
+            parent.area = child.area; parent.projectileSpeed = child.projectileSpeed || 1000; parent.projectileLifetime = 3; parent.projectileHoming = true;
+            parent.coefficient = child.coefficient;
+            report(parent.sourceId, "sword_fan_timing", { tick, interpretation: "one projectile per selected target; projectile speed pending live comparison" });
+          }
+          continue;
         }
+        const meaningful = Object.keys(buff.definition.modifiers || {}).length || buff.definition.state || buff.definition.states?.length ||
+          buff.definition.periodicDamage || buff.definition.periodicSkillEnergy || buff.definition.targetCountBonuses || buff.definition.shields?.length;
+        if (action[2] === 2 && action[3] === 10000 && action[4] === null && action[5] === 1 &&
+            /^\d+_1$/.test(String(action[6])) && !buff.immediate.length && !buff.definition.permanent && meaningful) {
+          for (const parent of skills.filter((skill) => lookup("Skill", skill.sourceId).skillgroup === action[1])) {
+            parent.actions.unshift({ at: 0, type: "status", recipient: "self", status: buff.definition });
+          }
+          continue;
+        }
+        report(hero.id, "passive_buff", action);
       } else if (action[0] === "enterFightAddBuff") {
         const entry = /^(\d+)_1$/.exec(String(action[4]));
         if (action[1] !== 10000 || action[2] !== null || action[3] !== 2 || !entry) { report(hero.id, "passive", action); continue; }
@@ -531,6 +574,7 @@ export function createReferenceSkillCompiler(lookup) {
         report(hero.id, "periodic_settlement_parity", "full periodic ticks over the configured duration without consuming the status; rounding and attack snapshot require live comparison");
       } else report(hero.id, "passive", action);
     }
+    for (const skill of skills) refreshDisabled(skill);
     const profile = { ids: skills.map((skill) => skill.id), modifiers };
     heroProfiles.set(profileKey, profile); return profile;
   };

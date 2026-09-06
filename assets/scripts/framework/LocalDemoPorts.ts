@@ -1,5 +1,6 @@
-import {
+import type {
     RunCheckpoint,
+    StoredRunReceipt,
     RuntimeConfigPort,
     RuntimePorts,
     RuntimeProtocolPort,
@@ -44,15 +45,16 @@ class CocosConfigPort implements RuntimeConfigPort {
 }
 
 class LocalResultStoragePort implements RuntimeStoragePort {
-    private readonly key = "astra.exploration.last-result.v1";
+    public readonly checkpointScope = "local-storage:astra.exploration.last-result";
+    private readonly key = "astra.exploration.last-result.v2";
 
-    public loadCheckpoint(): Promise<RunCheckpoint | null> {
+    public loadCheckpoint(): Promise<unknown> {
         const value = cc.sys.localStorage.getItem(this.key);
-        return Promise.resolve(value ? JSON.parse(value) as RunCheckpoint : null);
+        return Promise.resolve(value ? JSON.parse(value) : null);
     }
 
-    public saveCheckpoint(checkpoint: RunCheckpoint): Promise<void> {
-        cc.sys.localStorage.setItem(this.key, JSON.stringify(checkpoint));
+    public saveCheckpoint(receipt: StoredRunReceipt): Promise<void> {
+        cc.sys.localStorage.setItem(this.key, JSON.stringify(receipt));
         return Promise.resolve();
     }
 

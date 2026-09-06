@@ -57,6 +57,7 @@ export interface StatusState {
 
 export interface StatModifiers {
   readonly attackRate?: number;
+  readonly defenseRate?: number;
   readonly attackSpeedRate?: number;
   readonly normalAttackSpeedRate?: number;
   readonly movementBonus?: number;
@@ -116,10 +117,18 @@ export interface HealingBonus {
 
 export interface SkillTrigger { readonly skillId: string; readonly chance?: number; readonly conditions?: SkillConditions; }
 
+export interface SkillSummon {
+  readonly enemyId: string;
+  readonly offset: { readonly x: number; readonly y: number };
+  readonly expiresAfter?: number;
+  readonly removeWithOwner: boolean;
+  readonly removeOnReturn?: boolean;
+}
+
 export interface SkillAction {
   readonly at: number;
   readonly warningIndex?: number;
-  readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state" | "skill_energy" | "area" | "clear_shields" | "shield_to_health" | "clear_cooldowns";
+  readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state" | "skill_energy" | "area" | "summon" | "clear_shields" | "shield_to_health" | "clear_cooldowns";
   readonly power?: number;
   readonly damageType?: DamageType;
   readonly healthDamage?: { readonly basis: "maximum" | "current"; readonly fraction: number };
@@ -137,10 +146,17 @@ export interface SkillAction {
   readonly healFromDamage?: number;
   readonly healFromDamageRecipient?: "self" | "allies";
   readonly knockback?: { readonly distance: number; readonly duration: number };
+  readonly displacement?: {
+    readonly distance: number;
+    readonly duration: number;
+    readonly direction: "toward" | "away";
+    readonly anchor: "source" | "impact";
+  };
   readonly settleStatus?: { readonly group: string; readonly seconds: number };
   readonly healingBonuses?: readonly HealingBonus[];
   readonly cleanse?: { readonly count: number; readonly npcOnly?: boolean };
   readonly cooldownIds?: readonly string[];
+  readonly summon?: SkillSummon;
 }
 
 export interface SkillMotion {

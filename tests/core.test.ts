@@ -7,6 +7,7 @@ import {
   BossAI,
   CombatSystem,
   DemoSession,
+  DEFAULT_FORMATION_CATCH_UP_MULTIPLIER,
   FogGrid,
   GridNavigation,
   SeededRandom,
@@ -89,6 +90,25 @@ test("formation maps followers into stable oriented slots", () => {
   assert.equal(members[0]!.position.equals({ x: 10, y: 10 }), true);
   assert.equal(members[1]!.position.equals({ x: 9, y: 11.25 }), true);
   assert.equal(members[2]!.position.equals({ x: 9, y: 8.75 }), true);
+});
+
+test("formation catch-up respects zero speed, effective speed modifiers, and validated multiplier", () => {
+  assert.equal(DEFAULT_FORMATION_CATCH_UP_MULTIPLIER, 1.21);
+  const stopped = actor("stopped", "player", 0, 0, { ...playerStats, moveSpeed: 0 });
+  new SquadFormation([stopped]).update({ x: 10, y: 0 }, { x: 0, y: 1 }, 0.1);
+  assert.equal(stopped.position.equals(Vector2.ZERO), true);
+
+  const base = actor("base", "player", 0, 0, { ...playerStats, moveSpeed: 1 });
+  const modified = actor("modified", "player", 0, 0, {
+    ...playerStats, moveSpeed: 1, modifiers: { movementBonus: 1, movementSpeedRate: 0.5 },
+  });
+  new SquadFormation([base]).update({ x: 10, y: 0 }, { x: 0, y: 1 }, 0.1);
+  new SquadFormation([modified], undefined, 6, 1.21).update({ x: 10, y: 0 }, { x: 0, y: 1 }, 0.1);
+  assert.ok(Math.abs(base.position.x - 0.121) < 1e-9);
+  assert.ok(Math.abs(modified.position.x - 0.363) < 1e-9);
+
+  assert.throws(() => new SquadFormation([], undefined, 6, 0.5), /catch-up multiplier/);
+  assert.throws(() => new SquadFormation([], undefined, 6, Number.NaN), /catch-up multiplier/);
 });
 
 test("targeting chooses nearest target with id as deterministic tie breaker", () => {
@@ -243,6 +263,7 @@ test("DemoSession exposes deterministic fixed-step input and render snapshot", (
 test("shipped world_demo config satisfies the DemoSession runtime contract", () => {
   const configUrl = new URL("../assets/resources/config/auto_explore/world_demo.json", import.meta.url);
   const config = JSON.parse(readFileSync(configUrl, "utf8")) as DemoConfig;
+  assert.equal(config.squad.formationCatchUpMultiplier, DEFAULT_FORMATION_CATCH_UP_MULTIPLIER);
   const session = DemoSession.create(config);
   session.update(0.05);
   const snapshot = session.getSnapshot();
