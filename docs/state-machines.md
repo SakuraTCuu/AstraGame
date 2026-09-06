@@ -18,6 +18,7 @@ BOOT -> LOADING -> READY -> RUNNING
 - `RUNNING -> WON`: final boss encounter completes exactly once.
 - `RUNNING -> FAILED`: all squad members are dead.
 - Any configuration failure remains in `LOADING` and displays a diagnostic; it must not start a partial run.
+- One live runtime owns each stable storage/role scope in a JavaScript process. A second instance fails before configuration or `startRun`; disposal releases the run lease while any result delivery remains protected by the shared receipt ledger.
 
 ## Movement and Navigation
 
@@ -39,6 +40,7 @@ Rules:
 - `COMBAT_HOLD` stops automatic travel during a blocking encounter but manual repositioning remains available.
 - A unit that has not progressed for `stuckTimeout` requests a path once, then moves to the nearest walkable cell if still blocked.
 - Auto path never crosses locked fog zones or obstacle geometry.
+- Followers consume slot error through the same collision path, capped by effective movement speed times the configured catch-up multiplier. Failed destination changes retain both the current path and quest identity.
 
 ## Squad Member AI
 
@@ -88,7 +90,7 @@ READY -> WINDUP -> HIT -> RECOVERY -> COOLDOWN -> READY
 
 - A cast requires a living caster, valid target, satisfied range and zero cooldown.
 - The target may become invalid during windup. Single-target damage then cancels; area skills resolve at the locked ground point.
-- Damage is `max(minimumDamage, floor(attack * coefficient - defense))`.
+- The current provisional damage path applies attack/bonus/critical multipliers, subtracts effective `defense * max(0, 1 + defenseRate)`, applies incoming reductions and floors the result. The complete original order and critical formula remain unconfirmed.
 - Healing is `floor(attack * coefficient)` and is capped at target maximum HP.
 - Shields absorb damage before HP and expire at duration end.
 - Death is resolved immediately after the hit batch; dead units cannot cast later in the same tick.
@@ -97,10 +99,18 @@ READY -> WINDUP -> HIT -> RECOVERY -> COOLDOWN -> READY
 
 - Supported damage actions can enter the target into `displaced`, interrupting its unfinished cast while retaining its cooldown unless it has interruption immunity. A protected cast retains its timeline during displacement; existing projectiles remain independent.
 - Displacement follows a fixed direction and distance over its configured duration. It uses the ordinary collision boundary; neither AI, joystick movement nor formation updates add voluntary movement during that interval.
+- A separate impact-anchored variant moves toward the locked hit/area center and caps distance at that center. One action cannot combine outward knockback and anchored displacement; config, direct casts and release-trigger children all reject that contradiction.
 - A later impact replaces the remaining displacement from the current position. Explicit `unForceMove` or `ignoreControl` states prevent it. Returning actors are excluded by the current local contract.
 - Completion returns the actor to `idle`. A displaced leader replans the remaining automatic route before resuming it. Death, removal, benching, travel resets and encounter resets clear displacement.
 - Damage-based self healing uses actual health removed after defense and shields, including the overkill cap, and passes through healing reduction and the recipient's health cap. It cannot revive its caster.
 - These are runtime contracts. Source knockback parameter units, interpolation, immunity and interruption parity remain audited until measured against the original battle.
+
+### Action Summons
+
+- Skill actions can emit fixed-position summon requests that snapshot the living source's faction and effective health, attack and defense. A later same-tick source death cannot erase an already executed request when its source contract says the summon survives its owner.
+- Each runtime summon has deterministic identity, owner attribution, optional lifetime and explicit owner-death/own-return cleanup policies. It remains in encounter membership so the encounter cannot complete while the summon is alive.
+- Recovery and reset remove summon actors plus every owner/spawn/lifetime tracking entry. Legacy skill-level radial summons retain their previous count/limit behavior.
+- Only source skill 5001603 and Summon 1601/1602 currently use the fixed-offset adapter. The exact rows are validated fail-closed; collision relocation, rounding, return timing and missing presentation remain audited.
 
 ### Timed Control States
 
