@@ -141,7 +141,7 @@ export class GameWorld {
       actor.position = kind === "jump" ? Vector2.from(destination) :
         this.options.navigation.moveWithCollision(actor.position, Vector2.from(destination).subtract(actor.position));
       if (actor === this.leader && (kind === "fear" || kind === "knockback")) this.displacedPathLeader = actor.id;
-    });
+    }, this.moveActor);
     const leader = this.leader;
     if (leader && this.displacedPathLeader === leader.id && !this.combat.isDisplaced(leader) && !leader.hasControl("fear")) {
       if (!this.path.complete) {
@@ -185,15 +185,15 @@ export class GameWorld {
     }
   }
 
-  private readonly moveActor = (actor: Actor, target: Vec2Like, deltaSeconds: number): void => {
-    if (!actor.canMove) return;
+  private readonly moveActor = (actor: Actor, target: Vec2Like, deltaSeconds: number): boolean => {
+    if (!actor.canMove) return false;
     const navigation = this.options.navigation;
     const destination = navigation.nearestWalkable(target);
-    if (!destination || !navigation.isWorldWalkable(actor.position)) return;
+    if (!destination || !navigation.isWorldWalkable(actor.position)) return false;
     if (navigation.isSegmentWalkable(actor.position, destination)) {
       this.actorPaths.delete(actor.id);
       actor.moveTowards(destination, deltaSeconds);
-      return;
+      return actor.position.distance(destination) <= 0.01;
     }
     const goal = navigation.worldToGrid(destination);
     let route = this.actorPaths.get(actor.id);
@@ -207,6 +207,7 @@ export class GameWorld {
     }
     actor.position = route.path.update(actor.position, actor.movementSpeed, deltaSeconds);
     route.position = actor.position;
+    return actor.position.distance(destination) <= 0.01;
   };
 
   private registerEnemyAI(enemy: Actor, phaseThresholds?: readonly number[], phaseNames?: readonly string[]): void {

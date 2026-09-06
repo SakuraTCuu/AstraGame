@@ -79,7 +79,7 @@ test("source shield modes and sector loops compile to health conversion, gated w
     sceneSpriteActions: "[key:0_action:[damageAction,10000]]" } };
   const compiler = createReferenceSkillCompiler((family: string, id: number) => family === "Skill" ? rows[id] :
     { id, duration: 30000, effects: "[addShieldAction,5,30000,2000,2000]", buffTagActions: "[shieldBreakStopTag]" });
-  assert.deepEqual(compiler.compile(1).actions[0].status.shields[0], { basis: "max_health", duration: 30, amount: 0.2, healthCostFraction: 0.2, breakState: "chantBroken", interruptOnBreak: true });
+  assert.deepEqual(compiler.compile(1).actions[0].status.shields[0], { basis: "max_health", duration: 30, amount: 0.2, healthCostFraction: 0.2, breakState: "chantBroken", interruptOnBreak: true, clearStatesOnBreak: ["backCenter"] });
   const compiled = compiler.compile(2); assert.equal(compiled.warnings.length, 8); assert.equal(compiled.actions.length, 8);
   assert.deepEqual(compiled.actions.map((action) => action.at), [2, 2, 5, 5, 8, 8, 11, 11]); assert.deepEqual(compiled.maintainConditions, { hasShield: true });
   assert.ok(!compiler.issues.some((issue) => ["area_layout", "multiple_warnings", "chant_loop"].includes(issue.kind)));

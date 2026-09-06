@@ -170,7 +170,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
     const templateId = `reference_monster_${monsterId}`;
     const enemySkills = [];
     if (!resource) for (const sourceId of String(monster.skill || "20001").split(",")) {
-      try { const skill = skillCompiler.compile(Number(sourceId.split("_")[0]), row("Avatar", monster.avatar)?.fps || 12); if (skill && skill.actions.length) enemySkills.push(skill); }
+      try { const skill = skillCompiler.compile(Number(sourceId.split("_")[0]), row("Avatar", monster.avatar)?.fps || 12, [], true); if (skill && skill.actions.length) enemySkills.push(skill); }
       catch (error) { skillCompiler.issues.push({ id: sourceId, kind: "compile_error", value: error.message }); }
     }
     const phaseThresholds = [...new Set(enemySkills.map((skill) => skill.conditions.casterHpAtMost).filter((value) => value > 0 && value < 1))].sort((a, b) => b - a);

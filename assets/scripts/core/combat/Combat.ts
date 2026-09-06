@@ -44,6 +44,9 @@ export interface SkillDefinition {
   readonly blockEnergyGain?: boolean;
   readonly conditions?: SkillConditions;
   readonly maintainConditions?: SkillConditions;
+  readonly completionState?: string;
+  readonly returnHomeOnComplete?: boolean;
+  readonly castCycles?: { readonly count: number; readonly interval: number };
   readonly linkedCooldowns?: readonly { readonly id: string; readonly duration: number }[];
   readonly motion?: SkillMotion;
   readonly damageType?: DamageType;
@@ -54,7 +57,7 @@ export interface SkillDefinition {
 }
 
 export interface CombatEvent {
-  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback" | "state_removed" | "resource_cost" | "skill_energy" | "area_created";
+  readonly type: "damage" | "heal" | "death" | "skill" | "telegraph" | "shield" | "absorb" | "summon" | "cast_cancelled" | "projectile" | "miss" | "status" | "cleanse" | "knockback" | "state_removed" | "resource_cost" | "skill_energy" | "area_created" | "shield_removed";
   readonly sourceId: string;
   readonly targetId: string;
   readonly value?: number;
@@ -104,7 +107,7 @@ interface AreaEffect { readonly id: number; readonly cast: Cast; readonly defini
 interface Displacement { readonly actor: Actor; readonly direction: Vector2; readonly distance: number; readonly duration: number; readonly startedAt: number; progress: number; }
 type CombatMovement = SkillMotion["kind"] | "knockback" | "fear" | "channel";
 export interface SummonRequest { readonly sourceId: string; readonly enemyId: string; readonly count: number; readonly limit: number; readonly radius: number; readonly position: Vec2Like; }
-export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; readonly warnings?: readonly WarningSnapshot[]; }
+export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; readonly warnings?: readonly WarningSnapshot[]; readonly cycle?: number; }
 export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number;
   readonly age: number; readonly directionX: number; readonly directionY: number; readonly radius?: number; }
 export interface AreaEffectSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly x: number; readonly y: number;
@@ -166,6 +169,8 @@ export class CombatSystem {
   private readonly mode: "pve" | "pvp";
   private readonly definitions: Readonly<Record<string, SkillDefinition>>;
   private move: ((actor: Actor, destination: Vec2Like, kind: CombatMovement) => void) | undefined;
+  private navigate: ((actor: Actor, destination: Vec2Like, deltaSeconds: number) => boolean) | undefined;
+  private readonly returningCasts = new Map<string, { readonly cast: Cast; lastUpdate: number }>();
   readonly events: CombatEvent[] = [];
 
   constructor(random?: () => number, mode: "pve" | "pvp" = "pve", definitions: Readonly<Record<string, SkillDefinition>> = {}) {
@@ -184,9 +189,11 @@ export class CombatSystem {
     }
   }
 
-  update(deltaSeconds: number, actors: readonly Actor[], move?: (actor: Actor, destination: Vec2Like, kind: CombatMovement) => void): void {
+  update(deltaSeconds: number, actors: readonly Actor[], move?: (actor: Actor, destination: Vec2Like, kind: CombatMovement) => void,
+    navigate?: (actor: Actor, destination: Vec2Like, deltaSeconds: number) => boolean): void {
     this.actors = actors;
     this.move = move;
+    this.navigate = navigate;
     this.time += deltaSeconds;
     this.updateCooldowns(deltaSeconds);
     const byId = new Map(actors.map((actor) => [actor.id, actor]));
@@ -211,6 +218,17 @@ export class CombatSystem {
       if (this.move) this.move(actor, destination, "knockback"); else actor.position = destination;
       if (progress >= 1 - 1e-9) this.cancelDisplacement(id);
     }
+    for (const [id, returning] of this.returningCasts) {
+      const cast = returning.cast, actor = cast.source, duration = Math.max(0, this.time - returning.lastUpdate);
+      returning.lastUpdate = this.time;
+      if (!actor.alive || actor.fsm.state === "returning" || byId.get(id) !== actor || actor.shieldBreakVersion !== cast.shieldBreakVersion) { this.cancelCaster(id); continue; }
+      if (!actor.canMove || this.isDisplaced(actor)) continue;
+      actor.setState("moving");
+      let arrived: boolean;
+      if (this.navigate) arrived = this.navigate(actor, actor.homePosition, duration);
+      else { actor.moveTowards(actor.homePosition, duration); arrived = actor.position.distance(actor.homePosition) <= 0.01; }
+      if (arrived) { this.returningCasts.delete(id); actor.setState("idle"); this.grantCompletionState(cast); }
+    }
     for (const [id, cast] of this.casts) {
       if (!cast.source.alive || cast.source.fsm.state === "returning") { this.cancelCaster(id); continue; }
       this.updateWarnings(cast, deltaSeconds);
@@ -225,8 +243,7 @@ export class CombatSystem {
       if (this.casts.get(id) !== cast) continue;
       if (cast.skill.channelMove && cast.source.canMove) this.updateChannelMovement(cast, deltaSeconds);
       if (this.time + 1e-9 >= cast.readyAt) {
-        this.casts.delete(id);
-        if (cast.source.alive && !this.isDisplaced(cast.source)) cast.source.setState(cast.source.hardControlled ? "controlled" : "idle");
+        this.finishCast(cast);
       }
     }
     for (const [id, cast] of [...this.triggeredCasts]) {
@@ -236,7 +253,7 @@ export class CombatSystem {
       if (!cast.resolved && this.time + 1e-9 >= cast.hitAt) this.launch(cast);
       if (!this.triggeredCasts.has(id)) continue;
       if (cast.resolved && cast.skill.actions && !cast.skill.projectileSpeed) this.advanceActions(cast);
-      if (this.time + 1e-9 >= cast.readyAt) this.triggeredCasts.delete(id);
+      if (this.time + 1e-9 >= cast.readyAt) this.finishCast(cast);
     }
     for (const [id, projectile] of this.projectiles) {
       if (projectile.directional) { this.advanceDirectionalProjectile(id, projectile); continue; }
@@ -264,9 +281,9 @@ export class CombatSystem {
     }
   }
 
-  isBusy(actor: Actor): boolean { return this.casts.has(actor.id) || this.isDisplaced(actor) || actor.hardControlled; }
+  isBusy(actor: Actor): boolean { return this.casts.has(actor.id) || this.returningCasts.has(actor.id) || this.isDisplaced(actor) || actor.hardControlled; }
   isDisplaced(actor: Actor): boolean { return this.displacements.has(actor.id); }
-  isWindingUp(actor: Actor): boolean { const cast = this.casts.get(actor.id); return Boolean(cast && !cast.resolved); }
+  isWindingUp(actor: Actor): boolean { const cast = this.casts.get(actor.id); return Boolean(cast && this.castTiming(cast).phase === "windup"); }
   cooldownRemaining(actor: Actor, skill: SkillDefinition): number { return this.cooldowns.get(this.cooldownKey(actor, skill)) ?? 0; }
   canUse(actor: Actor, skill: SkillDefinition): boolean {
     if (!Number.isFinite(skill.energyCost ?? 0) || (skill.energyCost ?? 0) < 0 || !Number.isSafeInteger(skill.skillEnergyCost ?? 0) || (skill.skillEnergyCost ?? 0) < 0 ||
@@ -300,17 +317,21 @@ export class CombatSystem {
       actor.setState("windup");
       this.events.push({ type: "telegraph", sourceId: actor.id, targetId: target.id, value: windup, skillId: skill.id, x: cast.point.x, y: cast.point.y });
     } else this.launch(cast);
-    if (cast.readyAt <= this.time) this.casts.delete(actor.id);
+    if (cast.readyAt <= this.time) {
+      if (cast.skill.completionState) this.finishCast(cast);
+      else this.casts.delete(actor.id);
+    }
     return true;
   }
 
   cancelCaster(id: string): void {
-    const cast = this.casts.get(id);
+    const returning = this.returningCasts.get(id)?.cast, cast = this.casts.get(id) ?? returning;
     this.casts.delete(id);
+    this.returningCasts.delete(id);
     const pending = [...(cast ? [cast] : []), ...[...this.triggeredCasts.values()].filter((entry) => entry.source.id === id)];
     for (const entry of pending) {
       if (entry.triggered) this.triggeredCasts.delete(entry.id);
-      if (!entry.resolved || entry.actionIndex < (entry.skill.actions?.length ?? 0)) this.events.push({ type: "cast_cancelled", sourceId: id, targetId: entry.targetId, skillId: entry.skill.id });
+      if (entry === returning || !entry.resolved || entry.actionIndex < (entry.skill.actions?.length ?? 0)) this.events.push({ type: "cast_cancelled", sourceId: id, targetId: entry.targetId, skillId: entry.skill.id });
     }
     if (cast?.source.alive && !["returning", "displaced", "controlled"].includes(cast.source.fsm.state)) cast.source.setState("idle");
   }
@@ -327,9 +348,7 @@ export class CombatSystem {
   castSnapshots(): CastSnapshot[] {
     return [...this.casts.values()].map((cast) => ({
       id: cast.id, sourceId: cast.source.id, skillId: cast.skill.id,
-      phase: !cast.resolved ? "windup" : cast.actionIndex < (cast.skill.actions?.length ?? 0) && !cast.skill.projectileSpeed ? "active" : "recovery",
-      remaining: Math.max(0, (cast.resolved ? cast.readyAt : cast.hitAt) - this.time),
-      duration: cast.resolved ? cast.readyAt - cast.hitAt : cast.hitAt - cast.startedAt,
+      ...this.castTiming(cast),
       origin: !cast.resolved && cast.skill.directionalProjectile ? cast.source.position : cast.origin,
       point: !cast.resolved && cast.skill.directionalProjectile && cast.skill.trackTargetFor === undefined ? this.actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor))?.position ?? cast.point : cast.point, area: cast.skill.area,
       playbackRate: cast.speed,
@@ -339,6 +358,31 @@ export class CombatSystem {
           remaining: Math.max(0, cast.startedAt + warning.definition.end / cast.speed - this.time), duration: (warning.definition.end - warning.definition.start) / cast.speed })) : undefined,
       elevation: cast.skill.motion?.kind === "jump" ? Math.sin(Math.PI * Math.max(0, Math.min(1, (this.time - cast.hitAt) * cast.speed / cast.skill.motion.duration))) * (cast.skill.motion.height ?? 160) : 0,
     }));
+  }
+
+  private castTiming(cast: Cast): Pick<CastSnapshot, "phase" | "remaining" | "duration" | "cycle"> {
+    const cycles = cast.skill.castCycles;
+    const cycle = cycles ? Math.min(cycles.count - 1, Math.floor(((this.time - cast.startedAt) * cast.speed + 1e-9) / cycles.interval)) : 0;
+    const start = cast.startedAt + (cycles ? cycle * cycles.interval / cast.speed : 0), hit = start + cast.hitAt - cast.startedAt;
+    const windup = cycles ? this.time + 1e-9 < hit : !cast.resolved;
+    const end = cycles && cycle + 1 < cycles.count ? Math.min(cast.readyAt, start + cycles.interval / cast.speed) : cast.readyAt;
+    return { phase: windup ? "windup" : cast.actionIndex < (cast.skill.actions?.length ?? 0) && !cast.skill.projectileSpeed ? "active" : "recovery",
+      remaining: Math.max(0, (windup ? hit : end) - this.time), duration: Math.max(0, windup ? hit - start : end - hit), ...(cycles ? { cycle } : {}) };
+  }
+
+  private finishCast(cast: Cast): void {
+    if (cast.triggered ? !this.triggeredCasts.has(cast.id) : this.casts.get(cast.source.id) !== cast) return;
+    if (cast.triggered) this.triggeredCasts.delete(cast.id); else this.casts.delete(cast.source.id);
+    if (!cast.source.alive || cast.source.fsm.state === "returning") return;
+    if (!cast.triggered && !this.isDisplaced(cast.source)) cast.source.setState(cast.source.hardControlled ? "controlled" : "idle");
+    if (!cast.skill.completionState) return;
+    if (cast.skill.returnHomeOnComplete && cast.source.position.distance(cast.source.homePosition) > 0.01) this.returningCasts.set(cast.source.id, { cast, lastUpdate: this.time });
+    else this.grantCompletionState(cast);
+  }
+
+  private grantCompletionState(cast: Cast): void {
+    this.applyStatus(cast, cast.source, { id: `cast_completion:${cast.skill.id}`, duration: -1, permanent: true, clearOnReturn: true,
+      states: [{ id: cast.skill.completionState!, duration: -1 }] });
   }
 
   projectileSnapshots(): ProjectileSnapshot[] {
@@ -360,9 +404,10 @@ export class CombatSystem {
 
   resetEngagement(): void {
     for (const id of this.displacements.keys()) this.cancelDisplacement(id);
+    for (const id of this.returningCasts.keys()) this.cancelCaster(id);
     this.casts.clear(); this.triggeredCasts.clear(); this.projectiles.clear(); this.projectileImpacts.splice(0); this.areas.clear(); this.summons.splice(0);
     this.cooldowns.clear(); this.publicCooldowns.clear(); this.combatTimes.clear(); this.events.splice(0);
-    this.actors = []; this.move = undefined;
+    this.actors = []; this.move = undefined; this.navigate = undefined;
   }
 
   private conditionsMet(source: Actor, target: Actor | undefined, condition?: SkillConditions): boolean {
@@ -445,7 +490,7 @@ export class CombatSystem {
   private releaseTriggers(parent: Cast): void {
     for (const trigger of parent.skill.onRelease ?? []) {
       const child = this.definitions[trigger.skillId];
-      if (!child || child.motion || child.channelMove) throw new Error(`Invalid triggered skill ${trigger.skillId}`);
+      if (!child || child.motion || child.channelMove || child.returnHomeOnComplete) throw new Error(`Invalid triggered skill ${trigger.skillId}`);
       if (child.disabled || child.energyCost || child.skillEnergyCost || child.healthCost || !parent.source.alive || (this.isDisplaced(parent.source) && !parent.source.interruptionImmune) || parent.triggerChain.includes(child.id) || parent.triggerChain.length >= 8) continue;
       if (!this.conditionsMet(parent.source, this.actors.find((actor) => actor.id === parent.targetId), trigger.conditions)) continue;
       if ((trigger.chance ?? 1) < 1 && this.random() >= (trigger.chance ?? 1)) continue;
@@ -455,7 +500,7 @@ export class CombatSystem {
       this.triggeredCasts.set(cast.id, cast);
       this.events.push({ type: "skill", sourceId: cast.source.id, targetId: target.id, skillId: child.id, triggered: true });
       if (cast.hitAt <= this.time + 1e-9) this.launch(cast);
-      if (cast.readyAt <= this.time + 1e-9) this.triggeredCasts.delete(cast.id);
+      if (cast.readyAt <= this.time + 1e-9) this.finishCast(cast);
     }
   }
 
@@ -526,6 +571,14 @@ export class CombatSystem {
       this.awardEnergy(cast);
       if (action?.type === "status") {
         if (action.status) this.applyStatus(cast, target, action.status);
+      } else if (action?.type === "clear_shields" || action?.type === "shield_to_health") {
+        const amount = target.clearShields();
+        if (amount) this.events.push({ type: "shield_removed", sourceId: source.id, targetId: target.id, skillId: skill.id, value: amount });
+        if (action.type === "shield_to_health") {
+          const value = target.heal(amount * (action.power ?? 1)); this.events.push({ type: "heal", sourceId: source.id, targetId: target.id, skillId: skill.id, value });
+        }
+      } else if (action?.type === "clear_cooldowns") {
+        for (const id of action.cooldownIds ?? []) this.cooldowns.delete(`${target.id}:${id}`);
       } else if (action?.type === "skill_energy") {
         const gain = action.skillEnergy!;
         const amount = gain.minimum === gain.maximum ? gain.minimum : gain.minimum + Math.floor(this.random() * (gain.maximum - gain.minimum + 1));
@@ -558,9 +611,9 @@ export class CombatSystem {
       } else {
         const type = action?.damageType ?? skill.damageType ?? "physical";
         const chance = Math.max(0, Math.min(1, source.modifier("criticalChance")));
-        const critical = Boolean(action?.forceCritical || skill.forceCritical || (chance > 0 && this.random() < chance));
+        const critical = !action?.healthDamage && Boolean(action?.forceCritical || skill.forceCritical || (chance > 0 && this.random() < chance));
         const power = (action?.power ?? skill.power) + (action?.powerPerStack ? target.statusStacks(action.powerPerStack.group) * action.powerPerStack.amount : 0);
-        const damage = this.applyDamage(source, target, skill.id, power, type, critical);
+        const damage = this.applyDamage(source, target, skill.id, power, type, critical, undefined, action?.healthDamage);
         if (action?.healFromDamage && damage > 0) {
           const allies = action.healFromDamageRecipient === "self" ? (source.alive ? [source] : []) : this.actors.filter((actor) => validTarget(source, actor) && actor.faction === source.faction);
           for (const ally of allies) { const value = ally.heal(damage * action.healFromDamage / allies.length); this.events.push({ type: "heal", sourceId: source.id, targetId: ally.id, value, skillId: skill.id }); }
@@ -700,7 +753,8 @@ export class CombatSystem {
     if (this.move) this.move(cast.source, destination, "channel"); else cast.source.position = destination;
   }
 
-  private applyDamage(source: Actor, target: Actor, skillId: string, power: number, type: DamageType, critical = false, statusId?: string): number {
+  private applyDamage(source: Actor, target: Actor, skillId: string, power: number, type: DamageType, critical = false, statusId?: string,
+    healthDamage?: NonNullable<SkillAction["healthDamage"]>): number {
     if (!target.alive) return 0;
     const periodic = statusId !== undefined;
     const elementBonus = type === "soul" ? source.modifier("soulBonus") : type === "magic" ? source.modifier("magicBonus") : type === "physical" ? source.modifier("physicalBonus") : 0;
@@ -708,11 +762,12 @@ export class CombatSystem {
       (1 + elementBonus) *
       (periodic ? Math.max(0, 1 + source.modifier("dotDamageBonus")) : 1) * (critical ? source.stats.criticalMultiplier ?? 1.5 : 1);
     const previousShield = target.shield;
-    const damage = target.receiveDamage(source.attackPower * power * multiplier, type, periodic, this.mode === "pve");
+    const raw = healthDamage ? (healthDamage.basis === "maximum" ? target.stats.maxHealth : target.health) * healthDamage.fraction : source.attackPower * power * multiplier;
+    const damage = target.receiveDamage(raw, type, periodic, this.mode === "pve");
     const absorbed = previousShield - target.shield;
     if (absorbed > 0) this.events.push({ type: "absorb", sourceId: source.id, targetId: target.id, value: absorbed, skillId });
     this.events.push({ type: "damage", sourceId: source.id, targetId: target.id, value: damage, skillId, critical, damageType: type,
-      ...(target.invulnerable && source.attackPower * power > 0 ? { immune: true } : {}), ...(periodic ? { periodic, statusId } : {}) });
+      ...(target.invulnerable && raw > 0 ? { immune: true } : {}), ...(periodic ? { periodic, statusId } : {}) });
     if (!target.alive) { this.cancelCaster(target.id); this.cancelDisplacement(target.id); this.events.push({ type: "death", sourceId: source.id, targetId: target.id, skillId }); }
     else this.synchronizeControl(target);
     return damage;
@@ -736,10 +791,10 @@ export class CombatSystem {
   private synchronizeControl(actor: Actor): void {
     if (!actor.alive) return;
     const pending = [...(this.casts.has(actor.id) ? [this.casts.get(actor.id)!] : []), ...[...this.triggeredCasts.values()].filter((cast) => cast.source === actor)];
-    if (pending.some((cast) => cast.shieldBreakVersion !== actor.shieldBreakVersion ||
-        !this.conditionsMet(actor, this.actors.find((target) => target.id === cast.targetId), cast.skill.maintainConditions))) this.cancelCaster(actor.id);
-    if (!actor.interruptionImmune) {
-      if (pending.some((cast) => actor.blocksCasting(cast.skill.category) || (cast.skill.motion && !actor.canMove))) this.cancelCaster(actor.id);
+    if (pending.some((cast) => cast.shieldBreakVersion !== actor.shieldBreakVersion || (!actor.interruptionImmune &&
+        (actor.blocksCasting(cast.skill.category) || (cast.skill.motion && !actor.canMove))))) this.cancelCaster(actor.id);
+    else for (const cast of pending) if (!this.conditionsMet(actor, this.actors.find((target) => target.id === cast.targetId), cast.skill.maintainConditions)) {
+      if (cast.skill.completionState) this.finishCast(cast); else this.cancelCaster(actor.id);
     }
     if (actor.hardControlled && !this.isDisplaced(actor) && !this.casts.has(actor.id) && actor.fsm.state !== "returning") actor.setState("controlled");
     else if (!actor.hardControlled && actor.fsm.state === "controlled") actor.setState("idle");

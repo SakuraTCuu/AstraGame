@@ -4,7 +4,7 @@ import { ForegroundRenderer } from "./ForegroundRenderer";
 interface ArtBinding { path: string; kind: "spine" | "atlas"; scale: number; height: number; fps: number; flip: boolean; skillAnimations?: Record<string, string>; skillPhases?: Record<string, { prepare?: string; hold?: string; release: string }>; }
 interface ProjectileBinding { path: string; fps: number; scale: number; loop: boolean; offsetY: number; directional: boolean; offsetAlong?: number; anchorX?: number; }
 interface ArtConfig { bundle: string; mapBundle: string; mapName: string; tileSize: number; mapWidth: number; mapHeight: number; depth: number; scale: number; tiles: string[]; bindings: Record<string, ArtBinding>; projectiles?: Record<string, ProjectileBinding>; areas?: Record<string, ProjectileBinding>; occlusionPolygons?: Array<Array<{ x: number; y: number }>>; }
-interface ActorView { node: cc.Node; skeleton?: sp.Skeleton; sprite?: cc.Sprite; bars: cc.Graphics; binding: ArtBinding; action: string; age: number; lastX: number; facing: number; castId?: number; }
+interface ActorView { node: cc.Node; skeleton?: sp.Skeleton; sprite?: cc.Sprite; bars: cc.Graphics; binding: ArtBinding; action: string; age: number; lastX: number; facing: number; castId?: number; castCycle?: number; }
 
 export class ReferenceArtLayer {
     private readonly ground: cc.Node;
@@ -283,7 +283,7 @@ export class ReferenceArtLayer {
             if (!available.some((entry) => entry.name === action)) action = "idle";
             const track = view.skeleton.getCurrent(0);
             if (!restrained && actor.state !== "displaced" && action === "idle" && view.action !== "idle" && view.action !== "move" && track && !track.isComplete()) action = view.action;
-            if (view.action !== action || (cast && view.castId !== cast.id)) view.skeleton.setAnimation(0, action, action === "idle" || action === "move" || phases?.hold === action);
+            if (view.action !== action || (cast && (view.castId !== cast.id || view.castCycle !== cast.cycle))) view.skeleton.setAnimation(0, action, action === "idle" || action === "move" || phases?.hold === action);
             view.skeleton.timeScale = cast?.playbackRate || 1;
             view.skeleton.paused = Boolean(frozen) || (snapshot.runState !== "running" && snapshot.runState !== "recovering");
         } else {
@@ -295,12 +295,13 @@ export class ReferenceArtLayer {
                 if (!frames.length) frames = atlas.getSpriteFrames().slice(0, 1);
                 this.frames.set(key, frames);
             }
-            if (view.action !== action) view.age = 0;
-            if (!frozen && (snapshot.runState === "running" || snapshot.runState === "recovering")) view.age += delta;
+            if (view.action !== action || (cast && (view.castId !== cast.id || view.castCycle !== cast.cycle))) view.age = 0;
+            if (!frozen && (snapshot.runState === "running" || snapshot.runState === "recovering")) view.age += delta * (cast?.playbackRate || 1);
             if (frames.length) view.sprite.spriteFrame = frames[actor.hp <= 0 ? Math.min(frames.length - 1, Math.floor(view.age * view.binding.fps)) : Math.floor(view.age * view.binding.fps) % frames.length];
         }
         view.action = action;
         view.castId = cast && cast.id;
+        view.castCycle = cast && cast.cycle;
         const g = view.bars;
         g.clear();
         if (actor.hp <= 0 || actor.kind === "resource") return;

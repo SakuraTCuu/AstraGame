@@ -6,7 +6,7 @@ import type { ControlKind, DamageType, StatModifiers, StatusDefinition, StatusSt
 export type Faction = "player" | "enemy";
 export type ActorState = "idle" | "moving" | "acquiring" | "chasing" | "windup" | "attacking" | "recovering" | "displaced" | "controlled" | "returning" | "dead";
 
-export interface ShieldLayer { readonly key: string; amount: number; remaining: number; readonly breakState?: string; readonly interruptOnBreak?: boolean; }
+export interface ShieldLayer { readonly key: string; amount: number; remaining: number; readonly breakState?: string; readonly interruptOnBreak?: boolean; readonly clearStatesOnBreak?: readonly string[]; }
 interface AppliedStatus { definition: StatusDefinition; remaining: number; stacks: number; elapsed: number; energyElapsed: number; source: Actor; skillId: string; fromPlayer: boolean; }
 interface AppliedState { readonly definition: StatusState; readonly owner: AppliedStatus; readonly initialElevation: number; remaining: number; elapsed: number; direction?: Vector2; nextTurn?: number; }
 export interface PeriodicDamageTick { readonly source: Actor; readonly skillId: string; readonly statusId: string; readonly power: number; readonly damageType: DamageType; }
@@ -271,14 +271,16 @@ export class Actor {
     }
   }
 
-  addShield(key: string, amount: number, duration: number, options: { readonly breakState?: string; readonly interruptOnBreak?: boolean } = {}): number {
+  addShield(key: string, amount: number, duration: number, options: { readonly breakState?: string; readonly interruptOnBreak?: boolean; readonly clearStatesOnBreak?: readonly string[] } = {}): number {
     if (!this.alive || amount <= 0 || duration <= 0) return 0;
     const previous = this.shield;
     const layer = this.shields.find((entry) => entry.key === key);
     if (layer) { layer.amount = Math.max(layer.amount, Math.floor(amount + 1e-9)); layer.remaining = duration; }
-    else this.shields.push({ key, amount: Math.floor(amount + 1e-9), remaining: duration, breakState: options.breakState, interruptOnBreak: options.interruptOnBreak });
+    else this.shields.push({ key, amount: Math.floor(amount + 1e-9), remaining: duration, breakState: options.breakState, interruptOnBreak: options.interruptOnBreak, clearStatesOnBreak: options.clearStatesOnBreak });
     return this.shield - previous;
   }
+
+  clearShields(): number { const amount = this.shield; this.shields.splice(0); return amount; }
 
   updateEffects(deltaSeconds: number): PeriodicDamageTick[] {
     const ticks: PeriodicDamageTick[] = [];
@@ -349,6 +351,7 @@ export class Actor {
       actualDamage -= absorbed;
       if (absorbed > 0 && layer.amount === 0) {
         if (layer.interruptOnBreak) this.shieldBreakVersion++;
+        for (const state of layer.clearStatesOnBreak ?? []) this.removeState(state);
         if (layer.breakState) this.addStatus({ id: `shield_break:${layer.key}`, duration: -1, permanent: true, clearOnReturn: true, states: [{ id: layer.breakState, duration: -1 }] });
       }
     }

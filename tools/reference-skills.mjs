@@ -160,7 +160,7 @@ export function createReferenceSkillCompiler(lookup) {
       else if (tag[0] === "noStateTag" && typeof tag[1] === "string") { definition.blockedByStates ||= []; definition.blockedByStates.push(tag[1]); }
       else if (tag[0] === "tickSpanChangeByBuffTag" && tag[1] === 2 && tag[2] === `1_${row.group || row.id}` && definition.periodicDamage) definition.periodicDamage.intervalPerStack = tag[3] / 1000;
       else if (tag[0] === "shieldBreakStopTag" && tag.length === 1 && definition.shields?.length) {
-        for (const shield of definition.shields) { shield.breakState = "chantBroken"; shield.interruptOnBreak = true; }
+        for (const shield of definition.shields) { shield.breakState = "chantBroken"; shield.interruptOnBreak = true; shield.clearStatesOnBreak = ["backCenter"]; }
         report(id, "shield_break_parity", "damage depletion interrupts the cast and sets chantBroken; natural expiry does not set it; state timing and active-area cleanup require live comparison");
       }
       else report(id, "buff_tag", tag);
@@ -173,7 +173,7 @@ export function createReferenceSkillCompiler(lookup) {
     statuses.set(id, value);
     return value;
   };
-  const compile = (id, fps = 12, stack = []) => {
+  const compile = (id, fps = 12, stack = [], npc = false) => {
     id = Number(id);
     if (definitions.has(id)) return definitions.get(id);
     if (stack.includes(id)) throw new Error(`Cyclic skill dependency ${id}`);
@@ -186,9 +186,10 @@ export function createReferenceSkillCompiler(lookup) {
       else if (condition[0] === "hpRateCond") conditions.targetHpBelow = condition[1] / 10000;
       else if (condition[0] === "castHpRateCond") conditions.casterHpAtMost = condition[1] / 10000;
       else if (condition[0] === "fightingTimeCond" && condition[1] === ">") conditions.combatTimeAtLeast = condition[2] / 1000;
-      else if (condition[0] === "castStateCond") conditions.requiredState = String(condition[2]);
+      else if (condition[0] === "castStateCond" && [1, 2].includes(condition[1])) conditions[condition[1] === 1 ? "requiredState" : "excludedState"] = String(condition[2]);
       else if (condition[0] === "notControlCond") conditions.uncontrolled = true;
       else if (condition[0] === "shieldCond" && condition.length === 1) { conditions.hasShield = true; conditions.excludedState = "chantBroken"; }
+      else if (condition[0] === "hasTipCond") { report(id, "condition", condition); unavailable = true; }
       else if (condition[0] === "enegyCond") {
         if (!Number.isSafeInteger(condition[2]) || condition[2] < 0) { report(id, "condition", condition); unavailable = true; continue; }
         const amount = condition[2];
@@ -217,6 +218,15 @@ export function createReferenceSkillCompiler(lookup) {
       conditions, area, areaAnchor: area?.shape === "cone" ? "caster" : undefined, actions,
       forceCritical: tags.some((tag) => tag[0] === "criticalTag"), blockEnergyGain: tags.some((tag) => tag[0] === "blockUltraEnegyTag") };
     if (conditions.hasShield && tags.some((tag) => tag[0] === "chantSkillTag")) definition.maintainConditions = { hasShield: true };
+    const backCenterFinish = npc && tags.some((tag) => tag[0] === "backCenterTag");
+    if (backCenterFinish) {
+      conditions.requiredState = "backCenter";
+      if (warning?.[1] === -1 && warning[4] === "circle" && area?.shape === "circle") {
+        definition.areaAnchor = "caster";
+        definition.warnings = [{ start: warning[2] / 1000, end: warning[3] / 1000, anchor: "caster", follow: true, geometry: { shape: "circle", radius: warning[5] } }];
+      }
+      report(id, "back_center_condition_parity", "NPC follow-up requires the completed backCenter state; the marker is consumed by its resolving frame; source dispatch semantics require live comparison");
+    }
     for (const cost of tags.filter((tag) => tag[0] === "castCostTag")) {
       if (cost.length % 2 !== 1) { report(id, "invalid_cost", cost); unavailable = true; continue; }
       for (let index = 1; index < cost.length; index += 2) {
@@ -301,6 +311,18 @@ export function createReferenceSkillCompiler(lookup) {
           } else if (action[0] === "damageByBuffAction" && Number.isFinite(action[1]) && Number.isFinite(action[3])) {
             damageStep = { at, type: "damage", power: action[1] / 10000, damageType: damageType(frame.damageType, id), powerPerStack: { group: String(action[2]), amount: action[3] / 10000 } };
             actions.push(damageStep); report(id, "stacked_damage_parity", "base power plus per-stack power from the victim's current Buff count; requires live comparison");
+          } else if (action[0] === "rateDmgAction" && [1, 2].includes(action[1]) && action[2] > 0 && (action.length === 3 || action.length === 4)) {
+            damageStep = { at, type: "damage", power: 0, damageType: damageType(frame.damageType, id), healthDamage: { basis: action[1] === 1 ? "maximum" : "current", fraction: action[2] / 10000 } };
+            actions.push(damageStep);
+            report(id, "health_damage_parity", "target maximum/current HP fraction without offensive attack/critical multipliers; ordinary defense, reduction and shields apply; mitigation and extra operands require live comparison");
+          } else if (action[0] === "backCenterStateAction" && action.length === 1 && npc && !insideArea) {
+            definition.completionState = "backCenter"; definition.returnHomeOnComplete = true;
+            report(id, "completion_movement_parity", "normal completion returns along navigation at current movement speed before granting backCenter; interrupted casts do not complete; center and timing require live comparison");
+          } else if (action[0] === "shieldToHpAction" && action.length === 2 && action[1] > 0) {
+            actions.push({ at, type: "shield_to_health", power: action[1] / 10000, recipient: "self" });
+            report(id, "shield_healing_parity", "consume remaining shields and heal the configured share, subject to healing prohibition and HP cap; requires live comparison");
+          } else if (action[0] === "clearSkillCDAction" && action.length > 1 && action.slice(1).every((id) => Number.isSafeInteger(id) && id > 0)) {
+            actions.push({ at, type: "clear_cooldowns", recipient: "self", cooldownIds: action.slice(1).map(skillId) });
         } else if (action[0] === "sceneSpriteAction" && !insideArea && action[1] > 0 && action[2] > 0 && row.sceneSpriteActions) {
           const search = tags.find((tag) => tag[0] === "sceneSpriteSearchTag");
           const moving = search?.length === 5 && search[1] === 0 && search[2] > 0 && search[3] === -1 && [2, 3].includes(search[4]) &&
@@ -374,9 +396,10 @@ export function createReferenceSkillCompiler(lookup) {
     const loop = tags.find((tag) => tag[0] === "chantLoopTag");
     if (loop) {
       if (loop.length === 4 && Number.isSafeInteger(loop[1]) && loop[1] > 0 && loop[1] <= 100 && loop[2] > 0 && loop[2] === loop[3] &&
-          definition.warnings?.length && actions.some((action) => action.warningIndex !== undefined) && !definition.motion && !definition.projectileSpeed) {
+          definition.warnings?.length && actions.some((action) => action.warningIndex !== undefined) && loop[2] / 1000 >= windup && !definition.motion && !definition.projectileSpeed) {
         const baseWarnings = definition.warnings, baseActions = actions.splice(0);
         definition.warnings = [];
+        definition.castCycles = { count: loop[1], interval: loop[2] / 1000 };
         for (let cycle = 0; cycle < loop[1]; cycle++) {
           const offset = cycle * loop[2] / 1000;
           definition.warnings.push(...baseWarnings.map((warning) => ({ ...warning, start: warning.start + offset, end: warning.end + offset, directionGroup: String(cycle) })));
@@ -387,6 +410,11 @@ export function createReferenceSkillCompiler(lookup) {
         }
         report(id, "chant_loop_parity", { cycles: loop[1], interval: loop[2] / 1000, interpretation: "repeated warning-bound frames; existing post-time retained; cadence and older descriptions require live comparison" });
       } else report(id, "chant_loop", loop);
+    }
+    if (backCenterFinish && actions.length) {
+      const at = Math.max(windup, ...actions.map((action) => action.at));
+      actions.push({ at, type: "remove_state", recipient: "self", stateId: "backCenter" });
+      if (actions.some((action) => action.healthDamage)) actions.push({ at, type: "clear_shields", recipient: "self" });
     }
     const presentations = row.presentationIds ? skillTuple(row.presentationIds) : [];
     definition.presentation = { release: presentations[presentations.length - 1] || "attack",

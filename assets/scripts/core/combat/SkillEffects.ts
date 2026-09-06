@@ -103,7 +103,7 @@ export interface StatusDefinition {
   };
   readonly periodicSkillEnergy?: { readonly interval: number; readonly amount: number; readonly cap: number };
   readonly shields?: readonly { readonly basis: "flat" | "max_health"; readonly amount: number; readonly duration: number;
-    readonly healthCostFraction?: number; readonly breakState?: string; readonly interruptOnBreak?: boolean }[];
+    readonly healthCostFraction?: number; readonly breakState?: string; readonly interruptOnBreak?: boolean; readonly clearStatesOnBreak?: readonly string[] }[];
 }
 
 export interface HealingBonus {
@@ -119,9 +119,10 @@ export interface SkillTrigger { readonly skillId: string; readonly chance?: numb
 export interface SkillAction {
   readonly at: number;
   readonly warningIndex?: number;
-  readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state" | "skill_energy" | "area";
+  readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state" | "skill_energy" | "area" | "clear_shields" | "shield_to_health" | "clear_cooldowns";
   readonly power?: number;
   readonly damageType?: DamageType;
+  readonly healthDamage?: { readonly basis: "maximum" | "current"; readonly fraction: number };
   readonly forceCritical?: boolean;
   readonly recipient?: "targets" | "self" | "allies" | "enemies";
   readonly targetCount?: number;
@@ -138,6 +139,7 @@ export interface SkillAction {
   readonly settleStatus?: { readonly group: string; readonly seconds: number };
   readonly healingBonuses?: readonly HealingBonus[];
   readonly cleanse?: { readonly count: number; readonly npcOnly?: boolean };
+  readonly cooldownIds?: readonly string[];
 }
 
 export interface SkillMotion {

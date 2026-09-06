@@ -334,7 +334,7 @@ export class DemoSession {
       for (const id of actor.skillIds ?? []) if (!skillDefinitions[id]) throw new Error(`Actor ${actor.id} references missing skill ${id}`);
     }
     for (const skill of Object.values(skillDefinitions)) for (const trigger of skill.onRelease ?? []) {
-      if (!skillDefinitions[trigger.skillId] || skillDefinitions[trigger.skillId].motion || skillDefinitions[trigger.skillId].channelMove) throw new Error(`Invalid triggered skill reference ${trigger.skillId}`);
+      if (!skillDefinitions[trigger.skillId] || skillDefinitions[trigger.skillId].motion || skillDefinitions[trigger.skillId].channelMove || skillDefinitions[trigger.skillId].returnHomeOnComplete) throw new Error(`Invalid triggered skill reference ${trigger.skillId}`);
     }
     this.world = new GameWorld({
       combatMode: config.world.combatMode,
@@ -862,6 +862,10 @@ export class DemoSession {
     if (config.skillEnergyCost !== undefined && (!Number.isSafeInteger(config.skillEnergyCost) || config.skillEnergyCost < 0)) throw new Error(`Invalid skill-energy cost for ${config.id}`);
     if (config.healthCost && (!Number.isFinite(config.healthCost.fraction) || config.healthCost.fraction <= 0 || config.healthCost.fraction > 1 || !["maximum", "current"].includes(config.healthCost.basis))) throw new Error(`Invalid health cost for ${config.id}`);
     if (config.disabled !== undefined && typeof config.disabled !== "boolean") throw new Error(`Invalid disabled skill for ${config.id}`);
+    if (config.completionState !== undefined && (typeof config.completionState !== "string" || !config.completionState)) throw new Error(`Invalid completion state for ${config.id}`);
+    if (config.returnHomeOnComplete !== undefined && (typeof config.returnHomeOnComplete !== "boolean" || !config.completionState)) throw new Error(`Invalid completion movement for ${config.id}`);
+    if (config.castCycles && (!Number.isSafeInteger(config.castCycles.count) || config.castCycles.count < 1 || !Number.isFinite(config.castCycles.interval) ||
+        config.castCycles.interval <= 0 || config.castCycles.interval < (config.windup ?? 0))) throw new Error(`Invalid cast cycles for ${config.id}`);
     for (const condition of [config.conditions, config.maintainConditions]) if (condition?.hasShield !== undefined && typeof condition.hasShield !== "boolean") throw new Error(`Invalid shield condition for ${config.id}`);
     if ([config.conditions?.skillEnergyAtLeast, config.conditions?.skillEnergyAtMost].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 0)) ||
         (config.conditions?.skillEnergyAtLeast ?? 0) > (config.conditions?.skillEnergyAtMost ?? Infinity)) throw new Error(`Invalid skill-energy condition for ${config.id}`);
@@ -872,8 +876,10 @@ export class DemoSession {
     for (const timeline of timelines) {
       let previous = -1;
       for (const action of timeline) {
-        if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state", "skill_energy", "area"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
+        if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state", "skill_energy", "area", "clear_shields", "shield_to_health", "clear_cooldowns"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
         if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
+        if (action.healthDamage && (action.type !== "damage" || !["maximum", "current"].includes(action.healthDamage.basis) || !Number.isFinite(action.healthDamage.fraction) || action.healthDamage.fraction <= 0)) throw new Error(`Invalid health-based damage for ${config.id}`);
+        if (action.type === "clear_cooldowns" && (!action.cooldownIds?.length || action.cooldownIds.some((id) => typeof id !== "string" || !id))) throw new Error(`Invalid cooldown reset for ${config.id}`);
         if (action.warningIndex !== undefined && (!Number.isSafeInteger(action.warningIndex) || action.warningIndex < 0 || !config.warnings?.[action.warningIndex] ||
             action.at < config.warnings[action.warningIndex].end || (action.recipient && action.recipient !== "targets") || config.projectileSpeed)) throw new Error(`Invalid warning action for ${config.id}`);
         if (action.type === "remove_state" && (typeof action.stateId !== "string" || !action.stateId)) throw new Error(`Invalid state removal for ${config.id}`);
@@ -900,6 +906,7 @@ export class DemoSession {
             if (!["flat", "max_health"].includes(shield.basis) || ![shield.amount, shield.duration].every((value) => Number.isFinite(value) && value > 0) ||
                 (shield.healthCostFraction !== undefined && (!Number.isFinite(shield.healthCostFraction) || shield.healthCostFraction <= 0 || shield.healthCostFraction > 1)) ||
                 (shield.breakState !== undefined && (typeof shield.breakState !== "string" || !shield.breakState)) ||
+                shield.clearStatesOnBreak?.some((state) => typeof state !== "string" || !state) ||
                 (shield.interruptOnBreak !== undefined && typeof shield.interruptOnBreak !== "boolean")) throw new Error(`Invalid status shield for ${config.id}`);
           }
           if (status.blockedByStates?.some((state) => !state || typeof state !== "string")) throw new Error(`Invalid state exclusion for ${config.id}`);

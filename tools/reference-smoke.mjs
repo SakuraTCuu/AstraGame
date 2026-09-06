@@ -940,8 +940,20 @@ try {
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-frost-areas`);
   }
+  shieldChannel.cycle = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.shieldChannelProbe, view = boot.renderer.referenceArt.views.get(source.id);
+    const beforeId = view.castId; combat.update(1.2, [source, target]);
+    const casts = combat.castSnapshots(), current = casts[0]; let restarts = 0;
+    const original = view.skeleton?.setAnimation;
+    if (original) view.skeleton.setAnimation = function (...args) { restarts++; return original.apply(this, args); };
+    try { boot.renderer.update({ ...boot.session.getSnapshot(), casts, areas: combat.areaSnapshots() }, 0.05); }
+    finally { if (original) view.skeleton.setAnimation = original; }
+    return { index: view.castCycle, phase: current.phase, sameCast: beforeId === current.id, restarted: original ? restarts > 0 : view.age <= 0.05 + 1e-9 };
+  });
+  assert.deepEqual(shieldChannel.cycle, { index: 1, phase: "windup", sameCast: true, restarted: true });
+  await capture("cycle-prepare");
   shieldChannel.broken = await evaluate(() => {
-    const boot = window.__referenceBoot, { source, target, combat } = boot.shieldChannelProbe; combat.update(1.2, [source, target]);
+    const boot = window.__referenceBoot, { source, target, combat } = boot.shieldChannelProbe;
     const secondWarnings = combat.castSnapshots()[0].warnings.length;
     if (!combat.use(target, source, { id: "fixture_shield_break", target: "enemy", range: 1000, cooldown: 0, power: 20 }, [source, target])) throw new Error("Shield break fixture failed");
     if (!combat.use(source, source, boot.session.world.options.skillDefinitions.reference_skill_5004505, [source, target])) throw new Error("Source shield-break follow-up failed");
@@ -958,8 +970,61 @@ try {
   await evaluate(() => {
     const boot = window.__referenceBoot, { source, target, combat } = boot.shieldChannelProbe;
     combat.update(6, [source, target]); combat.resetEngagement(); boot.session.world.removeEnemy(source.id);
-    boot.renderer.update(boot.session.getSnapshot(), 0.1); delete boot.shieldChannelProbe; boot.enabled = true;
+    boot.renderer.update(boot.session.getSnapshot(), 0.1); delete boot.shieldChannelProbe;
+    const world = boot.session.world, nav = world.options.navigation, home = nav.nearestWalkable(world.leader.position.add({ x: 0, y: 250 }));
+    const start = [{ x: 240, y: 0 }, { x: -240, y: 0 }, { x: 0, y: 240 }, { x: 0, y: -240 }]
+      .map((offset) => nav.nearestWalkable({ x: home.x + offset.x, y: home.y + offset.y }))
+      .find((point) => point && Math.hypot(point.x - home.x, point.y - home.y) > 120 && nav.findWorldPath(point, home).length > 0);
+    if (!start) throw new Error("No reachable start for the completion fixture");
+    const returning = new source.constructor({ id: `${source.id}:completion`, name: source.displayName, kind: "boss", tags: ["boss"], faction: "enemy", position: home,
+      skillIds: [5004502, 5004503, 5004504, 5004505].map((id) => `reference_skill_${id}`),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 120, attackRange: 1000, aggroRange: 1000 } });
+    returning.position = returning.position.add({ x: start.x - home.x, y: start.y - home.y }); returning.health = 3500;
+    const aim = new source.constructor({ id: "completion_aim", faction: "player", position: { x: home.x + 300, y: home.y },
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 1000, aggroRange: 1000 } });
+    world.addEnemy(returning, [0.35], ["phase1", "phase2"]);
+    const engine = new world.combat.constructor(() => 0), ai = world.bosses.get(returning.id), actors = [returning, aim], casts = [];
+    engine.update(0, actors); ai.update(returning, [aim], engine, 0.05, world.moveActor);
+    const advance = (seconds) => { for (let tick = 0; tick < Math.round(seconds * 20); tick++) {
+      engine.update(0.05, actors, undefined, world.moveActor); ai.update(returning, [aim], engine, 0.05, world.moveActor);
+      if (!nav.isWorldWalkable(returning.position)) throw new Error("Completion movement entered blocked terrain");
+      for (const event of engine.drainEvents()) if (event.type === "skill") casts.push(event.skillId);
+    } };
+    boot.shieldCompletionProbe = { source: returning, target: aim, combat: engine, advance, casts, home };
+    advance(31); boot.renderer.update({ ...boot.session.getSnapshot(), casts: engine.castSnapshots(), areas: engine.areaSnapshots() }, 0.1);
   });
+  shieldChannel.returning = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, combat, home } = boot.shieldCompletionProbe;
+    return { health: source.health, state: source.fsm.state, remaining: source.position.distance(home),
+      marker: source.hasStatus("backCenter"), busy: combat.isBusy(source), action: boot.renderer.referenceArt.views.get(source.id).action };
+  });
+  assert.equal(shieldChannel.returning.health, 1500); assert.equal(shieldChannel.returning.state, "moving"); assert.ok(shieldChannel.returning.remaining > 1);
+  assert.equal(shieldChannel.returning.marker, false); assert.equal(shieldChannel.returning.busy, true); assert.equal(shieldChannel.returning.action, "move");
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-phase-return`);
+  }
+  shieldChannel.finisher = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, combat, advance, home } = boot.shieldCompletionProbe;
+    for (let tick = 0; tick < 400 && !combat.castSnapshots().some((cast) => cast.skillId === "reference_skill_5004504"); tick++) advance(0.05);
+    const casts = combat.castSnapshots(), finishing = casts.find((cast) => cast.skillId === "reference_skill_5004504");
+    if (!finishing) throw new Error("Source finisher did not follow arrival");
+    boot.renderer.update({ ...boot.session.getSnapshot(), casts, areas: combat.areaSnapshots() }, 0.05);
+    return { phase: finishing.phase, homeDistance: source.position.distance(home), health: source.health,
+      warningDistance: Math.hypot(finishing.warnings[0].position.x - source.position.x, finishing.warnings[0].position.y - source.position.y) };
+  });
+  assert.equal(shieldChannel.finisher.phase, "windup"); assert.ok(shieldChannel.finisher.homeDistance <= 0.01);
+  assert.equal(shieldChannel.finisher.health, 1500); assert.ok(shieldChannel.finisher.warningDistance <= 0.01);
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-avalanche-warning`);
+  }
+  shieldChannel.completed = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat, advance, casts } = boot.shieldCompletionProbe;
+    advance(2.5); const result = { sourceHealth: source.health, targetHealth: target.health, shield: source.shield,
+      consumed: !source.hasStatus("backCenter"), finishers: casts.filter((id) => id === "reference_skill_5004504").length };
+    combat.resetEngagement(); boot.session.world.removeEnemy(source.id); delete boot.shieldCompletionProbe; boot.enabled = true;
+    boot.renderer.update(boot.session.getSnapshot(), 0.1); return result;
+  });
+  assert.deepEqual(shieldChannel.completed, { sourceHealth: 1500, targetHealth: 2000, shield: 0, consumed: true, finishers: 1 });
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });

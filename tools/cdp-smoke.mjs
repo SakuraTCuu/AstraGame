@@ -143,10 +143,17 @@ try {
   await mouse("mousePressed", 360, 1110, 1);
   await mouse("mouseMoved", 455, 1050, 1);
   await delay(800);
+  const manualMode = await evaluate(() => {
+    const boot = cc.find("Canvas")._components.find((component) => component.session); boot.enabled = false;
+    return boot.session.getSnapshot().autoNavigation.mode;
+  });
   await mouse("mouseReleased", 455, 1050);
-  await delay(200);
+  const inputMode = await evaluate(() => {
+    const boot = cc.find("Canvas")._components.find((component) => component.session), snapshot = boot.session.getSnapshot();
+    boot.renderer.update(snapshot, 0); return snapshot.autoNavigation.mode;
+  });
   screenshots.afterJoystick = await capture("after-joystick");
-  const inputMode = await evaluate(() => cc.find("Canvas")._components.find((component) => component.session).session.getSnapshot().autoNavigation.mode);
+  await evaluate(() => { cc.find("Canvas")._components.find((component) => component.session).enabled = true; });
 
   await click(55, 1195);
   await delay(500);
@@ -226,8 +233,8 @@ try {
   }
   screenshots.restarted = await capture("restarted");
   const controls = { paused, frozen: pausedTime === paused.time, resumed, resets: resetCounts };
-  const report = { runtime, hostPrefab, overviewOpened, inputMode, bossInitiallyBlocked, progression, bossWarning, completion, resultSaved, controls, viewports, screenshots, consoleErrors,
-    passed: runtime.ready && overviewOpened && inputMode === "resume_wait" && bossInitiallyBlocked && progression.reached && bossWarning.reached &&
+  const report = { runtime, hostPrefab, overviewOpened, manualMode, inputMode, bossInitiallyBlocked, progression, bossWarning, completion, resultSaved, controls, viewports, screenshots, consoleErrors,
+    passed: runtime.ready && overviewOpened && manualMode === "manual" && inputMode === "resume_wait" && bossInitiallyBlocked && progression.reached && bossWarning.reached &&
       completion.reached && completion.report.state === "won" && resultSaved && paused.state === "paused" && controls.frozen &&
       resumed === "running" && resetCounts.every((entry) => entry.state === "running" && entry.zones.join(",") === "south") &&
       new Set(resetCounts.map((entry) => entry.nodes)).size === 1 && hostPrefab.valid && hostPrefab.name === "AstraExploreView" &&
