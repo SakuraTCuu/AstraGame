@@ -8,6 +8,16 @@ export interface SkillArea {
   readonly width?: number;
 }
 
+export interface SkillWarning {
+  readonly start: number;
+  readonly end: number;
+  readonly geometry: SkillArea;
+  readonly anchor: "caster" | "target" | "random_target";
+  readonly distance?: number;
+  readonly angleDegrees?: number;
+  readonly follow?: boolean;
+}
+
 export interface AreaEffectDefinition {
   readonly duration: number;
   readonly interval: number;
@@ -102,6 +112,7 @@ export interface SkillTrigger { readonly skillId: string; readonly chance?: numb
 
 export interface SkillAction {
   readonly at: number;
+  readonly warningIndex?: number;
   readonly type: "damage" | "heal" | "status" | "cleanse" | "remove_state" | "skill_energy" | "area";
   readonly power?: number;
   readonly damageType?: DamageType;

@@ -843,10 +843,14 @@ export class DemoSession {
         previousPhase = phase.throughTick;
       }
     }
-    for (const area of [config.area, ...areas.map((area) => area.geometry)]) {
+    for (const area of [config.area, ...areas.map((area) => area.geometry), ...(config.warnings ?? []).map((warning) => warning.geometry)]) {
       if (area && (!Number.isFinite(area.radius) || area.radius <= 0 || !["circle", "cone", "line"].includes(area.shape))) throw new Error(`Invalid skill area ${config.id}`);
       if (area?.shape === "line" && !(area.width > 0)) throw new Error(`Line skill ${config.id} requires width`);
       if (area?.shape === "cone" && !(area.angleDegrees > 0 && area.angleDegrees <= 360)) throw new Error(`Cone skill ${config.id} requires angleDegrees`);
+    }
+    for (const warning of config.warnings ?? []) {
+      if (![warning.start, warning.end, warning.distance ?? 0, warning.angleDegrees ?? 0].every(Number.isFinite) || warning.start < 0 || warning.end <= warning.start ||
+          (warning.distance ?? 0) < 0 || !["caster", "target", "random_target"].includes(warning.anchor)) throw new Error(`Invalid skill warning for ${config.id}`);
     }
     if (config.trackTargetFor !== undefined && (!Number.isFinite(config.trackTargetFor) || config.trackTargetFor < 0)) throw new Error(`Invalid aim tracking for ${config.id}`);
     if (config.channelMove && (config.motion || !Number.isFinite(config.channelMove.speed) || config.channelMove.speed <= 0 || !Number.isFinite(config.channelMove.start) || config.channelMove.start < 0)) throw new Error(`Invalid channel movement for ${config.id}`);
@@ -865,6 +869,8 @@ export class DemoSession {
       for (const action of timeline) {
         if (!Number.isFinite(action.at) || action.at < previous || !["damage", "heal", "status", "cleanse", "remove_state", "skill_energy", "area"].includes(action.type)) throw new Error(`Invalid skill timeline for ${config.id}`);
         if (action.at < 0 || (action.power !== undefined && (!Number.isFinite(action.power) || action.power < 0))) throw new Error(`Invalid skill action for ${config.id}`);
+        if (action.warningIndex !== undefined && (!Number.isSafeInteger(action.warningIndex) || action.warningIndex < 0 || !config.warnings?.[action.warningIndex] ||
+            action.at < config.warnings[action.warningIndex].end || (action.recipient && action.recipient !== "targets") || config.projectileSpeed)) throw new Error(`Invalid warning action for ${config.id}`);
         if (action.type === "remove_state" && (typeof action.stateId !== "string" || !action.stateId)) throw new Error(`Invalid state removal for ${config.id}`);
         if (action.type === "skill_energy" && (!action.skillEnergy || ![action.skillEnergy.minimum, action.skillEnergy.maximum, action.skillEnergy.cap ?? 0].every((value) => Number.isSafeInteger(value) && value >= 0) ||
             action.skillEnergy.minimum > action.skillEnergy.maximum)) throw new Error(`Invalid skill-energy gain for ${config.id}`);

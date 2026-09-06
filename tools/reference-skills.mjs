@@ -193,7 +193,6 @@ export function createReferenceSkillCompiler(lookup) {
     if (shape && !area) report(id, "shape", shape);
     const warnings = list(row.skillWarn);
     const warning = warnings[0];
-    if (warnings.length > 1) report(id, "multiple_warnings", warnings);
     const windup = warning ? warning[3] / 1000 : (row.preTime || 0) / 1000;
     const lockProjectile = tags.find((tag) => tag[0] === "lockProTag");
     const directional = tags.find((tag) => tag[0] === "dirProTag");
@@ -236,6 +235,22 @@ export function createReferenceSkillCompiler(lookup) {
       catch { report(id, "projectile_effect", row.projectEffect); }
     }
     const frames = skillFrames(row.projectKey || row.frameKey);
+    const frameWarnings = new Map();
+    if (warnings.length > 1) {
+      const round = tags.find((tag) => tag[0] === "warnRoundTag");
+      const spatialFrames = frames.filter((frame) => frame.actions.some((action) => ["damageAction", "damageByBuffAction", "sceneSpriteAction"].includes(action[0])));
+      const supported = !definition.projectileSpeed && !tags.some((tag) => ["warnPosOffsetTag", "warnRandomLineTag", "warnRandomDirTag", "warnRandomBoxPosTag"].includes(tag[0])) &&
+        warnings.every((entry) => entry[4] === "circle" && [1, 2, 3].includes(entry[0])) &&
+        (!warnings.some((entry) => entry[0] === 3) || (round && Math.abs(round[1] * warnings.length - 360) < 1e-6)) &&
+        (spatialFrames.length === warnings.length || spatialFrames.length === 1);
+      if (supported) {
+        definition.warnings = warnings.map((entry, index) => ({ start: entry[2] / 1000, end: entry[3] / 1000,
+          geometry: { shape: "circle", radius: entry[5] }, anchor: entry[0] === 2 ? "random_target" : entry[1] === -1 ? "caster" : "target",
+          distance: entry[0] === 3 ? round[2] : 0, angleDegrees: entry[0] === 3 ? index * round[1] : 0, follow: entry[0] !== 3 }));
+        spatialFrames.forEach((frame, index) => frameWarnings.set(frame, spatialFrames.length === 1 ? warnings.map((_, index) => index) : [index]));
+        report(id, "warning_layout_parity", "independent circles, first-target ring anchor and seeded distinct random targets; layout origin and release-frame offsets require live comparison");
+      } else report(id, "multiple_warnings", warnings);
+    }
     const tracking = tags.find((tag) => tag[0] === "warnFollowBreakTag");
     if (tracking && Number.isFinite(tracking[1]) && tracking[1] >= 0) definition.trackTargetFor = tracking[1] / 1000;
     const motion = frames.flatMap((frame) => frame.actions).find((action) => action[0] === "chargeAction" || action[0] === "jumpAction");
@@ -251,6 +266,7 @@ export function createReferenceSkillCompiler(lookup) {
     const appendFrames = (frames, actions, insideArea = false) => {
       for (const frame of frames) {
         const at = insideArea || definition.projectileSpeed ? Math.max(0, frame.frame / fps) : motion ? windup + definition.motion.duration + frame.frame / fps : Math.max(windup, frame.frame / fps);
+        const firstAction = actions.length;
         let damageStep;
         for (const action of frame.actions) {
           if (action[0] === "damageAction" || action[0] === "healAction") {
@@ -311,6 +327,14 @@ export function createReferenceSkillCompiler(lookup) {
           actions.push({ at, type: "status", status: buff.definition, recipient, targetCount });
           if (insideArea && action.length > 4) report(id, "area_buff_options", action);
           } else if (!['bubbleAction', 'chargeAction', 'jumpAction'].includes(action[0])) report(id, "action", action);
+        }
+        const warningIndices = !insideArea && frameWarnings.get(frame);
+        if (warningIndices) {
+          const translated = actions.splice(firstAction);
+          for (const step of translated) {
+            if ((step.recipient && step.recipient !== "targets") || step.type === "skill_energy") actions.push(step);
+            else for (const warningIndex of warningIndices) actions.push({ ...step, at: Math.max(step.at, definition.warnings[warningIndex].end), warningIndex });
+          }
         }
       }
     };

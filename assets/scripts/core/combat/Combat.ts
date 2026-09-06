@@ -2,7 +2,7 @@ import type { Actor } from "../actor/Actor";
 import { Vector2 } from "../math/Vector2";
 import type { Vec2Like } from "../math/Vector2";
 import { SeededRandom } from "../random/SeededRandom";
-import type { AreaEffectDefinition, DamageType, SkillAction, SkillArea, SkillConditions, SkillMotion, SkillTrigger, StatusDefinition } from "./SkillEffects";
+import type { AreaEffectDefinition, DamageType, SkillAction, SkillArea, SkillConditions, SkillMotion, SkillTrigger, SkillWarning, StatusDefinition } from "./SkillEffects";
 export type { SkillArea } from "./SkillEffects";
 
 export interface SkillDefinition {
@@ -40,6 +40,7 @@ export interface SkillDefinition {
   readonly disabled?: boolean;
   readonly trackTargetFor?: number;
   readonly channelMove?: { readonly speed: number; readonly start: number };
+  readonly warnings?: readonly SkillWarning[];
   readonly blockEnergyGain?: boolean;
   readonly conditions?: SkillConditions;
   readonly linkedCooldowns?: readonly { readonly id: string; readonly duration: number }[];
@@ -75,6 +76,8 @@ interface Cast {
   readonly skill: SkillDefinition;
   readonly origin: Vector2;
   point: Vector2;
+  readonly direction?: Vector2;
+  readonly warnings: readonly WarningPlacement[];
   readonly startedAt: number;
   readonly hitAt: number;
   readonly readyAt: number;
@@ -88,6 +91,9 @@ interface Cast {
   readonly fromPlayer: boolean;
 }
 
+interface WarningPlacement { readonly definition: SkillWarning; readonly anchorId: string; readonly offset: Vector2; readonly direction: Vector2; position: Vector2; }
+export interface WarningSnapshot { readonly index: number; readonly position: Vec2Like; readonly direction: Vec2Like; readonly area: SkillArea; readonly remaining: number; readonly duration: number; }
+
 interface Projectile { readonly cast: Cast; readonly expiresAt: number; position: Vector2; lastUpdate: number; impactAt?: number; impactCast?: Cast; actionIndex: number;
   directional?: { readonly direction: Vector2; readonly hits: Map<string, number>; remaining: number }; }
 interface ProjectileImpact { readonly cast: Cast; readonly target: Actor; readonly at: number; readonly areaId?: number; actionIndex: number; }
@@ -96,7 +102,7 @@ interface AreaEffect { readonly id: number; readonly cast: Cast; readonly defini
 interface Displacement { readonly actor: Actor; readonly direction: Vector2; readonly distance: number; readonly duration: number; readonly startedAt: number; progress: number; }
 type CombatMovement = SkillMotion["kind"] | "knockback" | "fear" | "channel";
 export interface SummonRequest { readonly sourceId: string; readonly enemyId: string; readonly count: number; readonly limit: number; readonly radius: number; readonly position: Vec2Like; }
-export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; }
+export interface CastSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly phase: "windup" | "active" | "recovery"; readonly remaining: number; readonly duration: number; readonly origin: Vec2Like; readonly point: Vec2Like; readonly area?: SkillArea; readonly elevation?: number; readonly playbackRate?: number; readonly warnings?: readonly WarningSnapshot[]; }
 export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number;
   readonly age: number; readonly directionX: number; readonly directionY: number; readonly radius?: number; }
 export interface AreaEffectSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly x: number; readonly y: number;
@@ -205,7 +211,8 @@ export class CombatSystem {
     }
     for (const [id, cast] of this.casts) {
       if (!cast.source.alive || cast.source.fsm.state === "returning") { this.cancelCaster(id); continue; }
-      if (!cast.resolved && cast.skill.trackTargetFor !== undefined && this.time - deltaSeconds < cast.startedAt + cast.skill.trackTargetFor / cast.speed) {
+      this.updateWarnings(cast, deltaSeconds);
+      if (!cast.resolved && cast.skill.trackTargetFor !== undefined && this.time - deltaSeconds < cast.startedAt + cast.skill.trackTargetFor / cast.speed - 1e-9) {
         const target = actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor));
         if (target) cast.point = target.position;
       }
@@ -223,6 +230,7 @@ export class CombatSystem {
     for (const [id, cast] of [...this.triggeredCasts]) {
       if (!this.triggeredCasts.has(id)) continue;
       if (!cast.source.alive || !byId.has(cast.source.id) || cast.source.fsm.state === "returning") { this.cancelCaster(cast.source.id); continue; }
+      this.updateWarnings(cast, deltaSeconds);
       if (!cast.resolved && this.time + 1e-9 >= cast.hitAt) this.launch(cast);
       if (!this.triggeredCasts.has(id)) continue;
       if (cast.resolved && cast.skill.actions && !cast.skill.projectileSpeed) this.advanceActions(cast);
@@ -323,6 +331,10 @@ export class CombatSystem {
       origin: !cast.resolved && cast.skill.directionalProjectile ? cast.source.position : cast.origin,
       point: !cast.resolved && cast.skill.directionalProjectile && cast.skill.trackTargetFor === undefined ? this.actors.find((actor) => actor.id === cast.targetId && validTarget(cast.source, actor))?.position ?? cast.point : cast.point, area: cast.skill.area,
       playbackRate: cast.speed,
+      warnings: cast.skill.warnings ? cast.warnings.map((warning, index) => ({ index, warning }))
+        .filter(({ warning }) => this.time + 1e-9 >= cast.startedAt + warning.definition.start / cast.speed && this.time < cast.startedAt + warning.definition.end / cast.speed - 1e-9)
+        .map(({ warning, index }) => ({ index, position: warning.position, direction: warning.direction, area: warning.definition.geometry,
+          remaining: Math.max(0, cast.startedAt + warning.definition.end / cast.speed - this.time), duration: (warning.definition.end - warning.definition.start) / cast.speed })) : undefined,
       elevation: cast.skill.motion?.kind === "jump" ? Math.sin(Math.PI * Math.max(0, Math.min(1, (this.time - cast.hitAt) * cast.speed / cast.skill.motion.duration))) * (cast.skill.motion.height ?? 160) : 0,
     }));
   }
@@ -371,13 +383,36 @@ export class CombatSystem {
       maxTargets: Math.max(1, (definition.maxTargets ?? definition.targetCount ?? 1) + bonus) } : definition;
     const speed = Math.max(0.1, 1 + actor.modifier("attackSpeedRate") + (skill.category === "normal" ? actor.modifier("normalAttackSpeedRate") : 0));
     const windup = (skill.windup ?? (skill.type === "telegraph_damage" ? skill.telegraph ?? 0 : 0)) / speed;
-    const end = Math.max(skill.castDuration ?? 0, (skill.windup ?? 0) + (skill.recovery ?? 0), ...(skill.actions ?? []).map((action) => action.at));
+    const end = Math.max(skill.castDuration ?? 0, (skill.windup ?? 0) + (skill.recovery ?? 0), ...(skill.actions ?? []).map((action) => action.at), ...(skill.warnings ?? []).map((warning) => warning.end));
+    const facing = Math.atan2(target.position.y - actor.position.y, target.position.x - actor.position.x), used = new Set<string>([target.id]);
+    const warnings = (skill.warnings ?? []).map((definition) => {
+      let anchor = definition.anchor === "caster" ? actor : target;
+      if (definition.anchor === "random_target") {
+        const pool = this.actors.filter((candidate) => validTarget(actor, candidate) && candidate.faction === target.faction && actor.position.distance(candidate.position) <= skill.range);
+        const unused = pool.filter((candidate) => !used.has(candidate.id));
+        const choices = unused.length ? unused : pool;
+        if (choices.length) anchor = choices[Math.min(choices.length - 1, Math.floor(this.random() * choices.length))];
+      }
+      used.add(anchor.id);
+      const angle = facing + (definition.angleDegrees ?? 0) * Math.PI / 180, direction = new Vector2(Math.cos(angle), Math.sin(angle));
+      const offset = direction.scale(definition.distance ?? 0);
+      return { definition, anchorId: anchor.id, offset, direction, position: anchor.position.add(offset) };
+    });
     return { id: this.nextCastId++, source: actor, targetId: target.id, skill, origin: actor.position, point: target.position, startedAt: this.time,
       hitAt: this.time + windup, readyAt: this.time + (skill.actions || skill.castDuration ? end / speed : windup + (skill.recovery ?? 0)), resolved: false,
       actionIndex: 0, primaryIds: this.primaryTargets(actor, target, skill).map((entry) => entry.id), speed,
       energyAward: { amount: skill.blockEnergyGain || skill.energyCost || skill.category === "ultimate" ? 0 :
         skill.category === "normal" ? actor.stats.energyOnNormal ?? actor.stats.energyOnSkill ?? 0 : actor.stats.energyOnSkill ?? 0, awarded: false },
-      triggered: chain.length > 0, triggerChain: [...chain, skill.id], fromPlayer: this.playerControlled(actor) };
+      triggered: chain.length > 0, triggerChain: [...chain, skill.id], fromPlayer: this.playerControlled(actor), warnings };
+  }
+
+  private updateWarnings(cast: Cast, deltaSeconds: number): void {
+    for (const warning of cast.warnings) {
+      const cutoff = cast.startedAt + Math.min(cast.skill.trackTargetFor ?? warning.definition.end, warning.definition.end) / cast.speed;
+      if (!warning.definition.follow || this.time - deltaSeconds >= cutoff - 1e-9) continue;
+      const anchor = this.actors.find((actor) => actor.id === warning.anchorId && validTarget(cast.source, actor));
+      if (anchor) warning.position = anchor.position.add(warning.offset);
+    }
   }
 
   private playerControlled(actor: Actor): boolean {
@@ -435,13 +470,19 @@ export class CombatSystem {
   }
 
   private resolveHit(cast: Cast, projectile: boolean, action?: SkillAction, contacts?: readonly Actor[]): void {
+    if (action?.warningIndex !== undefined) {
+      const warning = cast.warnings[action.warningIndex];
+      if (!warning) throw new Error("Missing skill warning placement");
+      cast = { ...cast, origin: warning.position, point: warning.position, direction: warning.direction,
+        skill: { ...cast.skill, area: warning.definition.geometry, areaAnchor: "target", targetCount: undefined, motion: undefined } };
+    }
     const { source, skill } = cast;
     if (action?.type === "area") {
       const definition = action.areaEffect!;
       if (!definition || definition.duration <= 0 || definition.interval <= 0 || definition.effects.some((effect) => effect.type === "area")) throw new Error("Invalid area effect");
       if (definition.followCaster && !source.alive) return;
       const position = definition.followCaster ? source.position : contacts?.[0]?.position ?? cast.point;
-      const heading = cast.point.subtract(source.position).normalized();
+      const heading = cast.direction ?? cast.point.subtract(source.position).normalized();
       const id = this.nextAreaId++;
       const area = { id, cast, definition, position, direction: heading.lengthSquared() ? heading : new Vector2(0, 1),
         startedAt: this.time, expiresAt: this.time + definition.duration, nextTick: this.time, ticks: 0, hits: new Map() };
@@ -681,7 +722,7 @@ export class CombatSystem {
     const { source, skill } = cast;
     const area = skill.area;
     const center = skill.areaAnchor === "caster" ? source.position : skill.target === "self" || area?.shape === "cone" || area?.shape === "line" ? cast.origin : cast.point;
-    const forward = cast.point.subtract(cast.origin).normalized();
+    const forward = cast.direction ?? cast.point.subtract(cast.origin).normalized();
     const candidates = this.actors.filter((actor) => {
       if (!validTarget(source, actor) || (skill.target === "enemy" ? actor.faction === source.faction : actor.faction !== source.faction)) return false;
       if (skill.targetCount && area?.shape === "circle" && area.radius <= 10) return cast.primaryIds.includes(actor.id) && (projectile || source.position.distance(actor.position) <= skill.range);

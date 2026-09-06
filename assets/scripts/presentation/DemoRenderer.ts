@@ -692,42 +692,48 @@ export class DemoRenderer {
 
     private drawCastAreas(g: cc.Graphics, snapshot: DemoSnapshot): void {
         snapshot.casts.forEach((cast) => {
-            if (cast.phase !== "windup" || !cast.area) return;
             const source = snapshot.actors.find((actor) => actor.id === cast.sourceId);
             if (!source) return;
-            const enemy = source.team === "enemy";
-            const progress = 1 - cast.remaining / Math.max(0.001, cast.duration);
-            g.fillColor = enemy ? cc.color(222, 66, 62, 35 + Math.round(progress * 60)) : cc.color(100, 207, 178, 45);
-            g.strokeColor = enemy ? cc.color(255, 120, 91, 220) : cc.color(153, 238, 195, 170);
-            g.lineWidth = 3;
-            const area = cast.area;
-            if (area.shape === "circle") {
-                const point = this.project(cast.point);
-                g.ellipse(point.x, point.y, area.radius * this.worldScale, area.radius * this.worldScale * this.depthScale);
-            } else {
-                const angle = Math.atan2(cast.point.y - cast.origin.y, cast.point.x - cast.origin.x);
-                const origin = this.project(cast.origin);
-                if (area.shape === "cone") {
-                    const half = (area.angleDegrees || 90) * Math.PI / 360;
-                    g.moveTo(origin.x, origin.y);
-                    for (let index = 0; index <= 20; index += 1) {
-                        const current = angle - half + 2 * half * index / 20;
-                        const point = this.project({ x: cast.origin.x + Math.cos(current) * area.radius, y: cast.origin.y + Math.sin(current) * area.radius });
-                        g.lineTo(point.x, point.y);
-                    }
+            const marks = cast.warnings === undefined ? (cast.phase === "windup" && cast.area ? [cast] : []) : cast.warnings.map((warning) => ({
+                area: warning.area, origin: warning.position,
+                point: warning.area.shape === "circle" ? warning.position : { x: warning.position.x + warning.direction.x, y: warning.position.y + warning.direction.y },
+                remaining: warning.remaining, duration: warning.duration,
+            }));
+            for (const mark of marks) {
+                const enemy = source.team === "enemy";
+                const progress = 1 - mark.remaining / Math.max(0.001, mark.duration);
+                g.fillColor = enemy ? cc.color(222, 66, 62, 35 + Math.round(progress * 60)) : cc.color(100, 207, 178, 45);
+                g.strokeColor = enemy ? cc.color(255, 120, 91, 220) : cc.color(153, 238, 195, 170);
+                g.lineWidth = 3;
+                const area = mark.area;
+                if (area.shape === "circle") {
+                    const point = this.project(mark.point);
+                    g.ellipse(point.x, point.y, area.radius * this.worldScale, area.radius * this.worldScale * this.depthScale);
                 } else {
-                    const halfWidth = (area.width || 1) / 2;
-                    const offsets = [[0, -halfWidth], [area.radius, -halfWidth], [area.radius, halfWidth], [0, halfWidth]];
-                    offsets.forEach(([along, side], index) => {
-                        const point = this.project({ x: cast.origin.x + Math.cos(angle) * along - Math.sin(angle) * side,
-                            y: cast.origin.y + Math.sin(angle) * along + Math.cos(angle) * side });
-                        if (index === 0) g.moveTo(point.x, point.y); else g.lineTo(point.x, point.y);
-                    });
+                    const angle = Math.atan2(mark.point.y - mark.origin.y, mark.point.x - mark.origin.x);
+                    const origin = this.project(mark.origin);
+                    if (area.shape === "cone") {
+                        const half = (area.angleDegrees || 90) * Math.PI / 360;
+                        g.moveTo(origin.x, origin.y);
+                        for (let index = 0; index <= 20; index += 1) {
+                            const current = angle - half + 2 * half * index / 20;
+                            const point = this.project({ x: mark.origin.x + Math.cos(current) * area.radius, y: mark.origin.y + Math.sin(current) * area.radius });
+                            g.lineTo(point.x, point.y);
+                        }
+                    } else {
+                        const halfWidth = (area.width || 1) / 2;
+                        const offsets = [[0, -halfWidth], [area.radius, -halfWidth], [area.radius, halfWidth], [0, halfWidth]];
+                        offsets.forEach(([along, side], index) => {
+                            const point = this.project({ x: mark.origin.x + Math.cos(angle) * along - Math.sin(angle) * side,
+                                y: mark.origin.y + Math.sin(angle) * along + Math.cos(angle) * side });
+                            if (index === 0) g.moveTo(point.x, point.y); else g.lineTo(point.x, point.y);
+                        });
+                    }
+                    g.close();
                 }
-                g.close();
+                g.fill();
+                g.stroke();
             }
-            g.fill();
-            g.stroke();
         });
     }
 

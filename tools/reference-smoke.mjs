@@ -772,6 +772,62 @@ try {
     return boot.renderer.referenceArt.areaViews.size === 0;
   });
   assert.equal(areaArt.cleaned, true);
+  const warnings = await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session, target = session.world.leader; boot.enabled = false;
+    const spawn = session.config.spawns.find((entry) => boot.renderer.referenceArt.config.bindings[entry.id] && session.config.enemies.find((enemy) => enemy.id === entry.enemyId)?.kind === "enemy");
+    if (!spawn) throw new Error("No cached enemy art for the warning probe");
+    const source = new target.constructor({ id: `${spawn.id}:warning_probe`, faction: "enemy", position: target.position.add({ x: 0, y: 300 }),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 1000, aggroRange: 1000 } });
+    session.world.addEnemy(source);
+    const combat = new session.world.combat.constructor(() => 0.5);
+    boot.warningProbe = { source, target, combat };
+    if (!combat.use(source, target, session.world.options.skillDefinitions.reference_skill_5200402, [source, target])) throw new Error("Source ice-ring warning failed to cast");
+    combat.update(0.5, [source, target]);
+    const casts = combat.castSnapshots(); boot.renderer.update({ ...session.getSnapshot(), casts }, 0.1);
+    return { setup: "Actual source ring skills on a zero-attack cached enemy fixture", firstCount: casts[0].warnings.length,
+      distinct: new Set(casts[0].warnings.map((warning) => `${warning.position.x},${warning.position.y}`)).size };
+  });
+  assert.equal(warnings.firstCount, 4); assert.equal(warnings.distinct, 4);
+  for (let index = 0; index < 50; index++) {
+    const ready = await evaluate(() => {
+      const boot = window.__referenceBoot, { source, combat } = boot.warningProbe;
+      boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots() }, 0.05);
+      return Boolean(boot.renderer.referenceArt.views.get(source.id)?.node.active);
+    });
+    if (ready) break;
+    if (index === 49) throw new Error("Warning caster art did not load");
+    await delay(100);
+  }
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-warnings-four`);
+  }
+  warnings.staggered = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.warningProbe;
+    combat.resetEngagement();
+    if (!combat.use(source, target, boot.session.world.options.skillDefinitions.reference_skill_5002106, [source, target])) throw new Error("Source lightning warning failed to cast");
+    combat.update(0.95, [source, target]);
+    const casts = combat.castSnapshots(); boot.renderer.update({ ...boot.session.getSnapshot(), casts }, 0.1);
+    return { count: casts[0].warnings.length, distinct: new Set(casts[0].warnings.map((warning) => `${warning.position.x},${warning.position.y}`)).size };
+  });
+  assert.deepEqual(warnings.staggered, { count: 10, distinct: 10 });
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-warnings-ten`);
+  }
+  warnings.afterFirstHit = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.warningProbe;
+    combat.update(1.1, [source, target]);
+    const casts = combat.castSnapshots(); boot.renderer.update({ ...boot.session.getSnapshot(), casts }, 0.1);
+    return { count: casts[0].warnings.length, phase: casts[0].phase };
+  });
+  assert.deepEqual(warnings.afterFirstHit, { count: 9, phase: "active" });
+  await capture("warnings-after-first-hit");
+  warnings.cleaned = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, combat } = boot.warningProbe;
+    combat.cancelCaster(source.id); combat.resetEngagement(); boot.session.world.removeEnemy(source.id);
+    boot.renderer.update(boot.session.getSnapshot(), 0.1); delete boot.warningProbe; boot.enabled = true;
+    return combat.castSnapshots().length === 0;
+  });
+  assert.equal(warnings.cleaned, true);
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -802,7 +858,7 @@ try {
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
     periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
-    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, resetCounts, viewports, errors, failures };
+    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {
