@@ -837,6 +837,7 @@ export class DemoSession {
           (area.turnSpeedDegrees !== undefined && (!Number.isFinite(area.turnSpeedDegrees) || area.turnSpeedDegrees < 0)) ||
           (area.target !== undefined && !["enemy", "ally"].includes(area.target))) throw new Error(`Invalid persistent area for ${config.id}`);
       if ([area.maxTargets, area.pvpMaxTargets, area.maxTicks].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 1))) throw new Error(`Invalid persistent area limits for ${config.id}`);
+      if (area.motion && (area.followCaster || area.turnSpeedDegrees || !["straight", "homing"].includes(area.motion.kind) || !Number.isFinite(area.motion.speed) || area.motion.speed <= 0)) throw new Error(`Invalid area motion for ${config.id}`);
       let previousPhase = 0;
       for (const phase of area.phases ?? []) {
         if (!Number.isSafeInteger(phase.throughTick) || phase.throughTick <= previousPhase || !phase.effects.length || phase.effects.some((effect) => effect.type === "area")) throw new Error(`Invalid persistent area phase for ${config.id}`);
@@ -850,7 +851,9 @@ export class DemoSession {
     }
     for (const warning of config.warnings ?? []) {
       if (![warning.start, warning.end, warning.distance ?? 0, warning.angleDegrees ?? 0].every(Number.isFinite) || warning.start < 0 || warning.end <= warning.start ||
-          (warning.distance ?? 0) < 0 || !["caster", "target", "random_target"].includes(warning.anchor)) throw new Error(`Invalid skill warning for ${config.id}`);
+          (warning.distance ?? 0) < 0 || !["caster", "target", "random_target", "home"].includes(warning.anchor) || !warning.geometry) throw new Error(`Invalid skill warning for ${config.id}`);
+      if (warning.paths && (!warning.paths.length || warning.paths.some((path) => !path.from || !path.to || ![path.from.x, path.from.y, path.to.x, path.to.y].every(Number.isFinite) ||
+          (path.from.x === path.to.x && path.from.y === path.to.y)))) throw new Error(`Invalid warning paths for ${config.id}`);
     }
     if (config.trackTargetFor !== undefined && (!Number.isFinite(config.trackTargetFor) || config.trackTargetFor < 0)) throw new Error(`Invalid aim tracking for ${config.id}`);
     if (config.channelMove && (config.motion || !Number.isFinite(config.channelMove.speed) || config.channelMove.speed <= 0 || !Number.isFinite(config.channelMove.start) || config.channelMove.start < 0)) throw new Error(`Invalid channel movement for ${config.id}`);

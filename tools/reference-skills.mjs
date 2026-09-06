@@ -238,17 +238,24 @@ export function createReferenceSkillCompiler(lookup) {
     const frameWarnings = new Map();
     if (warnings.length > 1) {
       const round = tags.find((tag) => tag[0] === "warnRoundTag");
+      const lines = tags.find((tag) => tag[0] === "warnRandomLineTag");
+      const paths = lines?.slice(3).map((value) => String(value).split("_").map(Number));
+      const lineLayout = lines?.[1] === 0 && lines[2] === 0 && paths.length > 0 && paths.every((path) => path.length === 4 && path.every(Number.isFinite) && (path[0] !== path[2] || path[1] !== path[3])) &&
+        warnings.every((entry) => entry[0] === 4 && entry[1] === 1 && entry[4] === "box");
       const spatialFrames = frames.filter((frame) => frame.actions.some((action) => ["damageAction", "damageByBuffAction", "sceneSpriteAction"].includes(action[0])));
-      const supported = !definition.projectileSpeed && !tags.some((tag) => ["warnPosOffsetTag", "warnRandomLineTag", "warnRandomDirTag", "warnRandomBoxPosTag"].includes(tag[0])) &&
-        warnings.every((entry) => entry[4] === "circle" && [1, 2, 3].includes(entry[0])) &&
-        (!warnings.some((entry) => entry[0] === 3) || (round && Math.abs(round[1] * warnings.length - 360) < 1e-6)) &&
+      const supported = !definition.projectileSpeed && !tags.some((tag) => ["warnPosOffsetTag", "warnRandomDirTag", "warnRandomBoxPosTag"].includes(tag[0])) &&
+        (lineLayout || (!lines && warnings.every((entry) => entry[4] === "circle" && [1, 2, 3].includes(entry[0])) &&
+        (!warnings.some((entry) => entry[0] === 3) || (round && Math.abs(round[1] * warnings.length - 360) < 1e-6)))) &&
         (spatialFrames.length === warnings.length || spatialFrames.length === 1);
       if (supported) {
-        definition.warnings = warnings.map((entry, index) => ({ start: entry[2] / 1000, end: entry[3] / 1000,
+        definition.warnings = warnings.map((entry, index) => lineLayout ? { start: entry[2] / 1000, end: entry[3] / 1000,
+          geometry: { shape: "line", width: entry[5], radius: entry[6] }, anchor: "home",
+          paths: paths.map(([x, y, endX, endY]) => ({ from: { x, y }, to: { x: endX, y: endY } })) } : { start: entry[2] / 1000, end: entry[3] / 1000,
           geometry: { shape: "circle", radius: entry[5] }, anchor: entry[0] === 2 ? "random_target" : entry[1] === -1 ? "caster" : "target",
-          distance: entry[0] === 3 ? round[2] : 0, angleDegrees: entry[0] === 3 ? index * round[1] : 0, follow: entry[0] !== 3 }));
+          distance: entry[0] === 3 ? round[2] : 0, angleDegrees: entry[0] === 3 ? index * round[1] : 0, follow: entry[0] !== 3 });
         spatialFrames.forEach((frame, index) => frameWarnings.set(frame, spatialFrames.length === 1 ? warnings.map((_, index) => index) : [index]));
-        report(id, "warning_layout_parity", "independent circles, first-target ring anchor and seeded distinct random targets; layout origin and release-frame offsets require live comparison");
+        report(id, "warning_layout_parity", lineLayout ? "seeded distinct source line pairs relative to caster home, using configured warning length; anchor, direction and release offsets require live comparison" :
+          "independent circles, first-target ring anchor and seeded distinct random targets; layout origin and release-frame offsets require live comparison");
       } else report(id, "multiple_warnings", warnings);
     }
     const tracking = tags.find((tag) => tag[0] === "warnFollowBreakTag");
@@ -278,7 +285,11 @@ export function createReferenceSkillCompiler(lookup) {
             damageStep = { at, type: "damage", power: action[1] / 10000, damageType: damageType(frame.damageType, id), powerPerStack: { group: String(action[2]), amount: action[3] / 10000 } };
             actions.push(damageStep); report(id, "stacked_damage_parity", "base power plus per-stack power from the victim's current Buff count; requires live comparison");
         } else if (action[0] === "sceneSpriteAction" && !insideArea && action[1] > 0 && action[2] > 0 && row.sceneSpriteActions) {
-          const unsupportedLayout = tags.filter((tag) => ["warnRandomLineTag", "warnRandomDirTag", "warnRandomBoxPosTag", "sceneSpriteSearchTag"].includes(tag[0]));
+          const search = tags.find((tag) => tag[0] === "sceneSpriteSearchTag");
+          const moving = search?.length === 5 && search[1] === 0 && search[2] > 0 && search[3] === -1 && [2, 3].includes(search[4]) &&
+            !tags.some((tag) => ["sceneSpriteDelayTag", "sceneSpriteCastPosTag"].includes(tag[0]));
+          const unsupportedLayout = tags.filter((tag) => ["warnRandomDirTag", "warnRandomBoxPosTag"].includes(tag[0]) ||
+            (tag[0] === "warnRandomLineTag" && !definition.warnings?.every((warning) => warning.paths)) || (tag[0] === "sceneSpriteSearchTag" && !moving));
           if (unsupportedLayout.length) { report(id, "area_layout", unsupportedLayout); continue; }
             const geometry = action[3] === "circle" ? { shape: "circle", radius: action[4] } : action[3] === "box" ?
               { shape: "line", width: action[4], radius: action[5] } : action[3] === "sector" ? { shape: "cone", radius: action[4], angleDegrees: action[5] } : null;
@@ -291,6 +302,10 @@ export function createReferenceSkillCompiler(lookup) {
           const areaEffect = { duration: action[1] / 1000, interval: action[2] / 1000, geometry, effects, followCaster,
               target: target === "self" ? effects.some((effect) => effect.type === "damage") ? "enemy" : "ally" : target === "enemy" ? "enemy" : "ally",
             turnSpeedDegrees: turn?.[1], hitsPerTarget: limit?.[1], effectKey: effectId > 0 ? `reference_effect_${effectId}` : undefined };
+          if (moving && !followCaster && !turn) {
+            areaEffect.motion = { kind: search[4] === 3 ? "homing" : "straight", speed: search[2] };
+            report(id, "area_motion_parity", "independent motion from cast/warning origin; configured speed, straight direction or current-target following; terrain, retargeting and exact lifetime require live comparison");
+          } else if (moving) { report(id, "area_motion_conflict", search); continue; }
           const targetLimit = tags.find((tag) => tag[0] === "sceneSpriteTargetNumTag");
           if (targetLimit) { const values = String(targetLimit[1]).split("_").map(Number); if (values[0] === 1) { areaEffect.pvpMaxTargets = values[1]; areaEffect.maxTargets = values[2]; } else report(id, "area_target_limit", targetLimit); }
           const tickLimit = tags.find((tag) => tag[0] === "sceneSpriteTriggerLimitTag");

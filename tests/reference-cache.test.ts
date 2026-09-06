@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deflateSync } from "node:zlib";
-import { decodeUuid, inside, mergeBundleParts, readTableArchive, tableRow } from "../tools/reference-cache.mjs";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { decodeUuid, inside, mergeBundleParts, openCache, readTableArchive, tableRow } from "../tools/reference-cache.mjs";
 import { compileReferenceCondition, parseReferenceItem, referenceFogPolygon } from "../tools/reference-rules.mjs";
 
 test("cache paths cannot escape the authorized root", () => {
@@ -54,4 +57,19 @@ test("resource probabilities and fog coordinates retain the source data contract
   assert.throws(() => parseReferenceItem("item|id:4_num:2_prob:1/0"), /Invalid/);
   const corners = referenceFogPolygon({ x: 1200, y: -2400, w: 120, h: 120 }, (x, y) => ({ x, y }));
   assert.deepEqual(corners, [{ x: 3000, y: 600 }, { x: 3100, y: 540 }, { x: 3000, y: 480 }, { x: 2900, y: 540 }]);
+});
+
+test("reference supplements admit resource data but reject scripts and escaping paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "astra-cache-test-")), cache = join(root, "cache"), supplement = join(root, "supplement");
+  try {
+    await mkdir(cache); await mkdir(supplement); await writeFile(join(cache, "cacheList.json"), JSON.stringify({ files: {} }));
+    const texture = "remote/resources/native/aa/aabb.ccdd.png", atlas = "remote/resources/import/aa/aabb.ccdd.json";
+    await writeFile(join(supplement, "manifest.json"), JSON.stringify({ files: { [texture]: { file: texture }, [atlas]: { file: atlas } } }));
+    assert.deepEqual((await openCache(cache, supplement)).entries.map((entry) => entry.key), [texture, atlas]);
+    for (const [key, file] of [["remote/resources/index.js", "index.js"], ["remote/resources/import/aa/aabb.ccdd.js", "script.js"],
+      [texture, "../outside.png"], ["remote/resources/native/aa/../../outside.png", "outside.png"]]) {
+      await writeFile(join(supplement, "manifest.json"), JSON.stringify({ files: { [key]: { file } } }));
+      await assert.rejects(openCache(cache, supplement), /Invalid supplemental resource path|Path escapes directory/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

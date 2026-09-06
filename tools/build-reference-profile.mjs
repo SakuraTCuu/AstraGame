@@ -222,7 +222,7 @@ export async function buildReferenceProfile(cache, assets, tables, baseConfig) {
   art.areas = {};
   for (const skill of skillCompiler.definitions.values()) for (const id of skill.areaEffectIds || []) {
     const effect = row("UiEffect", id), path = effect?.atlasName && `uires/${effect.spriteAtlasPath}/${effect.atlasName}`;
-    if (assets.some((asset) => asset.path === path && asset.type === "cc.SpriteAtlas")) {
+    if (assets.some((asset) => asset.path === path && asset.type === "cc.SpriteAtlas") && assets.some((asset) => asset.path === path && asset.type === "cc.Texture2D" && asset.native)) {
       const key = `reference_effect_${id}`, area = skill.actions.find((action) => action.areaEffect?.effectKey === key)?.areaEffect;
       art.areas[key] = { path, fps: effect.frame || 12, scale: effect.scale || 1, loop: effect.bLoop === 1, offsetY: effect.dy || 0,
         directional: area?.geometry.shape !== "circle" };

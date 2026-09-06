@@ -12,7 +12,8 @@ export interface SkillWarning {
   readonly start: number;
   readonly end: number;
   readonly geometry: SkillArea;
-  readonly anchor: "caster" | "target" | "random_target";
+  readonly anchor: "caster" | "target" | "random_target" | "home";
+  readonly paths?: readonly { readonly from: { readonly x: number; readonly y: number }; readonly to: { readonly x: number; readonly y: number } }[];
   readonly distance?: number;
   readonly angleDegrees?: number;
   readonly follow?: boolean;
@@ -25,6 +26,7 @@ export interface AreaEffectDefinition {
   readonly effects: readonly SkillAction[];
   readonly target?: "enemy" | "ally";
   readonly followCaster?: boolean;
+  readonly motion?: { readonly kind: "straight" | "homing"; readonly speed: number };
   readonly turnSpeedDegrees?: number;
   readonly hitsPerTarget?: number;
   readonly effectKey?: string;

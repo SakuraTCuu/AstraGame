@@ -98,7 +98,7 @@ interface Projectile { readonly cast: Cast; readonly expiresAt: number; position
   directional?: { readonly direction: Vector2; readonly hits: Map<string, number>; remaining: number }; }
 interface ProjectileImpact { readonly cast: Cast; readonly target: Actor; readonly at: number; readonly areaId?: number; actionIndex: number; }
 interface AreaEffect { readonly id: number; readonly cast: Cast; readonly definition: AreaEffectDefinition; readonly startedAt: number; readonly expiresAt: number;
-  readonly hits: Map<string, number>; nextTick: number; ticks: number; position: Vector2; direction: Vector2; }
+  readonly hits: Map<string, number>; nextTick: number; ticks: number; position: Vector2; direction: Vector2; lastUpdate: number; }
 interface Displacement { readonly actor: Actor; readonly direction: Vector2; readonly distance: number; readonly duration: number; readonly startedAt: number; progress: number; }
 type CombatMovement = SkillMotion["kind"] | "knockback" | "fear" | "channel";
 export interface SummonRequest { readonly sourceId: string; readonly enemyId: string; readonly count: number; readonly limit: number; readonly radius: number; readonly position: Vec2Like; }
@@ -106,7 +106,7 @@ export interface CastSnapshot { readonly id: number; readonly sourceId: string; 
 export interface ProjectileSnapshot { readonly id: number; readonly sourceId: string; readonly targetId: string; readonly skillId: string; readonly x: number; readonly y: number;
   readonly age: number; readonly directionX: number; readonly directionY: number; readonly radius?: number; }
 export interface AreaEffectSnapshot { readonly id: number; readonly sourceId: string; readonly skillId: string; readonly x: number; readonly y: number;
-  readonly age: number; readonly remaining: number; readonly geometry: SkillArea; readonly directionX: number; readonly directionY: number; readonly effectKey?: string; }
+  readonly age: number; readonly remaining: number; readonly geometry: SkillArea; readonly directionX: number; readonly directionY: number; readonly effectKey?: string; readonly moving?: boolean; }
 
 function circleContactInterval(from: Vector2, to: Vector2, center: Vector2, radius: number): [number, number] | undefined {
   const delta = to.subtract(from), offset = from.subtract(center), a = delta.lengthSquared();
@@ -254,7 +254,7 @@ export class CombatSystem {
       while (projectile.actionIndex < actions.length && projectile.impactAt! + actions[projectile.actionIndex].at / projectile.cast.speed <= this.time + 1e-9) this.resolveHit(projectile.impactCast!, true, actions[projectile.actionIndex++]);
       if (projectile.actionIndex >= actions.length) this.projectiles.delete(id);
     }
-    this.updateAreas(deltaSeconds);
+    this.updateAreas();
     for (let index = this.projectileImpacts.length - 1; index >= 0; index--) {
       const impact = this.projectileImpacts[index];
       this.advanceProjectileImpact(impact);
@@ -350,7 +350,7 @@ export class CombatSystem {
   areaSnapshots(): AreaEffectSnapshot[] {
     return [...this.areas.values()].map((area) => ({ id: area.id, sourceId: area.cast.source.id, skillId: area.cast.skill.id, x: area.position.x, y: area.position.y,
       age: Math.max(0, this.time - area.startedAt), remaining: Math.max(0, area.expiresAt - this.time), geometry: area.definition.geometry,
-      directionX: area.direction.x, directionY: area.direction.y, effectKey: area.definition.effectKey }));
+      directionX: area.direction.x, directionY: area.direction.y, effectKey: area.definition.effectKey, moving: Boolean(area.definition.motion) }));
   }
 
   drainEvents(): CombatEvent[] { return this.events.splice(0); }
@@ -384,9 +384,9 @@ export class CombatSystem {
     const speed = Math.max(0.1, 1 + actor.modifier("attackSpeedRate") + (skill.category === "normal" ? actor.modifier("normalAttackSpeedRate") : 0));
     const windup = (skill.windup ?? (skill.type === "telegraph_damage" ? skill.telegraph ?? 0 : 0)) / speed;
     const end = Math.max(skill.castDuration ?? 0, (skill.windup ?? 0) + (skill.recovery ?? 0), ...(skill.actions ?? []).map((action) => action.at), ...(skill.warnings ?? []).map((warning) => warning.end));
-    const facing = Math.atan2(target.position.y - actor.position.y, target.position.x - actor.position.x), used = new Set<string>([target.id]);
+    const facing = Math.atan2(target.position.y - actor.position.y, target.position.x - actor.position.x), used = new Set<string>([target.id]), usedPaths = new Set<string>();
     const warnings = (skill.warnings ?? []).map((definition) => {
-      let anchor = definition.anchor === "caster" ? actor : target;
+      let anchor = definition.anchor === "caster" || definition.anchor === "home" ? actor : target;
       if (definition.anchor === "random_target") {
         const pool = this.actors.filter((candidate) => validTarget(actor, candidate) && candidate.faction === target.faction && actor.position.distance(candidate.position) <= skill.range);
         const unused = pool.filter((candidate) => !used.has(candidate.id));
@@ -394,9 +394,15 @@ export class CombatSystem {
         if (choices.length) anchor = choices[Math.min(choices.length - 1, Math.floor(this.random() * choices.length))];
       }
       used.add(anchor.id);
-      const angle = facing + (definition.angleDegrees ?? 0) * Math.PI / 180, direction = new Vector2(Math.cos(angle), Math.sin(angle));
-      const offset = direction.scale(definition.distance ?? 0);
-      return { definition, anchorId: anchor.id, offset, direction, position: anchor.position.add(offset) };
+      const angle = facing + (definition.angleDegrees ?? 0) * Math.PI / 180;
+      let direction = new Vector2(Math.cos(angle), Math.sin(angle)), offset = direction.scale(definition.distance ?? 0);
+      if (definition.paths?.length) {
+        const candidates = definition.paths.map((path) => ({ path, key: [path.from.x, path.from.y, path.to.x, path.to.y].join(",") }));
+        const unused = candidates.filter((entry) => !usedPaths.has(entry.key)), choices = unused.length ? unused : candidates;
+        const chosen = choices[Math.min(choices.length - 1, Math.floor(this.random() * choices.length))];
+        usedPaths.add(chosen.key); offset = Vector2.from(chosen.path.from); direction = Vector2.from(chosen.path.to).subtract(offset).normalized();
+      }
+      return { definition, anchorId: anchor.id, offset, direction, position: (definition.anchor === "home" ? actor.homePosition : anchor.position).add(offset) };
     });
     return { id: this.nextCastId++, source: actor, targetId: target.id, skill, origin: actor.position, point: target.position, startedAt: this.time,
       hitAt: this.time + windup, readyAt: this.time + (skill.actions || skill.castDuration ? end / speed : windup + (skill.recovery ?? 0)), resolved: false,
@@ -411,7 +417,7 @@ export class CombatSystem {
       const cutoff = cast.startedAt + Math.min(cast.skill.trackTargetFor ?? warning.definition.end, warning.definition.end) / cast.speed;
       if (!warning.definition.follow || this.time - deltaSeconds >= cutoff - 1e-9) continue;
       const anchor = this.actors.find((actor) => actor.id === warning.anchorId && validTarget(cast.source, actor));
-      if (anchor) warning.position = anchor.position.add(warning.offset);
+      if (anchor) warning.position = (warning.definition.anchor === "home" ? anchor.homePosition : anchor.position).add(warning.offset);
     }
   }
 
@@ -481,11 +487,11 @@ export class CombatSystem {
       const definition = action.areaEffect!;
       if (!definition || definition.duration <= 0 || definition.interval <= 0 || definition.effects.some((effect) => effect.type === "area")) throw new Error("Invalid area effect");
       if (definition.followCaster && !source.alive) return;
-      const position = definition.followCaster ? source.position : contacts?.[0]?.position ?? cast.point;
+      const position = definition.followCaster ? source.position : contacts?.[0]?.position ?? (definition.motion ? cast.origin : cast.point);
       const heading = cast.direction ?? cast.point.subtract(source.position).normalized();
       const id = this.nextAreaId++;
       const area = { id, cast, definition, position, direction: heading.lengthSquared() ? heading : new Vector2(0, 1),
-        startedAt: this.time, expiresAt: this.time + definition.duration, nextTick: this.time, ticks: 0, hits: new Map() };
+        startedAt: this.time, expiresAt: this.time + definition.duration, nextTick: this.time, ticks: 0, hits: new Map(), lastUpdate: this.time };
       this.areas.set(id, area);
       this.events.push({ type: "area_created", sourceId: source.id, targetId: cast.targetId, skillId: skill.id, x: position.x, y: position.y });
       this.tickArea(area);
@@ -602,7 +608,7 @@ export class CombatSystem {
     }
   }
 
-  private updateAreas(deltaSeconds: number): void {
+  private updateAreas(): void {
     for (const [id, area] of this.areas) {
       const source = area.cast.source, definition = area.definition;
       if (source.fsm.state === "returning" || (definition.followCaster && (!source.alive || !this.actors.includes(source)))) {
@@ -610,19 +616,33 @@ export class CombatSystem {
         for (let index = this.projectileImpacts.length - 1; index >= 0; index--) if (this.projectileImpacts[index].areaId === id) this.projectileImpacts.splice(index, 1);
         continue;
       }
-      if (definition.followCaster) area.position = source.position;
-      const target = this.actors.find((actor) => actor.id === area.cast.targetId && validTarget(source, actor));
-      if (target && definition.turnSpeedDegrees && !this.hitTargets(this.areaCast(area), true).includes(target)) {
-        const desired = target.position.subtract(area.position);
-        const angle = Math.atan2(area.direction.y, area.direction.x);
-        let difference = Math.atan2(desired.y, desired.x) - angle;
-        difference = Math.atan2(Math.sin(difference), Math.cos(difference));
-        const limit = definition.turnSpeedDegrees * Math.PI / 180 * Math.min(deltaSeconds, Math.max(0, this.time - area.startedAt));
-        const next = angle + Math.max(-limit, Math.min(limit, difference)); area.direction = new Vector2(Math.cos(next), Math.sin(next));
+      while (area.nextTick <= this.time + 1e-9 && area.nextTick < area.expiresAt - 1e-9 && area.ticks < (definition.maxTicks ?? Infinity)) {
+        this.advanceArea(area, area.nextTick); this.tickArea(area);
       }
-      while (area.nextTick <= this.time + 1e-9 && area.nextTick < area.expiresAt - 1e-9 && area.ticks < (definition.maxTicks ?? Infinity)) this.tickArea(area);
+      this.advanceArea(area, Math.min(this.time, area.expiresAt));
       if (this.time >= area.expiresAt - 1e-9) this.areas.delete(id);
     }
+  }
+
+  private advanceArea(area: AreaEffect, time: number): void {
+    const delta = Math.max(0, time - area.lastUpdate), definition = area.definition, source = area.cast.source;
+    area.lastUpdate = Math.max(time, area.lastUpdate);
+    if (definition.followCaster) area.position = source.position;
+    const target = this.actors.find((actor) => actor.id === area.cast.targetId && validTarget(source, actor));
+    if (definition.motion?.kind === "homing" && target) {
+      const heading = target.position.subtract(area.position);
+      if (heading.lengthSquared()) area.direction = heading.normalized();
+      area.position = area.position.moveTowards(target.position, definition.motion.speed * delta);
+      return;
+    }
+    if (target && definition.turnSpeedDegrees && !this.hitTargets(this.areaCast(area), true).includes(target)) {
+      const desired = target.position.subtract(area.position), angle = Math.atan2(area.direction.y, area.direction.x);
+      let difference = Math.atan2(desired.y, desired.x) - angle;
+      difference = Math.atan2(Math.sin(difference), Math.cos(difference));
+      const limit = definition.turnSpeedDegrees * Math.PI / 180 * delta;
+      const next = angle + Math.max(-limit, Math.min(limit, difference)); area.direction = new Vector2(Math.cos(next), Math.sin(next));
+    }
+    if (definition.motion) area.position = area.position.add(area.direction.scale(definition.motion.speed * delta));
   }
 
   private tickArea(area: AreaEffect): void {
@@ -654,7 +674,7 @@ export class CombatSystem {
 
   private areaCast(area: AreaEffect): Cast {
     const definition = area.definition;
-    return { ...area.cast, origin: area.position,
+    return { ...area.cast, origin: area.position, direction: area.direction,
       point: definition.geometry.shape === "circle" ? area.position : area.position.add(area.direction), speed: 1,
       skill: { ...area.cast.skill, target: definition.target ?? (area.cast.skill.target === "self" ? "ally" : area.cast.skill.target),
         area: definition.geometry, areaAnchor: "target", targetCount: undefined, maxTargets: Number.MAX_SAFE_INTEGER, motion: undefined, actions: definition.effects } };

@@ -828,6 +828,62 @@ try {
     return combat.castSnapshots().length === 0;
   });
   assert.equal(warnings.cleaned, true);
+  const movingAreaArt = await evaluate(() => {
+    const boot = window.__referenceBoot, session = boot.session, leader = session.world.leader; boot.enabled = false;
+    const spawn = session.config.spawns.find((entry) => boot.renderer.referenceArt.config.bindings[entry.id] && session.config.enemies.find((enemy) => enemy.id === entry.enemyId)?.kind === "enemy");
+    if (!spawn) throw new Error("No cached enemy for the moving-area fixture");
+    const source = new leader.constructor({ id: `${spawn.id}:moving_area_probe`, faction: "enemy", position: leader.position.add({ x: 0, y: 300 }),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 3000, aggroRange: 3000 } });
+    const target = new leader.constructor({ id: "moving_area_aim", faction: "player", position: source.position.add({ x: 2500, y: 0 }),
+      stats: { maxHealth: 10000, attack: 0, defense: 0, moveSpeed: 0, attackRange: 0, aggroRange: 0 } });
+    session.world.addEnemy(source); const combat = new session.world.combat.constructor(() => 0);
+    boot.movingAreaProbe = { source, target, combat };
+    if (!combat.use(source, target, session.world.options.skillDefinitions.reference_skill_5200103, [source, target])) throw new Error("Source moving-area cast failed");
+    combat.update(1, [source, target]); const casts = combat.castSnapshots();
+    boot.renderer.update({ ...session.getSnapshot(), casts }, 0.1);
+    return { setup: "Actual source route skill on a zero-attack enemy fixture", warningCount: casts[0].warnings.length };
+  });
+  assert.equal(movingAreaArt.warningCount, 4);
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-warning-paths`);
+  }
+  await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.movingAreaProbe;
+    combat.update(2, [source, target]); combat.update(1.2, [source, target]);
+    boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots(), areas: combat.areaSnapshots() }, 0.1);
+  });
+  let movingReady = false;
+  for (let index = 0; index < 50 && !movingReady; index++) {
+    movingReady = await evaluate(() => {
+      const boot = window.__referenceBoot, combat = boot.movingAreaProbe.combat, areas = combat.areaSnapshots();
+      boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots(), areas }, 0.05);
+      return areas.length === 4 && areas.every((area) => boot.renderer.referenceArt.areaViews.has(area.id));
+    });
+    if (!movingReady) await delay(100);
+  }
+  assert.equal(movingReady, true, "Source moving-area atlas failed to render");
+  movingAreaArt.motion = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.movingAreaProbe, before = combat.areaSnapshots();
+    const firstFrame = boot.renderer.referenceArt.areaViews.get(before[0].id).spriteFrame.name;
+    combat.update(0.2, [source, target]); const after = combat.areaSnapshots();
+    boot.renderer.update({ ...boot.session.getSnapshot(), casts: combat.castSnapshots(), areas: after }, 0.2);
+    return { count: after.length, distances: after.map((area, index) => Math.hypot(area.x - before[index].x, area.y - before[index].y)),
+      firstFrame, nextFrame: boot.renderer.referenceArt.areaViews.get(after[0].id).spriteFrame.name,
+      facing: after.map((area) => ({ left: area.directionX < 0, mirrored: boot.renderer.referenceArt.areaViews.get(area.id).node.scaleX < 0 })) };
+  });
+  assert.equal(movingAreaArt.motion.count, 4); assert.ok(movingAreaArt.motion.distances.every((distance) => Math.abs(distance - 160) < 1e-6));
+  assert.notEqual(movingAreaArt.motion.firstFrame, movingAreaArt.motion.nextFrame);
+  assert.ok(movingAreaArt.motion.facing.every((entry) => entry.left === entry.mirrored));
+  for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false }); await delay(200); await capture(`${name}-moving-areas`);
+  }
+  movingAreaArt.cleaned = await evaluate(() => {
+    const boot = window.__referenceBoot, { source, target, combat } = boot.movingAreaProbe;
+    combat.update(5, [source, target]); combat.resetEngagement(); boot.session.world.removeEnemy(source.id);
+    boot.renderer.update(boot.session.getSnapshot(), 0.1); delete boot.movingAreaProbe; boot.enabled = true;
+    return boot.renderer.referenceArt.areaViews.size === 0;
+  });
+  assert.equal(movingAreaArt.cleaned, true);
   const viewports = [];
   for (const [name, width, height] of [["mobile", 390, 844], ["desktop", 1280, 800]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
@@ -858,7 +914,7 @@ try {
   assert.deepEqual(failures, []);
   const report = { initial, foreground, journal, lightProbe, overview, purchased, restored, travel, movement, battle, battleArt, experience, development, recovery, recruitment, roster,
     periodicHeroes: { setup: "owned-card and merit fixture for source hero growth, energy and Spine checks", heroes: periodicArt }, impact, control,
-    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, resetCounts, viewports, errors, failures };
+    projectileArt: { initial: projectileArt, advanced: advancedProjectileArt, rotation: projectileRotation, cleaned: true }, defense, costs, areaArt, warnings, movingAreaArt, resetCounts, viewports, errors, failures };
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {

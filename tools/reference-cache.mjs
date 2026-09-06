@@ -50,7 +50,8 @@ export async function openCache(root, supplement) {
     try { manifest = JSON.parse(await readFile(inside(supplement, "manifest.json"), "utf8")); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
     for (const [key, value] of Object.entries(manifest?.files || {})) {
-      if (!/^remote\/map\/native\/[a-f0-9]{2}\/[a-f0-9-]+\.[a-f0-9]+\.png$/.test(key)) throw new Error("Invalid supplemental map asset path");
+      if (!/^remote\/map\/native\/[a-f0-9]{2}\/[a-f0-9-]+\.[a-f0-9]+\.png$/.test(key) &&
+          !/^remote\/resources\/(?:import\/[a-f0-9]{2}\/[a-f0-9-]+\.[a-f0-9]+\.json|native\/[a-f0-9]{2}\/[a-f0-9-]+\.[a-f0-9]+\.png)$/.test(key)) throw new Error("Invalid supplemental resource path");
       if (!entries.some((entry) => entry.key === key)) entries.push({ key, file: inside(supplement, value.file), time: 0 });
     }
   }

@@ -183,9 +183,10 @@ export class ReferenceArtLayer {
             presentAreas.add(area.id);
             const frame = Math.floor(area.age * binding.fps);
             sprite.spriteFrame = frames[binding.loop ? frame % frames.length : Math.min(frames.length - 1, frame)];
-            sprite.node.setPosition(point.x, point.y + binding.offsetY * scale); sprite.node.setScale(binding.scale * scale);
-            sprite.node.angle = binding.directional ? Math.atan2(area.directionY * depth, area.directionX) * 180 / Math.PI : 0;
-            sprite.node.zIndex = -1000000 + Math.round(100000 - area.y);
+            const facing = area.moving && area.directionX < 0 ? -1 : 1;
+            sprite.node.setPosition(point.x, point.y + binding.offsetY * scale); sprite.node.setScale(binding.scale * scale * facing, binding.scale * scale);
+            sprite.node.angle = binding.directional ? (area.moving ? Math.atan2(area.directionY * depth, Math.abs(area.directionX)) * facing : Math.atan2(area.directionY * depth, area.directionX)) * 180 / Math.PI : 0;
+            sprite.node.zIndex = (area.moving ? 0 : -1000000) + Math.round(100000 - area.y);
         }
         this.areaViews.forEach((sprite, id) => { if (!presentAreas.has(id)) { sprite.node.destroy(); this.areaViews.delete(id); } });
         if (this.foreground) this.foreground.update(this.ground, snapshot, camera, scale, depth);
